@@ -73,9 +73,69 @@ def _upload_allowed(cfg: Config, rep: RunReport) -> int | None:
     return None
 
 
+LOCK_STALE = dt.timedelta(hours=2)
+
+
+class _ProcessLock:
+    """Only one process publishes at a time (the web app's worker and Task Scheduler's `scheduler --once` could
+    otherwise upload the same clip twice). Atomic file creation; a lock older than 2 h is considered stale."""
+
+    def __init__(self, cfg: Config) -> None:
+        self.path = cfg.workspace / "publish.lock"
+        self.held = False
+
+    def __enter__(self) -> bool:
+        import os
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        for _ in range(2):
+            try:
+                fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(fd, f"{os.getpid()} {now_utc().isoformat()}".encode())
+                os.close(fd)
+                self.held = True
+                return True
+            except FileExistsError:
+                try:
+                    age = now_utc() - dt.datetime.fromisoformat(self.path.read_text().split()[1])
+                except (OSError, ValueError, IndexError):
+                    age = LOCK_STALE
+                if age < LOCK_STALE:
+                    return False
+                self.path.unlink(missing_ok=True)  # stale (crashed run): take over
+        return False
+
+    def __exit__(self, *exc) -> None:
+        if self.held:
+            self.path.unlink(missing_ok=True)
+
+
+def recover_stuck(now: dt.datetime) -> int:
+    """Items left 'uploading' by a crash: if YouTube never returned an id, try again (queued)."""
+    n = 0
+    for it in q.items(statuses=("uploading",)):
+        if it.youtube_video_id:
+            it.status = "scheduled"
+        else:
+            it.status, it.error = "queued", "The previous upload was interrupted — retrying."
+        q.save(it)
+        n += 1
+    return n
+
+
 def run_once(cfg: Config | None = None, now: dt.datetime | None = None, progress=None) -> RunReport:
     cfg = cfg or load_config()
     now = as_utc(now or now_utc())
+    with _ProcessLock(cfg) as got:
+        if not got:
+            rep = RunReport()
+            rep.messages.append("Another ClipForge process is publishing right now — skipped this run.")
+            return rep
+        recover_stuck(now)  # safe: we hold the lock, so nobody else is mid-upload
+        return _run_locked(cfg, now, progress)
+
+
+def _run_locked(cfg: Config, now: dt.datetime, progress) -> RunReport:
     rep = RunReport()
     budget = _upload_allowed(cfg, rep) if cfg.publishing.mode == "api" else 0
     for ch in chs.all_channels():

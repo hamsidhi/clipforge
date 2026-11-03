@@ -346,3 +346,28 @@ def test_retry_backoff_and_unconfirmed_channel(env):
     assert q.get(it.id).attempts == 1  # still backing off
     runner.run_once(cfg, now=NOW + dt.timedelta(hours=1))
     assert q.get(it.id).status == "scheduled"
+
+
+def test_process_lock_and_stuck_recovery(env):
+    from clipforge.api import db
+    from clipforge.config import load_config
+    from clipforge.publish import queue as q, runner
+
+    tmp, fake = env
+    cfg = load_config()
+    with runner._ProcessLock(cfg) as got:
+        assert got
+        rep = runner.run_once(cfg, now=NOW)  # second "process" is refused
+        assert "Another ClipForge process" in rep.messages[0]
+    _seed_episode(cfg.workspace, "epS", 1)
+    with db.session() as s:
+        s.add(db.Channel(id="UCtest", title="T", uploads_playlist="UUtest", confirmed=True))
+        s.commit()
+    it = q.add_clips("UCtest", "epS", None)[0]
+    q.generate_metadata(it.id, cfg)
+    q.autoschedule("UCtest", now=NOW)
+    stuck = q.get(it.id)
+    stuck.status = "uploading"  # crash mid-upload
+    q.save(stuck)
+    rep = runner.run_once(cfg, now=NOW)
+    assert rep.uploaded == [it.id] and q.get(it.id).status == "scheduled"

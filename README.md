@@ -102,7 +102,7 @@ clipforge preview VIDEO_ID                                            # gallery.
 clipforge list                                                        # processed videos
 clipforge doctor [--fix]
 clipforge ui [--dev] [--host 0.0.0.0] [--port 8000]
-clipforge upload VIDEO_ID --only 1,2                                  # YouTube upload (opt-in, see below)
+clipforge schedule VIDEO_ID --channel UC…                            # publishing: see section 5
 ```
 
 Output for each video is in `workspace/<video_id>/`:
@@ -146,21 +146,96 @@ You can also create your own in Settings.
 
 ---
 
-## 5. YouTube upload (optional, off by default)
+## 5. Publishing to YouTube (schedule, upload, track)
 
-Clips upload as **private** (or scheduled), using the free YouTube Data API quota (about 6 uploads per day).
-Instagram posting stays manual.
+ClipForge can plan and publish your Shorts for one or more YouTube channels:
+- it writes optimized titles, descriptions and tags;
+- it picks the best time slots and keeps a calendar;
+- it either uploads for you or prepares a batch you upload in YouTube Studio;
+- afterwards it tracks views, YPP progress and campaign earnings.
 
-1. <https://console.cloud.google.com> → create a project → **Enable** "YouTube Data API v3".
-2. **OAuth consent screen** → External → add your Google account as a **test user**.
-3. **Credentials → Create credentials → OAuth client ID → Desktop app** → download the JSON →
-   save it as `client_secret.json` in the ClipForge folder (it is git-ignored).
-4. In `config.yaml` set `upload: { enabled: true, privacy: private, schedule_hours_apart: 24 }`.
-5. Run `clipforge upload <video_id> --only 1`. The first time, a browser asks you to sign in; the token is saved to `youtube_token.json`.
+All of this goes through Google's official, free YouTube APIs. Nothing ever goes public without a slot you approved:
+clips are uploaded **private** with a scheduled publish time, and YouTube makes each one public at that time.
 
-Quota use is logged to `workspace/youtube_quota.json`.
+### 5.1 One-time Google setup (about 10 minutes, free)
+1. Create a project at <https://console.cloud.google.com/projectcreate>.
+2. Go to **APIs & Services → Library** and enable **YouTube Data API v3** and **YouTube Analytics API**.
+3. Set up the **OAuth consent screen**: choose External, give it an app name and your email, and add your own Google account as a test user.
+   - Then set the publishing status to **In production**. For personal use it can stay unverified; you'll see a
+     "Google hasn't verified this app" screen once (click *Advanced → continue*).
+   - If you leave it in *Testing*, your login expires every 7 days and ClipForge will ask you to **Reconnect**.
+4. Go to **Credentials → Create credentials → OAuth client ID → Desktop app**, then **Download JSON**.
+5. In ClipForge, open **Settings → Publishing → Upload client_secret.json**.
+   The file is stored in the ClipForge folder and is git-ignored.
 
----
+### 5.2 Add your channel(s)
+**Channels → Add channel** (do this on the laptop, at <http://localhost:8000>).
+1. Sign in to Google and pick the channel. Brand Account channels show up in Google's account chooser.
+2. ClipForge asks for three permissions:
+   - *upload* — to upload videos;
+   - *read-only* — your channel, uploads and their status;
+   - *YouTube Analytics* — views per Short and Shorts views for YPP.
+3. **Confirm** the channel (its avatar and name are shown), so you never post to the wrong one, for example your music channel.
+4. Set its publish times (default 12:30, 18:30 and 21:00 IST), posts per day, posting days, description template, credit line and campaign rate.
+
+Each channel can be **paused**, which stops every upload to it. Tokens are stored in `workspace/channels/<id>/token.json`.
+
+### 5.3 Schedule clips
+1. In a job's **Gallery**, approve clips, then click **Add approved to schedule** and pick the channel.
+   ClipForge writes 3 title variants (and picks the best), a description with the 🎙 credit line, 3–5 hashtags and tags.
+2. **Schedule → Schedule approved clips** fills the next free slots:
+   - best clips go to peak times;
+   - episodes alternate, and the same topic is never repeated within 24 h;
+   - posts per day and the daily upload quota are respected.
+3. To change the plan, drag a clip to another slot, or open it to edit the title, description, tags or time.
+
+### 5.4 Two ways to publish
+**Assisted mode (default).** You upload in YouTube Studio, the official site.
+1. Go to **Schedule → Prepare batch** (or **Batches**). This creates `workspace/batches/<channel>/<date>/` with the mp4s
+   renamed `01_<date_time>_<title>.mp4`, plus `batch.html`, a checklist with copy buttons for title, description and tags.
+2. In YouTube Studio: **Create → Upload videos** and select all the files. For each one, paste its title, description and tags, then go to
+   **Visibility → Schedule** and set the date and time shown. Studio takes up to about 15 files per upload.
+3. Back in ClipForge, click **Schedule → Sync with YouTube**. It finds your uploads by title and length and links them, using read-only access.
+
+**API mode.** ClipForge uploads for you. Switch it on in **Settings → Publishing → Mode**.
+- Clips are uploaded 5 days ahead as *private + scheduled*. YouTube publishes each one at its slot, even if your laptop is off by then.
+- The laptop only needs to be on now and then to upload. Run `clipforge schedule-task install` once to set this up (see 5.6).
+- On 2 Nov 2026 Google stopped locking uploads from unaudited API projects to private, so API mode works right away.
+  The **audit** is only needed for more quota than **100 uploads/day**. Request it with the
+  [YouTube API audit & quota form](https://support.google.com/youtube/contact/yt_api_form), then tick
+  *My API project passed Google's audit*.
+- If an upload ever comes back *Locked private*, publish it from Studio and turn on *Unaudited uploads get locked* in Settings.
+
+### 5.5 Track results
+**Dashboard** shows:
+- subscribers, Shorts views over 28 and 90 days, and your top Shorts;
+- **YPP progress bars** with "at the current pace you'll reach it on…". Targets switch automatically to the 2027 rules; you can edit them in `config.yaml → ypp`;
+- a best-time **heatmap**: after 20+ Shorts it suggests better times, and only changes them when you click *Apply*;
+- "what's working", broken down by topic, episode, length and title style.
+
+**Tracker** logs campaign submissions with: rate per 1,000 views, campaign fee %, approved views and status (submitted, approved, paid).
+Earnings = approved views ÷ 1000 × rate × (1 − fee). The Dashboard lists published Shorts you haven't submitted yet.
+
+> ⚖️ Clips of other creators should only be posted under an official clipping campaign or with their permission. Keep the credit line.
+
+### 5.6 Running unattended
+```powershell
+clipforge schedule-task install            # Windows: runs `clipforge scheduler --once` at login and every 2 h
+clipforge schedule-task install --dry-run  # show the commands only
+clipforge schedule-task remove
+```
+On macOS or Linux, add `@reboot clipforge scheduler --once` and `0 */2 * * * clipforge scheduler --once` to `crontab -e`.
+While `clipforge ui` is open, the same work runs every 10 minutes in the background.
+
+### 5.7 CLI
+```bash
+clipforge channels list | add | confirm <id> | remove <id>
+clipforge schedule <video_id> --channel <id> [--only 1,2]   # add + metadata + auto-schedule
+clipforge queue list [--channel <id>]
+clipforge batch prepare --channel <id> [--n 15]
+clipforge sync --channel <id>
+clipforge scheduler --once
+```
 
 ## 6. How it works
 

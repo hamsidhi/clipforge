@@ -68,3 +68,15 @@ cd frontend && npm install && npm run build   # build the UI once
 - Windows: renames go through `workspace.safe_replace` (retries; browsers keep video files open).
 - Frontend: `frontend/src/api/{client,hooks,types}.ts`; pages in `src/pages`; shadcn/ui in `src/components/ui`.
   Built output in `frontend/dist` is served by FastAPI; `npm run dev` proxies `/api` to :8000.
+
+## Publishing (Phase 12)
+- `clipforge/publish/`: `timez` (UTC storage, IST display, Pacific quota days), `youtube` (client wrapper + fake hook
+  `set_client_factory`), `quota`, `channels` (OAuth, settings), `metadata_opt`, `slots` (pure planning), `queue`
+  (DB ops), `runner` (API-mode uploads, status), `reconcile`, `batch`, `analytics`, `worker` (2nd thread + 10-min ticker).
+- Routes in `api/publish_routes.py`; CLI in `cli_publish.py`; DB tables Channel/QueueItem/VideoPerf/StatSnapshot/ChannelDaily
+  (`db._migrate` adds new columns to old databases).
+- Tests: `tests/fake_youtube.py` + `tests/test_publish*.py` — never call Google in tests.
+- Demo/screenshots: `python scripts/demo_publish.py`, then run the UI with `CLIPFORGE_CONFIG=workspace_demo/config.yaml`
+  and `CLIPFORGE_NO_TICKER=1`; `node scripts/screenshots.mjs http://127.0.0.1:8010 1 1-1 phase12`.
+- Safety invariants: uploads are always private + publishAt; unconfirmed or paused channels never upload; a clip key is
+  unique per channel; never exceed `publishing.insert_calls_per_day`; no browser automation of YouTube.

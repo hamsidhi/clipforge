@@ -92,3 +92,52 @@ A review subagent audited the engine; fixed:
   times are adopted after Save.
 - **Settings save keeps config.yaml comments** (in-place value update); multi-line API keys are rejected.
 - Frame endpoint validates rank/time; "Render changed" only re-renders stale clips.
+
+## Phase 12 — YouTube publishing (2026-11-04)
+
+### Platform facts, verified against Google's docs on 2026-11-04 (the brief's assumptions changed)
+- **Unverified-project lock is gone.** YouTube Data API revision history, 2 Nov 2026: videos uploaded via `videos.insert`
+  from unverified projects "are no longer restricted to private viewing mode" (reverses the 28 Jul 2020 policy).
+  → API mode is fully usable without the audit. `publishing.unverified_lock: false` by default; if your uploads ever come
+  back locked, set it to `true` and API mode falls back to a single test upload (the brief's original behaviour).
+  Lock detection (`videos.list` after upload → `locked_private`) still runs on every upload.
+- **Quota (since 1 Jun 2026, granular buckets):** `videos.insert` has its own bucket — 100 calls/day by default;
+  `search.list` its own 100; everything else shares 10,000 units/day: videos.list 1, playlistItems.list 1,
+  channels.list 1, thumbnails.set 50, playlistItems.insert 50, videos.update 50. Quotas reset at midnight
+  Pacific time — the local ledger (`workspace/youtube_quota.json`) uses Pacific days. Audit/quota form:
+  https://support.google.com/youtube/contact/yt_api_form
+- **YPP** (YouTube announcement 10 Aug 2026, via several outlets — no primary help page found): today 1,000 subs +
+  10M Shorts views/90 d; fan funding 500 subs + 3M Shorts views/90 d + 3 uploads/90 d; from 1 Feb 2027 new
+  applicants need 20M Shorts views/90 d (also existing partners must keep 10M/90 d for Shorts revenue). Values live in
+  `config.yaml → ypp:`; the dashboard switches targets automatically on `new_rule_date`.
+- **Studio's 15-files-per-upload batch limit** is only documented by third parties → `publishing.batch_max: 15`, editable.
+- OAuth "Testing" refresh tokens expire after 7 days → `invalid_grant` marks the channel `needs_reauth` (Reconnect
+  button); docs recommend setting the consent screen to "In production" (unverified is fine for personal use).
+- Browser automation of YouTube uploads is NOT built (ToS). Playwright is only used for ClipForge's own screenshots.
+
+### Design
+- **Default mode stays `assisted`** as requested (nothing is uploaded by ClipForge until you switch to `api`), even
+  though the lock is gone; the Schedule page explains that API mode now works without the audit.
+- **Second worker thread for publishing** (`publish/worker.py`): uploads are network-bound and must not wait behind a
+  1-hour transcription in the main job queue. A ticker runs `run_once()` every 10 min while the app is open;
+  `clipforge scheduler --once` + Task Scheduler cover the app-closed case.
+- **Uploads go up `upload_ahead_days` (5) in advance** as `private` + `publishAt` — YouTube publishes at the slot even
+  with the laptop off. A queued clip whose slot passes before upload becomes `needs_manual` (never auto-shifted:
+  nothing gets a slot you didn't approve).
+- **Default min gap is 2.5 h, not 3 h:** the requested default slots 18:30 and 21:00 are 2.5 h apart; a 3 h gap would
+  silently drop the 21:00 slot every day.
+- **Smart fill:** best clips get peak slots (`peak_slots`, default 18:30/21:00); off-peak slots (12:30) take a
+  below-median clip when one exists; episodes interleave; same topic ≥24 h apart; posts/day and (API mode) the shared
+  daily upload quota cap each day — overflow rolls to the next day.
+- **Duplicate titles** = identical after ignoring case/punctuation (fuzzy matching flagged "Clip 1"/"Clip 2" titles).
+  Checked against the channel's last 100 planned/uploaded titles (local DB + synced YouTube titles).
+- **Title choice is deterministic:** the LLM writes 3 variants, a rubric (length, keyword early, number, curiosity,
+  no ALL-CAPS/clickbait) scores them; all variants + reasons are shown in the editor.
+- **Reconcile** = greedy best match on normalised title similarity ≥0.8 AND duration within 2.5 s, read-only API calls.
+- **Best-time learner** needs ≥20 Shorts with 24-h views, ≥4 per hour, and a ≥25% lead over the median hour; only
+  suggests, never applies without a click. 24 h/72 h views come from the Analytics API (Pacific days), falling back to
+  local view snapshots.
+- **Earnings** = (approved views or views) ÷ 1000 × rate × (1 − fee %); rejected submissions count as ₹0.
+- Old single-channel `clipforge upload` + `upload:` config were replaced by the multi-channel system.
+- `CLIPFORGE_CONFIG` (alternative config.yaml) and `CLIPFORGE_NO_TICKER=1` exist for demo/testing;
+  `scripts/demo_publish.py` builds a demo workspace with a fake YouTube client (used for the screenshots).

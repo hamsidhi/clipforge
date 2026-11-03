@@ -3,12 +3,22 @@
 Everything else was run on this laptop during the build. These steps need your accounts, your phone,
 another network device, or hardware that isn't here.
 
-## 1. YouTube upload (Phase 10): needs your Google account
-The code is unit-tested with a fake Google client, but a real upload needs your OAuth consent.
-1. Follow **README → 5. YouTube upload** to create `client_secret.json` (free, about 5 minutes).
-2. Set `upload.enabled: true` in `config.yaml`.
-3. Run `clipforge upload <video_id> --only 1`. A browser opens: sign in, then allow.
-4. Check YouTube Studio: the Short should be **Private**, scheduled about 1 hour ahead.
+## 1. YouTube publishing (Phase 12): needs your Google account
+Everything is unit-tested with a fake YouTube client. The real OAuth flow, uploads and Analytics calls need you:
+1. **Google Cloud setup:** follow README → 5.1, then upload `client_secret.json` in Settings → Publishing.
+2. **Channels → Add channel:** sign in, pick the channel, then **Confirm** it (check the avatar and name).
+3. **Test assisted mode first:**
+   - Gallery → approve 2 clips → *Add approved to schedule* → Schedule → *Schedule approved clips* → *Prepare batch*.
+   - Upload the two files in Studio with *Schedule* visibility.
+   - Back in ClipForge: *Sync with YouTube*. Both clips should show "Scheduled on YouTube".
+4. **Optional, API mode:**
+   - Settings → Publishing → Mode = API → Schedule → *Upload due now*.
+   - Check YouTube Studio: the clip is **Private, Scheduled** at the slot time.
+   - If it shows "Locked private", turn on *Unaudited uploads get locked*.
+5. **Dashboard:** *Sync stats* fills subscribers, Shorts views (needs the YouTube Analytics API enabled in your project) and YPP bars.
+6. **Unattended:** run `clipforge schedule-task install` once.
+   - If Windows refuses the "at logon" task, run it from an *Administrator* terminal.
+   - Otherwise keep only the "every 2 h" task.
 
 ## 2. Phone over Wi-Fi
 ```powershell
