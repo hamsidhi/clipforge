@@ -223,13 +223,16 @@ def retry_job(job_id: int) -> dict:
 @router.get("/jobs/{job_id}/events", summary="Server-Sent Events: stage, progress, ETA, logs")
 async def job_events(job_id: int, request: Request) -> StreamingResponse:
     job = _job_or_404(job_id)
+    # build the snapshot BEFORE the stream starts: an error here becomes a normal HTTP error response,
+    # instead of "response already started" once streaming has begun
+    job_out = _job_out(job)
     sq, backlog, last_seq = manager.subscribe(job_id)
 
     async def gen():
         try:
             # replayed backlog (seq <= last_seq) rebuilds the UI state; clients only toast/react to newer events.
             # boot_id changes on server restart (seq restarts at 1) so clients can reset their de-dup set.
-            snap = {"type": "snapshot", "job": _job_out(job), "last_seq": last_seq, "boot_id": manager.boot_id}
+            snap = {"type": "snapshot", "job": job_out, "last_seq": last_seq, "boot_id": manager.boot_id}
             yield f"event: snapshot\ndata: {event_json(snap)}\n\n"
             for ev in backlog:
                 yield f"data: {event_json(ev)}\n\n"

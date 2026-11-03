@@ -29,12 +29,36 @@ npm run build</pre>
 <p>…then restart <code>clipforge ui</code>. API docs: <a style="color:#ffe600" href="/docs">/docs</a></p></body></html>"""
 
 
+def _quiet_windows_disconnects() -> None:
+    """Windows' Proactor event loop logs a full traceback (ConnectionResetError / WinError 10054) every time a
+    browser drops a connection — closing a tab, seeking a video, an SSE reconnect. It's harmless; hide just that."""
+    import asyncio
+    import sys
+
+    if sys.platform != "win32":
+        return
+    loop = asyncio.get_running_loop()
+    previous = loop.get_exception_handler()
+
+    def handler(lp, context):
+        exc = context.get("exception")
+        if isinstance(exc, (ConnectionResetError, ConnectionAbortedError)):
+            return
+        if previous:
+            previous(lp, context)
+        else:
+            lp.default_exception_handler(context)
+
+    loop.set_exception_handler(handler)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from clipforge.api import db
     from clipforge.api.jobs import manager
     from clipforge.api.routes import load_custom_presets
 
+    _quiet_windows_disconnects()
     db.engine()
     load_custom_presets()
     if not manager.thread.is_alive():
@@ -87,6 +111,13 @@ def _lan_ip() -> str | None:
 
 def serve(host: str = "127.0.0.1", port: int = 8000, dev: bool = False, open_browser: bool = True) -> None:
     import uvicorn
+
+    from clipforge.config import ConfigError, load_config
+
+    try:  # fail once, clearly, instead of answering every request with a 500
+        load_config()
+    except ConfigError as exc:
+        raise SystemExit(f"\n{exc}\n\nFix config.yaml (or delete the offending lines — defaults are used) and start again.")
 
     url = f"http://localhost:{port}"
     vite = None
