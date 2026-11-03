@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clipforge"
+version = "0.1.0"
+description = "Turn long podcasts into watermark-free vertical shorts — 100% free and local."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[project.scripts]
+clipforge = "clipforge.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["clipforge*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

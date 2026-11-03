@@ -1,0 +1,78 @@
+# ClipForge configuration. Every value here can also be changed from the web app (Settings page).
+# Secrets (GEMINI_API_KEY, GROQ_API_KEY) live in .env, never here.
+
+clips:
+  count: 20          # how many clips to output (clamped to min_count..max_count)
+  min_count: 15
+  max_count: 25
+  min_sec: 20
+  max_sec: 59
+  max_overlap: 0.3   # drop a candidate overlapping a better one by more than this fraction
+
+whisper:
+  model: auto          # auto -> large-v3 on CUDA, small on CPU. Or: tiny, base, small, medium, large-v3
+  language: hi         # hi, en, or auto
+  compute_type: auto   # auto -> float16 on CUDA, int8 on CPU
+  vad: true
+  beam_size: 5
+
+llm:
+  provider: ollama     # ollama | gemini | groq | mock
+  model: auto          # auto -> best installed Ollama model / provider default
+  temperature: 0.3
+  window_min: 8
+  overlap_min: 1
+  max_retries: 3
+  max_candidates_per_window: 6
+  ollama_url: http://localhost:11434
+  timeout_sec: 600
+
+scoring_weights:
+  hook: 0.3
+  standalone: 0.25
+  emotion: 0.15
+  value: 0.2
+  controversy: 0.1
+
+reframe:
+  layout: auto         # auto | track | split | blur
+  sample_fps: 5
+  smoothing: 0.85      # EMA factor for the crop x-position (higher = smoother)
+  deadzone: 0.04       # ignore face moves smaller than this fraction of frame width
+  split_min_distance: 0.35  # faces further apart than this (fraction of width) -> split-screen
+
+captions:
+  script: roman        # roman (Hinglish in Latin letters) | devanagari
+  preset: bold-yellow-pop
+  words_per_line: 3
+  max_chars_per_line: 18
+  font: Montserrat-ExtraBold
+  font_size: 82
+  text_color: "#FFFFFF"
+  highlight_color: "#FFE600"
+  keyword_color: "#00FF88"
+  outline: 6
+  shadow: 3
+  position_pct: 0.65   # vertical centre of captions as a fraction of screen height
+  hook_title: true
+  hook_seconds: 3
+
+render:
+  width: 1080
+  height: 1920
+  fps: 30
+  crf: 20
+  preset: veryfast     # veryfast | fast | medium
+  loudness_lufs: -14
+  audio_bitrate: 192k
+  use_nvenc: auto      # auto | true | false
+  workers: auto
+
+output:
+  dir: workspace
+
+upload:
+  enabled: false       # YouTube upload is off until you finish the setup in README
+  privacy: private     # private | unlisted | public
+  schedule_hours_apart: 24
+  category_id: "22"

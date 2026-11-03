@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+build/
+dist/
+
+# Secrets
+.env
+client_secret*.json
+youtube_token.json
+
+# Runtime data / media
+workspace/
+*.mp4
+*.mkv
+*.webm
+*.wav
+*.m4a
+!docs/**/*.png
+
+# Model caches
+models_cache/
+assets/models/*.tflite
+assets/models/*.onnx
+
+# Fonts are auto-downloaded by `clipforge doctor --fix`
+assets/fonts/*.ttf
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

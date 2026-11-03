@@ -1,0 +1,53 @@
+# Decisions log
+
+Every choice made without asking, with the reason. Newest at the bottom of each section.
+
+## Environment (detected 2026-11-03)
+| Item | Found | Decision |
+|---|---|---|
+| Machine | The build ran on the target laptop itself (Windows 11 Pro, Ryzen 7 255, 16 threads, 31 GB RAM), not a cloud sandbox | Everything is tested on the real target |
+| GPU | AMD Radeon 780M (integrated) — no CUDA, no NVENC | CPU paths: Whisper `small` int8, libx264. CUDA/NVENC code paths kept and auto-detected |
+| Python | 3.14 (default) + 3.12 | venv on **3.12**: mediapipe 1.2 / ctranslate2 publish no 3.14 wheels |
+| ffmpeg | missing | Installed `Gyan.FFmpeg` 9.0.2 full build via winget (includes libass). `utils/ffmpeg.py` also finds it in the WinGet packages folder when PATH isn't refreshed yet |
+| yt-dlp | missing | pip dependency (2026.10.26) |
+| Ollama | installed, only `qwen2.5-coder:7b` | Pulled `qwen2.5:7b` (general instruct model, better Hinglish + JSON). `llm.model: auto` prefers general models over coder models |
+| Node | 24.21 | used to build the frontend |
+| PyPI | `pip install numpy` hung on PyPI's JSON metadata endpoint (other packages fine) | numpy 2.5.3 wheel downloaded directly from files.pythonhosted.org, then everything else installed normally |
+
+## Libraries
+- **mediapipe 1.2.0** removed the legacy `mp.solutions` API → use the Tasks `FaceDetector` with the BlazeFace short-range model (auto-downloaded to `assets/models/`).
+- **OpenCV YuNet** (`cv2.FaceDetectorYN`, model from opencv_zoo) is used as fallback when BlazeFace finds no face: BlazeFace short-range is tuned for selfie-distance faces and misses the small faces of wide 2-shot podcast frames.
+- **Fonts**: Montserrat ExtraBold static TTF from the JulietaUla/Montserrat repo (google/fonts only ships a variable font, which libass renders at the default weight); Poppins Bold from google/fonts; Noto Sans Devanagari Bold static from notofonts. All OFL.
+- **LLM HTTP**: plain `httpx` calls to Ollama / Gemini REST / Groq (OpenAI-compatible) — no vendor SDKs needed.
+- **ffmpeg ≥7**: `-filter_complex_script` is deprecated → `-/filter_complex <file>`.
+
+## Pipeline
+- **yt-dlp format**: as specified (`bv*[height<=1080]+ba/b[height<=1080]`) plus `format_sort` preferring H.264/m4a: fastest to decode on CPU and plays in every browser (needed for the web editor).
+- **`--section START-END`** option (CLI + API) to process only part of a video — used for quick tests and useful for very long episodes.
+- **Whisper**: `condition_on_previous_text=False` to avoid hallucination/repetition loops on long audio; VAD min silence 500 ms.
+- **Roman Hinglish is lazy**: only words inside the selected clips are transliterated (≈2–3k words instead of ≈20k for 2 h). On CPU with a 7B model, transliterating a full transcript would take over an hour. Results are cached in `transcript.json` (`roman` field per word).
+- **Transliteration fallback**: if the LLM's word count doesn't match, that batch uses rule-based romanization (indic-transliteration ITRANS + Hinglish clean-up) instead of falling back to Devanagari — mixed scripts inside one caption look broken.
+- **Selection prompt in Latin script for local models**: Devanagari costs ~3× more tokens on Qwen/Llama; the window transcript is fed romanized (rule-based) to Ollama, original script to Gemini/Groq.
+- **Scene detection is lazy**: PySceneDetect only runs on clip ranges ±2 s (cached in `scenes.json` with covered ranges). Full-video detection on a 2 h 1080p file would take 15–25 min on CPU and is only needed for reframing.
+- **Heuristic scoring**: +0.4 per audio-energy peak inside the clip (max 2), −0.8 if the start could not be snapped to a sentence start.
+- **Too-long candidates** are cut at the nearest sentence end within `max_sec` (deterministic, no extra LLM call).
+- **Explicit small `--clips N`** (below `min_count`) is respected — used for tests.
+- **Hand edits win**: if `candidates.json` is newer than the last selection, `select` keeps it unless `--force`.
+- **Re-selection** deletes old renders in `clips/` (ranks would no longer match).
+
+## Reframe
+- 0 faces → `blur` layout in `auto` mode (shows full frame: B-roll, slides, graphics are never cropped away).
+- 2+ faces → split-screen if faces are ≥ 35 % of the width apart or don't both fit inside a 9:16 crop; else one crop centred between them.
+- `blur` layout = every shot blurred-background (predictable when the user explicitly picks it).
+- Tracking: EMA (0.85) + deadzone (4 % width); crop position resets at every camera cut; per-frame `sendcmd` with linear interpolation between 5 fps samples.
+
+## Captions
+- One ASS event per active word; line stays put, active word recoloured + pops (`\t` scale 118 % → 109 %).
+- Positioned at 65 % height, centred slightly left of the frame centre with 140 px kept clear on the right (Reels/Shorts buttons); long lines are shrunk to fit.
+- Hook title: white rounded box (ASS vector drawing) with black text at the top, fades out after 3 s.
+- Uppercase for the "Bold Yellow Pop" / "Green Highlight" presets (common viral style); Devanagari never uppercased.
+
+## Render
+- 2-pass loudnorm per clip (measure, then `linear=true`) → consistent −14 LUFS.
+- Workers: `min(4, cores/4)` parallel libx264 encodes (each x264 is itself multi-threaded); 1 with NVENC.
+- One previous render kept in `_work/NN/previous.mp4` for undo in the web editor.
