@@ -240,8 +240,7 @@ def _summary(video_id: str, rendered: bool = True) -> None:
     for col in ("#", "score", "start", "dur", "title", "file"):
         t.add_column(col)
     for c in cands:
-        d = ws.find_clip_dir(c.rank)
-        f = next(d.glob("*.mp4"), None) if d else None
+        f = ws.find_clip(c.rank)
         t.add_row(str(c.rank), f"{c.score:.1f}", fmt_ts(c.start), f"{c.duration:.0f}s", c.title,
                   f.name if f else ("—" if rendered else ""))
     console.print(t)

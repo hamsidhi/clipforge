@@ -10,11 +10,11 @@ clips:
   max_overlap: 0.3   # drop a candidate overlapping a better one by more than this fraction
 
 whisper:
-  model: auto          # auto -> large-v3 on CUDA, small on CPU. Or: tiny, base, small, medium, large-v3
+  model: auto          # auto -> large-v3 on CUDA, large-v3-turbo on CPU. Or: small, medium, large-v3, large-v3-turbo
   language: hi         # hi, en, or auto
   compute_type: auto   # auto -> float16 on CUDA, int8 on CPU
   vad: true
-  beam_size: 5
+  beam_size: auto      # auto -> 5 on GPU, 1 on CPU
 
 llm:
   provider: ollama     # ollama | gemini | groq | mock
@@ -24,7 +24,7 @@ llm:
   overlap_min: 1
   max_retries: 3
   max_candidates_per_window: 6
-  ollama_url: http://localhost:11434
+  ollama_url: http://127.0.0.1:11434
   timeout_sec: 600
 
 scoring_weights:

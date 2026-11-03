@@ -689,7 +689,7 @@ def estimate(duration: float = 3600, clips: int = 20, provider: Optional[str] = 
 
     cfg = _cfg()
     cuda = cuda_available()
-    whisper_rt = 0.06 if cuda else (0.25 if cpu_count() >= 12 else 0.4)  # fraction of real time (small int8 on CPU)
+    whisper_rt = 0.06 if cuda else (0.5 if cpu_count() >= 12 else 0.9)  # fraction of real time (turbo int8 on CPU, greedy)
     prov = provider or cfg.llm.provider
     llm_per_window = {"ollama": 45 if not cuda else 15, "gemini": 8, "groq": 4, "mock": 0}.get(prov, 30)
     windows = max(1, int(duration / ((cfg.llm.window_min - cfg.llm.overlap_min) * 60)))

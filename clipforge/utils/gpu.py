@@ -47,7 +47,7 @@ def whisper_defaults(model: str, compute_type: str) -> tuple[str, str, str]:
     cuda = cuda_available()
     device = "cuda" if cuda else "cpu"
     if model == "auto":
-        model = "large-v3" if cuda else "small"
+        model = "large-v3" if cuda else "large-v3-turbo"
     if compute_type == "auto":
         compute_type = "float16" if cuda else "int8"
     return model, device, compute_type

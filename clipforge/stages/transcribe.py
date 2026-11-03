@@ -15,6 +15,12 @@ from clipforge.utils.log import ProgressReporter, check_cancel, log
 from clipforge.workspace import Workspace
 
 
+def _threads() -> int:
+    """Physical cores are faster than hyper-threads for CTranslate2."""
+    n = cpu_count()
+    return max(4, n // 2 if n >= 8 else n)
+
+
 def load_wav(path: Path) -> np.ndarray:
     """16 kHz mono PCM WAV -> float32 array. We decode ourselves instead of letting faster-whisper use
     PyAV: faster-whisper 1.2.1 passes `metadata_errors` to av.open(), which PyAV ≥15 removed."""
@@ -32,12 +38,13 @@ def run(ws: Workspace, cfg: WhisperConfig, reporter: ProgressReporter, duration:
     reporter.log(f"Whisper model={model_name} device={device} compute={compute_type} (first run downloads the model)")
     try:
         model = WhisperModel(model_name, device=device, compute_type=compute_type,
-                             cpu_threads=max(4, cpu_count() - 2) if device == "cpu" else 0)
+                             cpu_threads=_threads() if device == "cpu" else 0)
     except Exception as exc:
         if device == "cuda":  # broken CUDA/cuDNN install -> fall back to CPU instead of failing
             log.warning(f"CUDA Whisper failed ({exc}); falling back to CPU int8")
-            model_name = "small" if cfg.model == "auto" else model_name
-            model = WhisperModel(model_name, device="cpu", compute_type="int8", cpu_threads=max(4, cpu_count() - 2))
+            model_name = "large-v3-turbo" if cfg.model == "auto" else model_name
+            device = "cpu"
+            model = WhisperModel(model_name, device="cpu", compute_type="int8", cpu_threads=_threads())
         else:
             raise RuntimeError(f"Could not load Whisper model '{model_name}': {exc}") from exc
 
@@ -45,7 +52,7 @@ def run(ws: Workspace, cfg: WhisperConfig, reporter: ProgressReporter, duration:
     seg_iter, info = model.transcribe(
         load_wav(ws.audio),
         language=language,
-        beam_size=cfg.beam_size,
+        beam_size=(5 if device == "cuda" else 1) if cfg.beam_size == "auto" else int(cfg.beam_size),
         word_timestamps=True,
         vad_filter=cfg.vad,
         vad_parameters={"min_silence_duration_ms": 500},

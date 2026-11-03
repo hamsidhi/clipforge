@@ -187,9 +187,9 @@ export default function Settings() {
         <Card>
           <CardHeader><CardTitle>Transcription</CardTitle></CardHeader>
           <CardContent className="space-y-5">
-            <Row label="Whisper model" hint="auto = large-v3 on NVIDIA GPU, small on CPU">
+            <Row label="Whisper model" hint="auto = large-v3 on NVIDIA GPU, large-v3-turbo on CPU">
               <Sel value={v('whisper', 'model')} onChange={(x) => set('whisper', 'model', x)}
-                options={[['auto', 'Auto'], ['tiny', 'tiny (fastest)'], ['base', 'base'], ['small', 'small'], ['medium', 'medium (better, slow on CPU)'], ['large-v3', 'large-v3 (GPU)']]} />
+                options={[['auto', 'Auto'], ['small', 'small (fast, poor Hindi)'], ['medium', 'medium'], ['large-v3-turbo', 'large-v3-turbo (best on CPU)'], ['large-v3', 'large-v3 (GPU)']]} />
             </Row>
             <Row label="Language">
               <Sel value={v('whisper', 'language')} onChange={(x) => set('whisper', 'language', x)} options={[['hi', 'Hindi / Hinglish'], ['en', 'English'], ['auto', 'Auto-detect']]} />

@@ -12,7 +12,10 @@ it finds nothing are re-checked with OpenCV YuNet, which also finds the small fa
 
 from __future__ import annotations
 
+import contextlib
+import os
 import subprocess
+import sys
 from dataclasses import dataclass
 from statistics import median
 
@@ -35,10 +38,42 @@ class Face:
     score: float
 
 
+@contextlib.contextmanager
+def _quiet_native_stderr():
+    """LiteRT / OpenCV DNN print INFO lines straight to file descriptor 2; hide them while loading."""
+    try:
+        sys.stderr.flush()
+        saved = os.dup(2)
+        null = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(null, 2)
+    except OSError:
+        yield
+        return
+    try:
+        yield
+    finally:
+        os.dup2(saved, 2)
+        os.close(saved)
+        os.close(null)
+
+
+def weight(f: Face) -> float:
+    """Rank faces: big AND confident. Cubing the score stops a low-confidence false detection
+    (poster, pattern on the wall) from beating a slightly smaller real face."""
+    return f.w * f.score ** 3
+
+
 class FaceDetector:
     """MediaPipe BlazeFace with OpenCV YuNet fallback. Works on RGB uint8 frames."""
 
     def __init__(self) -> None:
+        with _quiet_native_stderr():
+            self._init()
+        # first inference also logs (alignment warning) — warm up quietly
+        with _quiet_native_stderr():
+            self.detect(np.zeros((64, 64, 3), np.uint8))
+
+    def _init(self) -> None:
         from clipforge.utils.assets import ensure_model
 
         self.mp = None
@@ -66,15 +101,19 @@ class FaceDetector:
             raise RuntimeError("No face detector available. Run `clipforge doctor --fix` to download the models.")
 
     def detect(self, rgb: np.ndarray) -> list[Face]:
+        """Run both detectors and merge: a face both agree on keeps the higher score; a face only one
+        of them reports must be confident on its own. Low-confidence single hits (posters, patterns)
+        are dropped."""
         h, w = rgb.shape[:2]
-        faces: list[Face] = []
+        mp_faces: list[Face] = []
+        yn_faces: list[Face] = []
         if self.mp:
             img = self._mp_image(image_format=self._mp_format, data=np.ascontiguousarray(rgb))
             for d in self.mp.detect(img).detections:
                 bb = d.bounding_box
-                faces.append(Face((bb.origin_x + bb.width / 2) / w, (bb.origin_y + bb.height / 2) / h,
-                                  bb.width / w, bb.height / h, d.categories[0].score if d.categories else 0.5))
-        if not faces and self.yunet is not None:
+                mp_faces.append(Face((bb.origin_x + bb.width / 2) / w, (bb.origin_y + bb.height / 2) / h,
+                                     bb.width / w, bb.height / h, d.categories[0].score if d.categories else 0.5))
+        if self.yunet is not None:
             import cv2
 
             bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
@@ -82,9 +121,21 @@ class FaceDetector:
             _, dets = self.yunet.detect(bgr)
             for d in dets if dets is not None else []:
                 x, y, bw, bh, score = float(d[0]), float(d[1]), float(d[2]), float(d[3]), float(d[-1])
-                faces.append(Face((x + bw / 2) / w, (y + bh / 2) / h, bw / w, bh / h, score))
-        # drop tiny / low-confidence detections (posters, background people)
-        return [f for f in faces if f.score >= 0.55 and f.w >= 0.025]
+                yn_faces.append(Face((x + bw / 2) / w, (y + bh / 2) / h, bw / w, bh / h, score))
+        merged: list[Face] = []
+        used: set[int] = set()
+        for f in mp_faces:
+            match = next((j for j, g in enumerate(yn_faces) if j not in used
+                          and abs(g.cx - f.cx) < max(f.w, g.w) * 0.6 and abs(g.cy - f.cy) < max(f.h, g.h) * 0.6), None)
+            if match is not None:
+                used.add(match)
+                g = yn_faces[match]
+                merged.append(Face(f.cx, f.cy, f.w, f.h, min(1.0, max(f.score, g.score) + 0.1)))
+            elif f.score >= 0.8 or self.yunet is None:
+                merged.append(f)
+        merged += [g for j, g in enumerate(yn_faces) if j not in used and (g.score >= 0.8 or not self.mp)]
+        # drop tiny / low-confidence detections (background people, posters)
+        return [f for f in merged if f.score >= 0.7 and f.w >= 0.025]
 
 
 def sample_frames(source: str, start: float, end: float, fps: float, src_w: int, src_h: int):
@@ -136,16 +187,20 @@ def plan_shot(samples: list[list[Face]], shot: Scene, cfg: ReframeConfig, crop_w
     n = int(median(counts)) if counts else 0
     if n == 0:
         # occasional detections in a no-face shot: track them if they are consistent, else blur
-        hits = [max(f, key=lambda z: z.w) for f in samples if f]
+        hits = [max(f, key=weight) for f in samples if f]
         if len(hits) >= max(2, len(samples) // 3):
             return CropSegment(start=shot.start, end=shot.end, mode="track",
                                xs=[round(min(hi, max(lo, median(h.cx for h in hits))), 4)])
         return CropSegment(start=shot.start, end=shot.end, mode="blur" if cfg.layout == "auto" else "center", xs=[0.5])
 
     if n >= 2 and cfg.layout in ("auto", "split"):
-        # the two biggest faces, averaged over the shot
-        pairs = [sorted(sorted(f, key=lambda z: -z.w)[:2], key=lambda z: z.cx) for f in samples if len(f) >= 2]
-        if pairs:
+        # the two biggest faces, averaged over the shot. Ignore pairs where the 2nd "face" is much smaller
+        # (photos/posters on the wall, people far in the background) and very short shots (jarring).
+        pairs = [sorted(sorted(f, key=lambda z: -weight(z))[:2], key=lambda z: z.cx) for f in samples if len(f) >= 2]
+        pairs = [p for p in pairs if min(p[0].w, p[1].w) / max(p[0].w, p[1].w) >= 0.55 and min(p[0].score, p[1].score) >= 0.75
+                 and abs(p[1].cx - p[0].cx) > 1.2 * max(p[0].w, p[1].w)]
+        long_enough = shot.end - shot.start >= 1.5
+        if long_enough and len(pairs) >= max(2, int(0.6 * len(samples))):
             left = Face(*(median(getattr(p[0], k) for p in pairs) for k in ("cx", "cy", "w", "h", "score")))
             right = Face(*(median(getattr(p[1], k) for p in pairs) for k in ("cx", "cy", "w", "h", "score")))
             dist = right.cx - left.cx
@@ -157,8 +212,8 @@ def plan_shot(samples: list[list[Face]], shot: Scene, cfg: ReframeConfig, crop_w
             mid = (left.cx + right.cx) / 2
             return CropSegment(start=shot.start, end=shot.end, mode="track", xs=[round(min(hi, max(lo, mid)), 4)])
 
-    # single subject (or layout=track): follow the biggest face
-    xs: list[float | None] = [max(f, key=lambda z: z.w).cx if f else None for f in samples]
+    # single subject (or layout=track): follow the most prominent face
+    xs: list[float | None] = [max(f, key=weight).cx if f else None for f in samples]
     smooth = smooth_track(xs, cfg.smoothing, cfg.deadzone, lo, hi)
     return CropSegment(start=shot.start, end=shot.end, mode="track", xs=smooth)
 

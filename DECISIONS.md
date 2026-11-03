@@ -10,7 +10,7 @@ Every choice made without asking, with the reason. Newest at the bottom of each 
 | Python | 3.14 (default) + 3.12 | venv on **3.12**: mediapipe 1.2 / ctranslate2 publish no 3.14 wheels |
 | ffmpeg | missing | Installed `Gyan.FFmpeg` 9.0.2 full build via winget (includes libass). `utils/ffmpeg.py` also finds it in the WinGet packages folder when PATH isn't refreshed yet |
 | yt-dlp | missing | pip dependency (2026.10.26) |
-| Ollama | installed, only `qwen2.5-coder:7b` | Pulled `qwen2.5:7b` (general instruct model, better Hinglish + JSON). `llm.model: auto` prefers general models over coder models |
+| Ollama | installed, only `qwen2.5-coder:7b` (reached via `127.0.0.1`, not `localhost`: on Windows, IPv6-first resolution of localhost made 5 s health checks time out) | Pulled `qwen2.5:7b` (general instruct model, better Hinglish + JSON). `llm.model: auto` prefers general models over coder models |
 | Node | 24.21 | used to build the frontend |
 | PyPI | `pip install numpy` hung on PyPI's JSON metadata endpoint (other packages fine) | numpy 2.5.3 wheel downloaded directly from files.pythonhosted.org, then everything else installed normally |
 
@@ -24,6 +24,13 @@ Every choice made without asking, with the reason. Newest at the bottom of each 
 ## Pipeline
 - **yt-dlp format**: as specified (`bv*[height<=1080]+ba/b[height<=1080]`) plus `format_sort` preferring H.264/m4a: fastest to decode on CPU and plays in every browser (needed for the web editor).
 - **`--section START-END`** option (CLI + API) to process only part of a video — used for quick tests and useful for very long episodes.
+- **Whisper on CPU = `large-v3-turbo`, greedy (beam 1)** instead of `small`/`medium`. Measured on this laptop on Hinglish
+  audio: `small` int8 produced unusable gibberish Devanagari (and still ran ~1.5× real time with beam 5), while
+  `large-v3-turbo` int8 + greedy produced correct Hinglish at ≈0.5× real time (120 s of audio in 58 s, 8 threads).
+  GPU keeps `large-v3` + beam 5. `whisper.model` / `whisper.beam_size` override both.
+- **Whisper threads** = physical cores (logical/2): CTranslate2 is slower with hyper-threads.
+- **Audio is decoded by us** (wave → numpy) and passed to faster-whisper as an array: faster-whisper 1.2.1 calls
+  `av.open(..., metadata_errors=...)`, which PyAV 19 (pulled in by pip) rejects.
 - **Whisper**: `condition_on_previous_text=False` to avoid hallucination/repetition loops on long audio; VAD min silence 500 ms.
 - **Roman Hinglish is lazy**: only words inside the selected clips are transliterated (≈2–3k words instead of ≈20k for 2 h). On CPU with a 7B model, transliterating a full transcript would take over an hour. Results are cached in `transcript.json` (`roman` field per word).
 - **Transliteration fallback**: if the LLM's word count doesn't match, that batch uses rule-based romanization (indic-transliteration ITRANS + Hinglish clean-up) instead of falling back to Devanagari — mixed scripts inside one caption look broken.

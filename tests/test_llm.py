@@ -55,7 +55,10 @@ def test_mock_select_parses_lines():
 def test_romanize_word():
     assert romanize_word("hello") == "hello"
     assert romanize_word("बात") == "baat"
-    assert romanize_word("क्या") == "kyaa"
+    assert romanize_word("क्या") == "kya"
+    assert romanize_word("एक") == "ek"
+    assert romanize_word("की") == "ki"
+    assert romanize_word("है.") == "hai."
 
 
 def test_pick_model_prefers_general():
@@ -80,3 +83,20 @@ def test_hashtags_and_slug():
     assert normalize_hashtags("#Money, startup India") == ["#money", "#startup", "#india"]
     assert slugify("Kya Baat Hai! ₹100 Crore?") == "kya-baat-hai-100-crore"
     assert slugify("क्या") == "clip"
+
+
+def test_romanize_keyed_output_tolerates_missing_words():
+    from clipforge.models import Word
+    from clipforge.stages.romanize import romanize_words
+    from clipforge.utils.log import NullReporter
+
+    class Partial(LLMProvider):
+        name = "partial"
+
+        def generate(self, prompt, *, system=None, json_mode=True, task=""):
+            return '{"0": "kya", "2": "hai"}'  # index 1 missing
+
+    ws = [Word(start=0, end=1, text="क्या"), Word(start=1, end=2, text="बात"), Word(start=2, end=3, text="है"),
+          Word(start=3, end=4, text="okay")]
+    romanize_words(ws, Partial("x"), NullReporter())
+    assert [w.roman for w in ws] == ["kya", "baat", "hai", "okay"]

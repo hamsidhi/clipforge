@@ -95,7 +95,7 @@ def run_checks(fix_assets: bool = False) -> list[Check]:
     from clipforge.utils.gpu import cuda_available, nvenc_available
 
     cuda = cuda_available()
-    checks.append(Check("CUDA GPU (Whisper)", cuda, "CUDA available" if cuda else "CPU only — will use small/int8 (slower)",
+    checks.append(Check("CUDA GPU (Whisper)", cuda, "CUDA available" if cuda else "CPU only — large-v3-turbo int8 (≈0.5× real time)",
                         "Optional: NVIDIA GPU + CUDA 12 + cuDNN 9, or use the Colab notebook", required=False))
     nv = nvenc_available()
     checks.append(Check("NVENC (fast encode)", nv, "h264_nvenc works" if nv else "using libx264 (CPU)",

@@ -8,7 +8,9 @@ Podcast: {podcast_title}
 Channel: {channel}
 {chapter_line}
 
-Find up to {max_candidates} moments that would make GREAT standalone vertical shorts.
+Find the {max_candidates} best moments in this part that could work as standalone vertical shorts.
+Return at least 4 candidates (score weaker ones honestly lower — a ranking step later keeps only the best);
+return fewer only if this part is mostly intro, ads or small talk.
 
 What makes a great podcast short:
 1. HOOK in the first 1-3 seconds — a bold claim, a provocative question, a surprising number,
@@ -28,7 +30,8 @@ Rules for the JSON:
 - `topic`: 1-3 lowercase words, e.g. "startup funding".
 - `why`: one sentence on why this will perform.
 - `scores`: integers 0-10 for hook, standalone, emotion, value, controversy. Be strict — 9-10 only for truly viral moments.
-- If nothing in this part is good enough, return {{"candidates": []}}.
+- Candidates must not overlap each other much; spread them across this part of the conversation.
+- `title` and `hook` should be in the conversation's language mix (Hinglish in Latin script is great).
 
 Respond with ONLY this JSON (no prose, no markdown):
 {{"candidates":[{{"start":123.4,"end":168.9,"hook":"...","title":"...","topic":"...","why":"...",

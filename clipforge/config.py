@@ -48,7 +48,7 @@ class WhisperConfig(_Section):
     language: str = "hi"
     compute_type: str = "auto"
     vad: bool = True
-    beam_size: int = 5
+    beam_size: int | Literal["auto"] = "auto"  # auto -> 5 on GPU, 1 (greedy, ~2x faster) on CPU
 
 
 class LLMConfig(_Section):
@@ -59,7 +59,7 @@ class LLMConfig(_Section):
     overlap_min: float = 1
     max_retries: int = 3
     max_candidates_per_window: int = 6
-    ollama_url: str = "http://localhost:11434"
+    ollama_url: str = "http://127.0.0.1:11434"
     timeout_sec: int = 600
 
 

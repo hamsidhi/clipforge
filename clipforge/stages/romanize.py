@@ -2,11 +2,12 @@
 
 Done lazily, only for words inside selected clips (a 2-hour transcript has ~20k words; the clips
 need ~2-3k) — this keeps a local 7B model on CPU fast. Results are cached in transcript.json.
+
+The LLM answers with an index-keyed object ({"0": "kya", "1": "baat", …}) rather than a list, so one
+dropped or merged word only affects that word (it falls back to rule-based romanization), not the batch.
 """
 
 from __future__ import annotations
-
-import json
 
 from pydantic import BaseModel
 
@@ -16,24 +17,23 @@ from clipforge.models import Transcript, Word
 from clipforge.utils.log import ProgressReporter, check_cancel, log
 from clipforge.utils.text import is_devanagari
 
-BATCH = 60
+BATCH = 40
 
-PROMPT = """You transliterate Hindi/Hinglish podcast words from Devanagari into natural Roman Hinglish,
-the way Indians type on WhatsApp/Instagram (e.g. "क्या बात है" -> "kya baat hai", "बिज़नेस" -> "business",
-"पैसे" -> "paise", "ज़िंदगी" -> "zindagi"). NOT formal ISO/IAST transliteration — no diacritics.
-English words written in Devanagari must become the normal English spelling.
-Words already in Latin script stay exactly as they are. Keep punctuation attached to the word.
+PROMPT = """Transliterate these Hindi/Hinglish podcast words from Devanagari into natural Roman Hinglish,
+the way Indians type on WhatsApp/Instagram: "क्या"->"kya", "बात"->"baat", "है"->"hai", "एक"->"ek",
+"की"->"ki", "पैसे"->"paise", "ज़िंदगी"->"zindagi", "करना"->"karna". NOT formal ISO/IAST — no diacritics.
+English words written in Devanagari become normal English spelling: "बिज़नेस"->"business", "वाइन"->"wine".
+Keep punctuation attached to the word.
 
-Return JSON: {{"roman": [...]}} with EXACTLY {n} strings — one per input word, same order.
-Never merge or split words.
-
-<words>
+Words (index: word), shown in sentence order for context:
 {words}
-</words>"""
+
+Return ONLY a JSON object mapping EVERY index to its romanized word, e.g. {{"0": "kya", "1": "baat"}}.
+One word in, one word out — never merge or split words."""
 
 
 class RomanOut(BaseModel):
-    roman: list[str]
+    model_config = {"extra": "allow"}
 
 
 def _fallback(words: list[Word]) -> None:
@@ -50,6 +50,7 @@ def romanize_words(words: list[Word], llm: LLMProvider | None, reporter: Progres
     todo = [w for w in todo if w.roman is None]
     if not todo:
         return 0
+    misses = 0
     for i in range(0, len(todo), BATCH):
         check_cancel(reporter)
         batch = todo[i : i + BATCH]
@@ -57,21 +58,27 @@ def romanize_words(words: list[Word], llm: LLMProvider | None, reporter: Progres
         if llm is None:
             _fallback(batch)
             continue
-        texts = [w.text for w in batch]
+        listing = "\n".join(f"{k}: {w.text}" for k, w in enumerate(batch))
         try:
-            out = llm.complete_json(
-                PROMPT.format(n=len(texts), words=json.dumps(texts, ensure_ascii=False)),
-                RomanOut, retries=retries, task="transliterate",
-            )
-            if len(out.roman) != len(texts):
-                raise LLMError(f"word count mismatch ({len(out.roman)} != {len(texts)})")
-            for w, r in zip(batch, out.roman):
-                r = r.strip()
-                # guard against the model dropping a word or answering in Devanagari again
-                w.roman = r if r and not is_devanagari(r) else romanize_word(w.text)
+            out = llm.complete_json(PROMPT.format(words=listing), RomanOut, retries=retries, task="transliterate")
+            data = out.model_dump()
+            if isinstance(data.get("roman"), dict):  # tolerate {"roman": {...}}
+                data = data["roman"]
+            elif isinstance(data.get("roman"), list):  # tolerate the list form if the count matches
+                data = {str(k): v for k, v in enumerate(data["roman"])} if len(data["roman"]) == len(batch) else {}
         except LLMError as exc:
             log.warning(f"Transliteration batch fell back to rule-based romanization: {exc}")
-            _fallback(batch)
+            data = {}
+        for k, w in enumerate(batch):
+            r = str(data.get(str(k), "")).strip()
+            # guard: missing, still Devanagari, or obviously merged words -> rule-based for this word only
+            if not r or is_devanagari(r) or len(r.split()) > 2:
+                w.roman = romanize_word(w.text)
+                misses += 1
+            else:
+                w.roman = r
+    if misses:
+        log.info(f"Romanization: {misses}/{len(todo)} words used the rule-based fallback")
     return len(todo)
 
 

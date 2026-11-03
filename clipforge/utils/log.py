@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Callable, Protocol
 
 from rich.console import Console
 from rich.logging import RichHandler
 
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+# MediaPipe / TFLite (glog + absl) print INFO lines to stderr; keep them quiet
+os.environ.setdefault("GLOG_minloglevel", "2")
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 console = Console(highlight=False)
 
 logging.basicConfig(

@@ -241,5 +241,6 @@ def _hook_events(hook: str, seconds: float, width: int) -> list[str]:
     box = f"Dialogue: 0,{ass_ts(0)},{end},HookBox,,0,0,0,,{{\\an7\\pos({x0},{y0}){fade}\\p1}}{_rounded_rect(box_w, box_h, 28)}{{\\p0}}"
     fs = size if longest * size * 0.66 + 2 * pad_x <= width - 80 else int((width - 80 - 2 * pad_x) / (longest * 0.66))
     text = "\\N".join(_escape(line) for line in lines)
-    txt = f"Dialogue: 1,{ass_ts(0)},{end},Hook,,0,0,0,,{{\\an5\\pos({width // 2},{y0 + box_h // 2}){fade}\\fs{fs}}}{text}"
+    font = f"\\fn{FONTS[DEVANAGARI_FONT].family}\\b1" if is_devanagari(hook) else ""
+    txt = f"Dialogue: 1,{ass_ts(0)},{end},Hook,,0,0,0,,{{\\an5\\pos({width // 2},{y0 + box_h // 2}){fade}\\fs{fs}{font}}}{text}"
     return [box, txt]

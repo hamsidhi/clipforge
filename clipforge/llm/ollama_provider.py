@@ -10,7 +10,7 @@ from clipforge.llm.base import LLMError, LLMProvider
 PREFERRED = ["qwen3", "qwen2.5:14b", "qwen2.5:7b", "qwen2.5", "llama3.1", "llama3.2", "gemma3", "gemma2", "mistral", "phi4"]
 
 
-def list_ollama_models(url: str = "http://localhost:11434") -> list[str]:
+def list_ollama_models(url: str = "http://127.0.0.1:11434") -> list[str]:
     r = httpx.get(f"{url.rstrip('/')}/api/tags", timeout=5)
     r.raise_for_status()
     return [m["name"] for m in r.json().get("models", [])]
@@ -32,7 +32,7 @@ class OllamaProvider(LLMProvider):
     name = "ollama"
 
     def __init__(self, model: str = "auto", temperature: float = 0.3, timeout: int = 600,
-                 url: str = "http://localhost:11434") -> None:
+                 url: str = "http://127.0.0.1:11434") -> None:
         self.url = url.rstrip("/")
         if model == "auto":
             try:
