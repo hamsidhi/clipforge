@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Check, ChevronLeft, ChevronRight, Loader2, RefreshCw, Save, Send, Undo2, X } from 'lucide-react'
@@ -95,8 +95,13 @@ function WordEditor({ clip, edits, onChange }: { clip: ClipDetail; edits: Record
   )
 }
 
-export default function ClipEditor() {
+/** Remount per clip: Prev/Next must not carry the draft, "rendering" state or word editor over. */
+export default function ClipEditorPage() {
   const clipId = useParams().clipId!
+  return <ClipEditor key={clipId} clipId={clipId} />
+}
+
+function ClipEditor({ clipId }: { clipId: string }) {
   const jobId = Number(clipId.split('-')[0])
   const nav = useNavigate()
   const qc = useQueryClient()
@@ -105,10 +110,35 @@ export default function ClipEditor() {
   const [draft, setDraft] = useState<Draft | null>(null)
   const [safeZone, setSafeZone] = useState(true)
   const [rendering, setRendering] = useState(false)
+  const serverRef = useRef<ClipDetail | null>(null) // server version the draft was based on
+  const videoRef = useRef<HTMLVideoElement>(null)
 
+  // Take server data into the draft, but never throw away unsaved edits (a refetch after Approve or a
+  // finished render must not wipe a half-edited caption)
   useEffect(() => {
-    if (clip) setDraft(draftOf(clip))
+    if (!clip) return
+    setDraft((prev) => {
+      const base = serverRef.current
+      const unsaved = prev && base && JSON.stringify(draftOf(base)) !== JSON.stringify(prev)
+      serverRef.current = clip
+      return unsaved ? prev : draftOf(clip)
+    })
   }, [clip])
+
+  const adoptServer = (c: ClipDetail | undefined) => {
+    if (!c) return
+    serverRef.current = c
+    setDraft(draftOf(c))
+  }
+
+  /** On Windows a file the <video> is still streaming can't be replaced: let go of it first. */
+  const releaseVideo = () => {
+    const v = videoRef.current
+    if (!v) return
+    v.pause()
+    v.removeAttribute('src')
+    v.load()
+  }
 
   const { stages } = useJobEvents(jobId, (e) => {
     if (e.type === 'render_done' && e.ranks?.includes(clip?.rank ?? -1)) {
@@ -143,7 +173,7 @@ export default function ClipEditor() {
       return api.patchClip(clipId, body)
     },
     onSuccess: async () => {
-      await refetch()
+      adoptServer((await refetch()).data) // the server may have snapped times: show its version
       qc.invalidateQueries({ queryKey: ['clips', jobId] })
       qc.invalidateQueries({ queryKey: ['shots', clipId] })
     },
@@ -152,6 +182,7 @@ export default function ClipEditor() {
   const render = useMutation({
     mutationFn: async () => {
       if (dirty) await save.mutateAsync()
+      releaseVideo()
       return api.renderClip(clipId)
     },
     onSuccess: () => {
@@ -161,10 +192,13 @@ export default function ClipEditor() {
     onError: (e) => toast.error(e.message),
   })
   const undo = useMutation({
-    mutationFn: () => api.undoClip(clipId),
-    onSuccess: () => {
+    mutationFn: () => {
+      releaseVideo()
+      return api.undoClip(clipId)
+    },
+    onSuccess: async () => {
       toast.success('Restored previous version')
-      refetch()
+      adoptServer((await refetch()).data)
       qc.invalidateQueries({ queryKey: ['clips', jobId] })
     },
     onError: (e) => toast.error(e.message),
@@ -205,6 +239,7 @@ export default function ClipEditor() {
         {/* left: phone preview */}
         <div className="space-y-4">
           <PhoneFramePlayer
+            ref={videoRef}
             src={clip.video_url}
             poster={clip.thumbnail_url}
             safeZone={safeZone}

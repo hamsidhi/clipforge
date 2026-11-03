@@ -16,6 +16,7 @@ from clipforge.config import Config
 from clipforge.models import CropPlan, CropSegment
 from clipforge.utils.ffmpeg import escape_filter_path, measure_loudness, run_ffmpeg
 from clipforge.utils.gpu import nvenc_available
+from clipforge.workspace import safe_replace
 
 
 def _even(v: float) -> int:
@@ -184,7 +185,7 @@ def render_clip(source: Path, start: float, end: float, plan: CropPlan, ass_path
     ]
     try:
         run_ffmpeg(args, duration=duration, on_progress=on_progress, cancel=cancel, cwd=work)
-        tmp.replace(out)
+        safe_replace(tmp, out)
     finally:
         tmp.unlink(missing_ok=True)
     return out

@@ -19,10 +19,18 @@ from clipforge.models import CandidateFile, ClipCandidate, ClipMetadata, CropPla
 from clipforge.utils.ffmpeg import Timer, extract_frame
 from clipforge.utils.gpu import cpu_count, nvenc_available
 from clipforge.utils.log import NullReporter, ProgressReporter, check_cancel, log
-from clipforge.workspace import Workspace, fingerprint, video_id_for
+from clipforge.workspace import Workspace, fingerprint, safe_replace, video_id_for
 
 STAGES = ["download", "transcribe", "analyze", "select", "reframe", "captions", "render"]
 _render_lock = threading.Lock()
+_cand_locks: dict[str, threading.RLock] = {}
+_cand_locks_guard = threading.Lock()
+
+
+def candidates_lock(video_id: str) -> threading.RLock:
+    """Per-video lock for read-modify-write of candidates.json (web edits arrive on parallel threads)."""
+    with _cand_locks_guard:
+        return _cand_locks.setdefault(video_id, threading.RLock())
 
 
 # ----------------------------------------------------------------------------- workspace helpers
@@ -277,7 +285,7 @@ def render(ws: Workspace, cfg: Config, reporter: ProgressReporter | None = None,
             for old in ws.clips_dir.glob(f"{c.rank:02d}_*.mp4"):
                 if (work / "render.json").exists():
                     shutil.copy2(work / "render.json", work / "previous.json")
-                    old.replace(work / "previous.mp4")
+                    safe_replace(old, work / "previous.mp4")
                 else:
                     old.unlink(missing_ok=True)
 

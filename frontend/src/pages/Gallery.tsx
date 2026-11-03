@@ -57,7 +57,7 @@ export default function Gallery() {
     onError: (e) => toast.error(e.message),
   })
   const renderAll = useMutation({
-    mutationFn: () => api.renderAll(jobId),
+    mutationFn: () => api.renderAll(jobId, counts.stale ? { only_stale: true } : {}),
     onSuccess: () => toast.success('Rendering queued — clips update as they finish'),
     onError: (e) => toast.error(e.message),
   })

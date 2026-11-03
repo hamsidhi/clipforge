@@ -75,13 +75,23 @@ export function useJobEvents(jobId: number, onEvent?: (e: JobEvent) => void) {
 
   useEffect(() => {
     const es = new EventSource(`/api/jobs/${jobId}/events`)
-    const seen = new Set<number>()
+    let seen = new Set<number>()
+    let bootId = ''
+    // events up to replayUntil are history replayed on (re)connect: they rebuild the stepper/log,
+    // but must not fire callbacks again (toasts like "Re-render finished" for old renders)
+    let replayUntil = 0
     const handle = (ev: JobEvent) => {
-      if ('seq' in ev) {
+      if (ev.type === 'snapshot') {
+        if (ev.boot_id !== bootId) {
+          seen = new Set() // server restarted: event numbers start again at 1
+          bootId = ev.boot_id
+        }
+        replayUntil = ev.last_seq
+      } else {
         if (seen.has(ev.seq)) return
         seen.add(ev.seq)
       }
-      cb.current?.(ev)
+      if (ev.type === 'snapshot' || ev.seq > replayUntil) cb.current?.(ev)
       switch (ev.type) {
         case 'snapshot':
           setStages(initialStages(ev.job))

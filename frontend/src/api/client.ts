@@ -46,7 +46,7 @@ export const api = {
   cancelJob: (id: number) => request<{ ok: boolean }>(`/api/jobs/${id}/cancel`, { method: 'POST' }),
   retryJob: (id: number) => request<Job>(`/api/jobs/${id}/retry`, { method: 'POST' }),
   clips: (jobId: number) => request<Clip[]>(`/api/jobs/${jobId}/clips`),
-  renderAll: (jobId: number, body: { ranks?: number[] | null; force?: boolean; only_approved?: boolean } = {}) =>
+  renderAll: (jobId: number, body: { ranks?: number[] | null; force?: boolean; only_approved?: boolean; only_stale?: boolean } = {}) =>
     request<{ ok: boolean }>(`/api/jobs/${jobId}/render-all`, { method: 'POST', body: json(body) }),
   bulkApprove: (jobId: number, minScore: number, approve = true) =>
     request<{ changed: number }>(`/api/jobs/${jobId}/approve`, { method: 'POST', body: json({ min_score: minScore, approve }) }),

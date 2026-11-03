@@ -43,3 +43,16 @@ def test_escape_filter_path_windows_drive(tmp_path):
     assert "\\" not in p.replace("\\:", "").replace("\\'", "")
     if ":" in str(tmp_path):
         assert "\\:" in p
+
+
+def test_save_config_keeps_comments(tmp_path):
+    from clipforge.config import DEFAULT_CONFIG_PATH, save_config
+
+    p = tmp_path / "config.yaml"
+    p.write_text(DEFAULT_CONFIG_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+    cfg = load_config(p).with_overrides({"clips.count": 17, "captions.highlight_color": "#FF0000", "llm.model": "qwen2.5:7b"})
+    save_config(cfg, p)
+    text = p.read_text(encoding="utf-8")
+    assert "# how many clips to output" in text  # comment kept
+    again = load_config(p)
+    assert again.clips.count == 17 and again.captions.highlight_color == "#FF0000" and again.llm.model == "qwen2.5:7b"

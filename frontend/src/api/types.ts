@@ -184,7 +184,7 @@ export interface SettingsResponse {
 }
 
 export type JobEvent =
-  | { type: 'snapshot'; job: Job }
+  | { type: 'snapshot'; job: Job; last_seq: number; boot_id: string }
   | { type: 'stage'; stage: string; status: string; message: string; seq: number }
   | { type: 'progress'; stage: string; progress: number; eta_sec: number | null; message: string; seq: number }
   | { type: 'log'; level: string; message: string; ts: number; seq: number }

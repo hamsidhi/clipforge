@@ -106,3 +106,25 @@ def test_bad_inputs(client):
     assert c.get("/api/clips/abc").status_code == 400
     assert c.get("/api/presets").status_code == 200
     assert json.loads(c.get("/api/estimate?duration=3600").text)["total_sec"] > 0
+
+
+def test_unapprove_and_upload_retry(client):
+    c, root = client
+    _seed(root, "vid2")
+    from clipforge.api import db
+
+    with db.session() as s:
+        job = db.Job(source="x.mp4", video_id="vid2", title="T", status="done")
+        s.add(job)
+        s.commit()
+        s.refresh(job)
+    cid = f"{job.id}-1"
+    assert c.patch(f"/api/clips/{cid}", json={"approved": True}).json()["approved"] is True
+    assert c.patch(f"/api/clips/{cid}", json={"approved": None}).json()["approved"] is None  # back to review
+
+    up = c.post("/api/uploads", json={"filename": "v.mp4", "size": 8}).json()["upload_id"]
+    assert c.put(f"/api/uploads/{up}?offset=0", content=b"abc").status_code == 200  # partial chunk "lost"
+    assert c.put(f"/api/uploads/{up}?offset=0", content=b"abcd").status_code == 200  # retry same offset
+    assert c.put(f"/api/uploads/{up}?offset=4", content=b"efgh").json()["received"] == 8
+    assert c.post(f"/api/uploads/{up}/complete").status_code == 200
+    assert c.put("/api/uploads/..%5C..%5Cconfig?offset=0", content=b"x").status_code == 404

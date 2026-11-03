@@ -7,6 +7,7 @@ clear message instead of being silently ignored.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any, Literal
 
@@ -178,10 +179,50 @@ def load_config(path: Path | str | None = None) -> Config:
         raise ConfigError(f"{path} has invalid values:\n{exc}") from exc
 
 
+_KEY_LINE = re.compile(
+    r"""^(?P<indent>\s+)(?P<key>[A-Za-z_][\w]*):(?P<sp>\s*)(?P<value>"[^"]*"|'[^']*'|[^#\n]*?)(?P<comment>\s+#.*)?$"""
+)
+_SECTION_LINE = re.compile(r"^(?P<key>[A-Za-z_][\w]*):\s*(#.*)?$")
+
+
+def _yaml_scalar(v: Any) -> str:
+    return yaml.safe_dump(v, default_flow_style=True, allow_unicode=True).strip().removesuffix("\n...").strip()
+
+
+def update_yaml_text(text: str, data: dict[str, dict[str, Any]]) -> tuple[str, bool]:
+    """Change values in a two-level YAML file in place, keeping comments and layout.
+
+    Returns (new_text, complete) — complete is False if some key wasn't found in the text."""
+    remaining = {(s, k) for s, vals in data.items() for k in vals}
+    out: list[str] = []
+    section = None
+    for line in text.splitlines():
+        m = _SECTION_LINE.match(line)
+        if m:
+            section = m.group("key")
+            out.append(line)
+            continue
+        m = _KEY_LINE.match(line)
+        if m and section in data and m.group("key") in data[section]:
+            key = m.group("key")
+            remaining.discard((section, key))
+            new_val = _yaml_scalar(data[section][key])
+            out.append(f"{m.group('indent')}{key}:{m.group('sp') or ' '}{new_val}{m.group('comment') or ''}")
+            continue
+        out.append(line)
+    return "\n".join(out) + "\n", not remaining
+
+
 def save_config(cfg: Config, path: Path | str | None = None) -> None:
-    """Write the config back to YAML (used by the Settings page)."""
+    """Write the config back to YAML (Settings page), keeping the comments in config.yaml."""
     path = Path(path) if path else DEFAULT_CONFIG_PATH
-    path.write_text(yaml.safe_dump(cfg.model_dump(mode="json"), sort_keys=False, allow_unicode=True), encoding="utf-8")
+    data = cfg.model_dump(mode="json")
+    if path.exists():
+        text, complete = update_yaml_text(path.read_text(encoding="utf-8"), data)
+        if complete:
+            path.write_text(text, encoding="utf-8")
+            return
+    path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
 
 
 def load_secrets() -> Secrets:
@@ -191,6 +232,8 @@ def load_secrets() -> Secrets:
 def save_secret(name: str, value: str) -> None:
     """Upsert KEY=value in .env and the current process environment."""
     name = name.upper()
+    if any(ch in value or ch in name for ch in "\r\n"):
+        raise ValueError("API keys must be a single line")
     lines: list[str] = []
     if ENV_PATH.exists():
         lines = ENV_PATH.read_text(encoding="utf-8").splitlines()

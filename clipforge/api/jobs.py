@@ -1,8 +1,9 @@
 """Background job queue (no Redis/Celery): one worker thread runs heavy tasks one at a time.
 
 Tasks:
-  ("pipeline", job_id, {})            full run (resumes from cache — this is also "retry")
-  ("render", job_id, {"ranks": [..]}) re-render some clips after edits (+ refresh metadata)
+  pipeline  full run (resumes from cache — this is also "retry")
+  render    re-render some clips after edits (+ refresh metadata)
+Each task has its own id, so cancelling one task never affects a task queued later for the same job.
 Progress/log events are kept in a per-job ring buffer and pushed to SSE subscribers.
 """
 
@@ -14,6 +15,7 @@ import queue
 import threading
 import time
 import traceback
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -47,12 +49,22 @@ class JobChannel:
     seq: int = 0
 
 
+@dataclass(eq=False)
+class Task:
+    id: int
+    kind: str  # pipeline | render
+    job_id: int
+    payload: dict
+
+
 class ApiReporter:
     """ProgressReporter that writes to SQLite (throttled) and publishes SSE events."""
 
-    def __init__(self, manager: "JobManager", job_id: int) -> None:
+    def __init__(self, manager: "JobManager", task: Task, cfg: Config) -> None:
         self.m = manager
-        self.job_id = job_id
+        self.job_id = task.job_id
+        self.task_id = task.id
+        self.cfg = cfg
         self._last_db = 0.0
         self.stage_name = ""
 
@@ -63,6 +75,20 @@ class ApiReporter:
         self.m.publish(self.job_id, {"type": "stage", "stage": name, "status": status, "message": message})
         if message or status != "running":
             self.log(f"{name}: {status}{' — ' + message if message else ''}")
+        if name == "download" and status in ("done", "skipped"):
+            self._fill_job_info()
+
+    def _fill_job_info(self) -> None:
+        """Show title/duration on the dashboard right after the download, not only after transcription."""
+        job = db.get_job(self.job_id)
+        if not job or not job.video_id:
+            return
+        try:
+            info = json.loads((self.cfg.workspace / job.video_id / "info.json").read_text(encoding="utf-8"))
+            db.update_job(self.job_id, title=info.get("title", ""), channel=info.get("channel", ""),
+                          duration=float(info.get("duration") or 0))
+        except (OSError, ValueError):
+            pass
 
     def progress(self, fraction: float, eta_sec: float | None = None, message: str = "") -> None:
         self.m.publish(self.job_id, {"type": "progress", "stage": self.stage_name, "progress": round(fraction, 4),
@@ -77,7 +103,7 @@ class ApiReporter:
         self.m.publish(self.job_id, {"type": "log", "level": level, "message": message, "ts": time.time()})
 
     def cancelled(self) -> bool:
-        return self.job_id in self.m.cancel_flags
+        return self.task_id in self.m.cancelled_tasks
 
     def clip_done(self, rank: int) -> None:
         self.m.publish(self.job_id, {"type": "clip_done", "rank": rank})
@@ -85,12 +111,14 @@ class ApiReporter:
 
 class JobManager:
     def __init__(self) -> None:
-        self.q: queue.Queue[tuple[str, int, dict]] = queue.Queue()
+        self.q: queue.Queue[Task] = queue.Queue()
         self.channels: dict[int, JobChannel] = collections.defaultdict(JobChannel)
-        self.cancel_flags: set[int] = set()
-        self.current: tuple[str, int] | None = None
-        self.pending: list[tuple[str, int]] = []
+        self.cancelled_tasks: set[int] = set()
+        self.current: Task | None = None
+        self.pending: list[Task] = []
         self.lock = threading.Lock()
+        self._next_id = 0
+        self.boot_id = uuid.uuid4().hex[:8]  # lets clients notice a server restart (event seq restarts at 1)
         self.thread = threading.Thread(target=self._worker, name="clipforge-worker", daemon=True)
 
     # -------------------------------------------------------------- lifecycle
@@ -101,26 +129,38 @@ class JobManager:
                 db.update_job(job.id, status="failed", error="Interrupted (server restarted). Click Retry — finished stages are reused.")
         self.thread.start()
 
-    def submit(self, kind: str, job_id: int, payload: dict | None = None) -> None:
-        self.cancel_flags.discard(job_id)
+    def submit(self, kind: str, job_id: int, payload: dict | None = None) -> int:
         with self.lock:
-            self.pending.append((kind, job_id))
+            self._next_id += 1
+            task = Task(self._next_id, kind, job_id, payload or {})
+            self.pending.append(task)
         if kind == "pipeline":
             db.update_job(job_id, status="queued", error="", stage="", progress=0, finished_at=None)
         self.publish(job_id, {"type": "status", "status": "queued", "kind": kind})
-        self.q.put((kind, job_id, payload or {}))
+        self.q.put(task)
+        return task.id
 
     def cancel(self, job_id: int) -> None:
-        self.cancel_flags.add(job_id)
+        """Cancel the running and the queued tasks of this job."""
         with self.lock:
-            queued_only = any(j == job_id for _, j in self.pending) and not (self.current and self.current[1] == job_id)
-        if queued_only:
-            db.update_job(job_id, status="cancelled")
-            self.publish(job_id, {"type": "status", "status": "cancelled"})
+            queued = [t for t in self.pending if t.job_id == job_id]
+            running = self.current if self.current and self.current.job_id == job_id else None
+            self.cancelled_tasks.update(t.id for t in queued)
+            if running:
+                self.cancelled_tasks.add(running.id)
+        for t in queued:  # never started: report now (the running one reports when it stops)
+            self._report_cancel(t)
+
+    def _report_cancel(self, t: Task) -> None:
+        if t.kind == "pipeline":
+            db.update_job(t.job_id, status="cancelled", error="Cancelled by user", finished_at=db.now())
+            self.publish(t.job_id, {"type": "status", "status": "cancelled"})
+        else:  # a cancelled re-render must not mark a finished job as cancelled
+            self.publish(t.job_id, {"type": "render_failed", "error": "Cancelled", "ranks": t.payload.get("ranks")})
 
     def busy(self, job_id: int) -> bool:
         with self.lock:
-            return (self.current is not None and self.current[1] == job_id) or any(j == job_id for _, j in self.pending)
+            return (self.current is not None and self.current.job_id == job_id) or any(t.job_id == job_id for t in self.pending)
 
     # -------------------------------------------------------------- events
     def publish(self, job_id: int, ev: dict) -> None:
@@ -133,13 +173,13 @@ class JobManager:
         for sq in subs:
             sq.put(ev)
 
-    def subscribe(self, job_id: int) -> tuple[queue.Queue, list[dict]]:
+    def subscribe(self, job_id: int) -> tuple[queue.Queue, list[dict], int]:
+        """Returns (live queue, backlog, seq of the newest backlog event)."""
         sq: queue.Queue = queue.Queue()
         ch = self.channels[job_id]
         with self.lock:
             ch.subscribers.append(sq)
-            backlog = list(ch.events)
-        return sq, backlog
+            return sq, list(ch.events), ch.seq
 
     def unsubscribe(self, job_id: int, sq: queue.Queue) -> None:
         with self.lock:
@@ -150,31 +190,45 @@ class JobManager:
     # -------------------------------------------------------------- worker
     def _worker(self) -> None:
         while True:
-            kind, job_id, payload = self.q.get()
+            task = self.q.get()
             with self.lock:
-                if (kind, job_id) in self.pending:
-                    self.pending.remove((kind, job_id))
-                self.current = (kind, job_id)
+                if task in self.pending:
+                    self.pending.remove(task)
+                self.current = task
+                skip = task.id in self.cancelled_tasks
             try:
-                if job_id in self.cancel_flags:
-                    continue
-                self._run(kind, job_id, payload)
+                if not skip:
+                    self._run(task)
+            except Exception as exc:  # never let one bad task (e.g. a broken config.yaml) kill the worker
+                log.error(f"[job {task.job_id}] worker error: {exc}\n{traceback.format_exc()}")
+                try:
+                    self._fail(task, str(exc))
+                except Exception:
+                    pass
             finally:
                 with self.lock:
                     self.current = None
-                self.cancel_flags.discard(job_id)
+                    self.cancelled_tasks.discard(task.id)
 
-    def _run(self, kind: str, job_id: int, payload: dict) -> None:
-        job = db.get_job(job_id)
+    def _fail(self, task: Task, msg: str) -> None:
+        if task.kind == "pipeline":
+            db.update_job(task.job_id, status="failed", error=msg, finished_at=db.now())
+            self.publish(task.job_id, {"type": "status", "status": "failed", "error": msg})
+        else:
+            self.publish(task.job_id, {"type": "render_failed", "error": msg, "ranks": task.payload.get("ranks")})
+
+    def _run(self, task: Task) -> None:
+        job = db.get_job(task.job_id)
         if not job:
             return
-        rep = ApiReporter(self, job_id)
         cfg = job_config(job.settings)
-        if kind == "pipeline":
+        rep = ApiReporter(self, task, cfg)
+        job_id = task.job_id
+        if task.kind == "pipeline":
             db.update_job(job_id, status="running", error="")
-        self.publish(job_id, {"type": "status", "status": "running", "kind": kind})
+        self.publish(job_id, {"type": "status", "status": "running", "kind": task.kind})
         try:
-            if kind == "pipeline":
+            if task.kind == "pipeline":
                 section = tuple(job.settings["section"]) if job.settings.get("section") else None
                 ws = pipeline.prepare(job.source, cfg, rep, section, job.video_id)  # type: ignore[arg-type]
                 info = pipeline.load_info(ws)
@@ -189,29 +243,22 @@ class JobManager:
                 db.update_job(job_id, status="done", stage="done", progress=1.0, eta_sec=None,
                               finished_at=db.now(), message=f"{len(cands)} clips ready")
                 self.publish(job_id, {"type": "status", "status": "done"})
-            elif kind == "render":
+            else:
                 if not job.video_id:
                     raise RuntimeError("This job has no video yet — run it first.")
                 ws = pipeline.open_workspace(job.video_id, cfg)
-                ranks = payload.get("ranks")
-                pipeline.render(ws, cfg, rep, only=ranks, force=bool(payload.get("force")))
+                ranks = task.payload.get("ranks")
+                pipeline.render(ws, cfg, rep, only=ranks, force=bool(task.payload.get("force")))
                 pipeline.metadata(ws, cfg, rep)
                 self.publish(job_id, {"type": "render_done", "ranks": ranks})
-                if job.status != "running":
-                    db.update_job(job_id, message="re-render finished")
+                db.update_job(job_id, message="re-render finished")
         except CancelledError:
-            db.update_job(job_id, status="cancelled", error="Cancelled by user", finished_at=db.now())
-            self.publish(job_id, {"type": "status", "status": "cancelled"})
+            self._report_cancel(task)
             rep.log("Cancelled", "warning")
         except Exception as exc:
-            msg = str(exc)
-            log.error(f"[job {job_id}] {kind} failed: {msg}\n{traceback.format_exc()}")
-            if kind == "pipeline":
-                db.update_job(job_id, status="failed", error=msg, finished_at=db.now())
-                self.publish(job_id, {"type": "status", "status": "failed", "error": msg})
-            else:
-                self.publish(job_id, {"type": "render_failed", "error": msg, "ranks": payload.get("ranks")})
-            rep.log(msg, "error")
+            log.error(f"[job {job_id}] {task.kind} failed: {exc}\n{traceback.format_exc()}")
+            self._fail(task, str(exc))
+            rep.log(str(exc), "error")
 
 
 manager = JobManager()

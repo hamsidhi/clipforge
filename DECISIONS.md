@@ -74,3 +74,21 @@ A review subagent audited the engine; fixed:
 - **Fallbacks aren't cached forever**: template metadata and batch-failed rule-based romanization are retried when the LLM is back.
 - **Long episodes**: transcription checkpoints every 2 min (`transcript.partial.json`) and resumes after a crash/cancel;
   audio scaling in place and chunked RMS keep memory down; failed scene detection / frame decoding is reported and retried.
+
+## Code review fixes (web layer, after Phase 9)
+- **Job queue**: each task has its own id; cancelling a re-render reports `render_failed` and never marks a
+  finished job "cancelled"; a later task for the same job is unaffected by an earlier cancel; the worker thread
+  catches everything (a broken config.yaml can no longer kill it). Job title/duration appear right after download.
+- **candidates.json**: per-video lock for every web edit; atomic writes use unique temp names; renames retry
+  (`safe_replace`) because Windows can't rename a file a browser is still streaming. The editor also releases
+  its `<video>` before re-render/undo.
+- **Approve toggle**: `approved: null` returns a clip to "to review".
+- **Uploads**: ids validated (`^[0-9a-f]{12}$`), a retried chunk truncates to its offset (resumable after a
+  dropped request), settings are validated before the upload is consumed.
+- **Export ZIP** is written to disk and streamed with `FileResponse` (no 1 GB in RAM), deleted afterwards.
+- **SSE**: snapshot carries `last_seq` + `boot_id`; replayed history rebuilds the UI but doesn't re-fire toasts;
+  a server restart resets the client's de-dup set.
+- **Clip editor**: remounts per clip (Prev/Next); refetches never wipe unsaved edits; the server's snapped
+  times are adopted after Save.
+- **Settings save keeps config.yaml comments** (in-place value update); multi-line API keys are rejected.
+- Frame endpoint validates rank/time; "Render changed" only re-renders stale clips.

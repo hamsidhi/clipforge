@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import shutil
 import time
+import uuid
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -14,6 +17,22 @@ from pydantic import BaseModel
 T = TypeVar("T", bound=BaseModel)
 
 YOUTUBE_ID_RE = re.compile(r"(?:v=|youtu\.be/|shorts/|live/|embed/)([A-Za-z0-9_-]{11})")
+
+
+def safe_replace(src: Path, dst: Path, attempts: int = 20) -> None:
+    """os.replace with retries. On Windows a file that a browser is still streaming (video preview) or an
+    antivirus is scanning can't be renamed for a moment (WinError 32). Falls back to copy + delete."""
+    for i in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            time.sleep(0.25 * (1 + i // 4))
+    shutil.copy2(src, dst)  # dst may still be locked for reading only; copying over it usually works
+    try:
+        os.remove(src)
+    except OSError:
+        pass
 
 
 def is_url(s: str) -> bool:
@@ -120,15 +139,18 @@ class Workspace:
 
     @staticmethod
     def write_model(path: Path, obj: BaseModel) -> None:
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(obj.model_dump_json(indent=2), encoding="utf-8")
-        tmp.replace(path)
+        Workspace._atomic_write(path, obj.model_dump_json(indent=2))
 
     @staticmethod
     def write_json(path: Path, data: Any) -> None:
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(path)
+        Workspace._atomic_write(path, json.dumps(data, indent=2, ensure_ascii=False))
+
+    @staticmethod
+    def _atomic_write(path: Path, text: str) -> None:
+        # unique temp name: two writers never share a temp file; the final rename retries on Windows locks
+        tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex[:8]}.tmp")
+        tmp.write_text(text, encoding="utf-8")
+        safe_replace(tmp, path)
 
     # --- stage state
     def _state(self) -> dict:
