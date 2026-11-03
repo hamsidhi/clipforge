@@ -2,12 +2,27 @@
 
 from __future__ import annotations
 
+import wave
+from pathlib import Path
+
+import numpy as np
+
 from clipforge.config import WhisperConfig
 from clipforge.models import Segment, Transcript, Word
 from clipforge.utils.ffmpeg import Timer
 from clipforge.utils.gpu import cpu_count, whisper_defaults
 from clipforge.utils.log import ProgressReporter, check_cancel, log
 from clipforge.workspace import Workspace
+
+
+def load_wav(path: Path) -> np.ndarray:
+    """16 kHz mono PCM WAV -> float32 array. We decode ourselves instead of letting faster-whisper use
+    PyAV: faster-whisper 1.2.1 passes `metadata_errors` to av.open(), which PyAV ≥15 removed."""
+    with wave.open(str(path), "rb") as wf:
+        if wf.getframerate() != 16000 or wf.getnchannels() != 1 or wf.getsampwidth() != 2:
+            raise RuntimeError(f"{path} must be 16 kHz mono 16-bit (delete it to re-extract)")
+        data = wf.readframes(wf.getnframes())
+    return np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
 
 
 def run(ws: Workspace, cfg: WhisperConfig, reporter: ProgressReporter, duration: float) -> Transcript:
@@ -28,7 +43,7 @@ def run(ws: Workspace, cfg: WhisperConfig, reporter: ProgressReporter, duration:
 
     language = None if cfg.language in ("auto", "", None) else cfg.language
     seg_iter, info = model.transcribe(
-        str(ws.audio),
+        load_wav(ws.audio),
         language=language,
         beam_size=cfg.beam_size,
         word_timestamps=True,

@@ -11,7 +11,7 @@ import typer
 from rich.table import Table
 
 from clipforge.config import ConfigError, load_config
-from clipforge.utils.log import console
+from clipforge.utils.log import CliReporter, console
 
 app = typer.Typer(add_completion=False, no_args_is_help=True, help="ClipForge — podcast → vertical shorts, 100% free & local.")
 
@@ -82,7 +82,7 @@ def run(
     if provider and not model:
         cfg = cfg.with_overrides({"llm.model": "auto"} if provider != load_config().llm.provider else {})
     try:
-        ws = pipeline.run_all(source, cfg, section=_parse_section(section), force=force)
+        ws = pipeline.run_all(source, cfg, CliReporter(), section=_parse_section(section), force=force)
     except Exception as exc:
         _fail(exc)
         return
@@ -102,7 +102,7 @@ def transcribe(
 
     cfg = _cfg({"whisper.model": whisper_model, "whisper.language": language, "llm.provider": provider})
     try:
-        ws = pipeline.prepare(source, cfg, section=_parse_section(section))
+        ws = pipeline.prepare(source, cfg, CliReporter(), section=_parse_section(section))
     except Exception as exc:
         _fail(exc)
         return
@@ -121,7 +121,7 @@ def select(
 
     cfg = _cfg({"llm.provider": provider, "clips.count": clips})
     try:
-        pipeline.select(pipeline.open_workspace(video_id, cfg), cfg, force=force)
+        pipeline.select(pipeline.open_workspace(video_id, cfg), cfg, CliReporter(), force=force)
     except Exception as exc:
         _fail(exc)
         return
@@ -141,7 +141,7 @@ def render(
     ranks = [int(x) for x in only.split(",") if x.strip()] if only else None
     try:
         ws = pipeline.open_workspace(video_id, cfg)
-        pipeline.render(ws, cfg, only=ranks, force=force)
+        pipeline.render(ws, cfg, CliReporter(), only=ranks, force=force)
         pipeline.metadata(ws, cfg)
     except Exception as exc:
         _fail(exc)

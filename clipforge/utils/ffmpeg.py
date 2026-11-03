@@ -47,6 +47,8 @@ def _find(name: str) -> str | None:
     for d in _candidate_dirs():
         p = d / exe
         if p.exists():
+            # also expose it on PATH: yt-dlp / PySceneDetect look ffmpeg up there themselves
+            os.environ["PATH"] = str(d) + os.pathsep + os.environ.get("PATH", "")
             return str(p)
     return None
 

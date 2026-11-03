@@ -16,7 +16,8 @@ logging.basicConfig(
     datefmt="[%X]",
     handlers=[RichHandler(console=console, show_path=False, markup=False, rich_tracebacks=True)],
 )
-for noisy in ("httpx", "httpcore", "urllib3", "faster_whisper", "pyscenedetect", "absl", "multipart"):
+for noisy in ("httpx", "httpx2", "httpcore", "httpcore2", "huggingface_hub", "urllib3", "faster_whisper",
+              "pyscenedetect", "absl", "multipart", "googleapiclient"):
     logging.getLogger(noisy).setLevel(logging.WARNING)
 
 log = logging.getLogger("clipforge")
@@ -52,6 +53,38 @@ class NullReporter:
 
     def cancelled(self) -> bool:
         return False
+
+
+class CliReporter(NullReporter):
+    """Rich progress bar with ETA for the current stage (used by the CLI)."""
+
+    def __init__(self) -> None:
+        from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn, TimeRemainingColumn
+
+        self._progress = Progress(
+            TextColumn("[bold]{task.fields[stage]:<11}"), BarColumn(), TextColumn("{task.percentage:>3.0f}%"),
+            TimeElapsedColumn(), TextColumn("ETA"), TimeRemainingColumn(), TextColumn("[dim]{task.description}"),
+            console=console, transient=True,
+        )
+        self._task = None
+
+    def stage(self, name: str, status: str = "running", message: str = "") -> None:
+        if self._task is not None:
+            self._progress.remove_task(self._task)
+            self._task = None
+        if status == "running":
+            self._progress.start()
+            self._task = self._progress.add_task("", total=1.0, stage=name)
+        else:
+            self._progress.stop()
+        super().stage(name, status, message)
+
+    def progress(self, fraction: float, eta_sec: float | None = None, message: str = "") -> None:
+        if self._task is not None:
+            self._progress.update(self._task, completed=max(0.0, min(1.0, fraction)), description=message[:60])
+
+    def close(self) -> None:
+        self._progress.stop()
 
 
 class CancelledError(RuntimeError):
