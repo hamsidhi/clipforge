@@ -407,6 +407,9 @@ def patch_clip(clip_id: str, body: ClipPatch) -> dict:
     ws = _ws(job)
     cands, c = _find_cand(ws, rank)
     data = body.model_dump(exclude_unset=True, exclude={"snap", "clear_layout"})
+    if data.get("start", c.start) == c.start and data.get("end", c.end) == c.end:
+        data.pop("start", None)  # unchanged times: don't re-snap (that could drop a word and reset edits)
+        data.pop("end", None)
     if "start" in data or "end" in data:
         start = data.get("start", c.start)
         end = data.get("end", c.end)
@@ -420,8 +423,16 @@ def patch_clip(clip_id: str, body: ClipPatch) -> dict:
             start, end, _ = snap_to_words(tr.all_words(), start, end, pad_start=0.15, pad_end=0.3, search=1.5,
                                           seg_starts=starts, seg_ends=ends)
         if (start, end) != (c.start, c.end):
-            c.word_edits = {}  # word indices shift when the range changes
-            c.crop_overrides = []
+            # word edits are keyed by index inside the clip: carry them over by word start time
+            from clipforge.utils.timecode import words_in_range
+
+            all_words = pipeline.load_transcript(ws).all_words()
+            edits = data.pop("word_edits", None) or c.word_edits
+            old = words_in_range(all_words, c.start, c.end)
+            by_time = {old[int(k)].start: v for k, v in edits.items() if k.isdigit() and int(k) < len(old)}
+            new = words_in_range(all_words, start, end)
+            c.word_edits = {str(i): by_time[w.start] for i, w in enumerate(new) if w.start in by_time}
+            c.crop_overrides = []  # shot indices change with the range
         c.start, c.end = round(start, 3), round(end, 3)
         data.pop("start", None)
         data.pop("end", None)

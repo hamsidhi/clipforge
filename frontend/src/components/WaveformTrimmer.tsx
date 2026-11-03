@@ -23,7 +23,10 @@ interface Props {
 export default function WaveformTrimmer({ jobId, start, end, sourceDuration, script, onChange }: Props) {
   // window is fixed when the editor opens so dragging doesn't re-fetch constantly
   const [win] = useState(() => ({ a: Math.max(0, start - PAD), b: Math.min(sourceDuration || end + PAD, end + PAD) }))
+  // zoom so the clip fills ~60% of the visible strip (both handles on screen), but keep words readable
+  const [PX_PER_SEC] = useState(() => Math.max(28, Math.min(70, ((window.innerWidth - 320) * 0.6) / Math.max(5, end - start))))
   const containerRef = useRef<HTMLDivElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
   const regionRef = useRef<Region | null>(null)
   const audioRef = useRef<HTMLVideoElement>(null)
   const [playing, setPlaying] = useState(false)
@@ -77,6 +80,9 @@ export default function WaveformTrimmer({ jobId, start, end, sourceDuration, scr
       plugins: [regions],
     })
     ws.on('ready', () => {
+      // centre the clip in the scroll strip
+      const sc = scrollRef.current
+      if (sc) sc.scrollLeft = ((start + end) / 2 - win.a) * PX_PER_SEC - sc.clientWidth / 2
       regionRef.current = regions.addRegion({
         start: start - win.a,
         end: end - win.a,
@@ -150,29 +156,31 @@ export default function WaveformTrimmer({ jobId, start, end, sourceDuration, scr
         </div>
         <div className="ml-auto text-xs text-muted-foreground">Drag the yellow box or its edges · snaps to words</div>
       </div>
-      <div className="relative rounded-xl border bg-muted/30 px-2 pt-2 pb-1">
-        {wave.isLoading ? <Skeleton className="h-24" /> : <div ref={containerRef} />}
-        {playhead != null && playhead >= win.a && playhead <= win.b && (
-          <div className="pointer-events-none absolute top-2 h-24 w-0.5 bg-primary" style={{ left: `calc(8px + (100% - 16px) * ${(playhead - win.a) / len})` }} />
-        )}
-        <div className="relative mt-1 h-10 overflow-hidden text-[10px] text-muted-foreground">
-          {(words.data ?? []).map((w, i) => {
-            const inside = w.start >= start - 0.01 && w.end <= end + 0.01
-            return (
-              <span
-                key={i}
-                className={inside ? 'absolute whitespace-nowrap text-foreground' : 'absolute whitespace-nowrap'}
-                style={{ left: `${((w.start - win.a) / len) * 100}%`, top: i % 2 ? 18 : 2 }}
-                title={`${formatTime(w.start)} ${w.text}`}
-              >
-                {w.text}
-              </span>
-            )
-          })}
-        </div>
-        <div className="flex justify-between text-[10px] text-muted-foreground tabular-nums">
-          <span>{formatTime(win.a)}</span>
-          <span>{formatTime(win.b)}</span>
+      <div ref={scrollRef} className="scrollbar-thin overflow-x-auto rounded-xl border bg-muted/30">
+        <div className="relative px-0 pt-2 pb-1" style={{ width: len * PX_PER_SEC }}>
+          {wave.isLoading ? <Skeleton className="h-24" /> : <div ref={containerRef} data-wave="" />}
+          {playhead != null && playhead >= win.a && playhead <= win.b && (
+            <div className="pointer-events-none absolute top-2 h-24 w-0.5 bg-primary" style={{ left: (playhead - win.a) * PX_PER_SEC }} />
+          )}
+          <div className="relative mt-1 h-12 text-[11px] text-muted-foreground">
+            {(words.data ?? []).map((w, i) => {
+              const inside = w.start >= start - 0.01 && w.end <= end + 0.01
+              return (
+                <span
+                  key={i}
+                  className={inside ? 'absolute whitespace-nowrap text-foreground' : 'absolute whitespace-nowrap'}
+                  style={{ left: (w.start - win.a) * PX_PER_SEC, top: (i % 3) * 15 }}
+                  title={`${formatTime(w.start)} ${w.text}`}
+                >
+                  {w.text}
+                </span>
+              )
+            })}
+          </div>
+          <div className="flex justify-between px-1 text-[10px] text-muted-foreground tabular-nums">
+            <span>{formatTime(win.a)}</span>
+            <span>{formatTime(win.b)}</span>
+          </div>
         </div>
       </div>
       <video ref={audioRef} src={`/api/jobs/${jobId}/source-video`} preload="none" className="hidden" onPause={() => setPlaying(false)} />

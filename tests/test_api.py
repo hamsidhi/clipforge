@@ -77,6 +77,13 @@ def test_job_clips_patch_and_export(client):
     detail = c.get(f"/api/clips/{job.id}-1").json()
     assert detail["words"][0]["edited"] == "Hello"
 
+    # trimming the start keeps the edit on the same word (indices shift)
+    first = detail["words"][0]
+    r = c.patch(f"/api/clips/{job.id}-1", json={"start": detail["start"] - 1.05, "snap": False})
+    moved = c.get(f"/api/clips/{job.id}-1").json()
+    edited = [w for w in moved["words"] if w["edited"] == "Hello"]
+    assert len(edited) == 1 and edited[0]["start"] == first["start"] and edited[0]["index"] > 0
+
     assert c.post(f"/api/jobs/{job.id}/approve", json={"min_score": 6}).json()["changed"] == 2
     z = c.get(f"/api/jobs/{job.id}/export.zip")
     assert z.status_code == 200 and z.headers["content-type"] == "application/zip"

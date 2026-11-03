@@ -131,6 +131,11 @@ export default function ClipEditor() {
     mutationFn: async () => {
       if (!draft || !clip) return null
       const body: Record<string, unknown> = { ...draft }
+      // only send times when trimmed: the server re-snaps them (and resets word edits) when they change
+      if (draft.start === clip.start && draft.end === clip.end) {
+        delete body.start
+        delete body.end
+      }
       if (draft.layout === null) {
         delete body.layout
         body.clear_layout = true

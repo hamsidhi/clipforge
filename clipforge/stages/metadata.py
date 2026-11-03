@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import html
+import re
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -37,6 +38,12 @@ class MetaOut(BaseModel):
 DEFAULT_TAGS = ["podcast", "hindipodcast", "shorts", "motivation", "business"]
 
 
+def _strip_tags(text: str) -> str:
+    text = re.sub(r"(?<!\w)#\w+", "", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return "\n".join(line.rstrip() for line in text.splitlines()).strip()
+
+
 def credit_line(info: VideoInfo) -> str:
     parts = f"Source: {info.title}"
     if info.channel:
@@ -67,7 +74,11 @@ def build(clip: ClipCandidate, file: Path | None, info: VideoInfo, words: list[W
             ig_caption=f"{clip.hook or clip.title} 👀\nPoora podcast dekho — link in bio.\nFollow for more 🔥",
             hashtags=DEFAULT_TAGS,
         )
-    tags = normalize_hashtags(meta.hashtags + DEFAULT_TAGS, 5)
+    # models often sneak hashtags into the text too; keep only our ≤5 normalised ones at the end
+    found = re.findall(r"#(\w+)", meta.yt_description + " " + meta.ig_caption)
+    meta.yt_description = _strip_tags(meta.yt_description)
+    meta.ig_caption = _strip_tags(meta.ig_caption)
+    tags = normalize_hashtags(meta.hashtags + found + DEFAULT_TAGS, 5)
     credit = credit_line(info)
     title = truncate(clip.title, 60)
     return ClipMetadata(

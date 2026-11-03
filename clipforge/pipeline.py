@@ -339,7 +339,7 @@ def metadata(ws: Workspace, cfg: Config, reporter: ProgressReporter | None = Non
             continue
         f = ws.find_clip(c.rank)
         cache = ws.work_dir(c.rank) / "meta.json"
-        fp = fingerprint(c.title, c.hook, c.start, c.end, info.title, info.url, cfg.llm.provider, cfg.llm.model)
+        fp = fingerprint("meta-v2", c.title, c.hook, c.start, c.end, info.title, info.url, cfg.llm.provider, cfg.llm.model)
         m = None
         if cache.exists():
             data = json.loads(cache.read_text(encoding="utf-8"))
