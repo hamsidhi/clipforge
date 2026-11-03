@@ -1,0 +1,329 @@
+import { useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import {
+  CalendarClock, CalendarDays, ChevronLeft, ChevronRight, Download, FolderUp, Info, List, Loader2, RefreshCw, Sparkles, UploadCloud,
+} from 'lucide-react'
+import { toast } from 'sonner'
+import { istLabel, pub, STATUS_LABEL, STATUS_STYLE, useChannels, usePublishing, useQueue, WEEKDAYS } from '@/api/publish'
+import type { QueueItem, SyncResult } from '@/api/publishTypes'
+import ChannelPicker from '@/components/ChannelPicker'
+import { EmptyState, PageHeader } from '@/components/common'
+import QueueItemDialog from '@/components/QueueItemDialog'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Checkbox } from '@/components/ui/checkbox'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { cn } from '@/lib/utils'
+
+function localDate(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function startOfWeek(d: Date) {
+  const x = new Date(d)
+  x.setHours(0, 0, 0, 0)
+  x.setDate(x.getDate() - ((x.getDay() + 6) % 7)) // Monday
+  return x
+}
+
+function ItemChip({ it, onOpen }: { it: QueueItem; onOpen: () => void }) {
+  const draggable = ['draft', 'queued', 'needs_manual', 'failed'].includes(it.status)
+  return (
+    <button
+      type="button"
+      draggable={draggable}
+      onDragStart={(e) => e.dataTransfer.setData('text/plain', String(it.id))}
+      onClick={onOpen}
+      className={cn('w-full rounded-md px-2 py-1.5 text-left text-[11px] leading-tight transition-opacity hover:opacity-80', STATUS_STYLE[it.status],
+        draggable && 'cursor-grab active:cursor-grabbing')}
+    >
+      <div className="font-semibold tabular-nums">{it.slot_local?.slice(11)}</div>
+      <div className="line-clamp-2">{it.title || '…'}</div>
+      {it.uploading_progress != null && <div className="mt-1 h-1 rounded bg-primary" style={{ width: `${it.uploading_progress * 100}%` }} />}
+    </button>
+  )
+}
+
+function WeekView({ items, slots, onOpen, onDrop }: {
+  items: QueueItem[]; slots: string[]; onOpen: (it: QueueItem) => void; onDrop: (id: number, slotLocal: string) => void
+}) {
+  const [week, setWeek] = useState(() => startOfWeek(new Date()))
+  const days = Array.from({ length: 7 }, (_, i) => new Date(week.getFullYear(), week.getMonth(), week.getDate() + i))
+  const byDay = useMemo(() => {
+    const m: Record<string, QueueItem[]> = {}
+    for (const it of items) if (it.slot_local) (m[it.slot_local.slice(0, 10)] ??= []).push(it)
+    return m
+  }, [items])
+  const today = localDate(new Date())
+  return (
+    <div>
+      <div className="mb-3 flex items-center gap-2">
+        <Button size="icon" variant="outline" aria-label="Previous week" onClick={() => setWeek(new Date(week.getTime() - 7 * 864e5))}><ChevronLeft /></Button>
+        <Button size="icon" variant="outline" aria-label="Next week" onClick={() => setWeek(new Date(week.getTime() + 7 * 864e5))}><ChevronRight /></Button>
+        <Button size="sm" variant="ghost" onClick={() => setWeek(startOfWeek(new Date()))}>This week</Button>
+        <span className="text-sm text-muted-foreground">{days[0].toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} – {days[6].toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })} · IST</span>
+      </div>
+      <div className="scrollbar-thin overflow-x-auto">
+        <div className="grid min-w-[840px] grid-cols-7 gap-2">
+          {days.map((d, i) => {
+            const key = localDate(d)
+            const dayItems = (byDay[key] ?? []).sort((a, b) => (a.slot_local! < b.slot_local! ? -1 : 1))
+            const past = key < today
+            return (
+              <div key={key} className={cn('rounded-xl border p-2', key === today && 'border-primary/50', past && 'opacity-60')}>
+                <div className="mb-2 text-xs font-medium">{WEEKDAYS[i]} <span className="text-muted-foreground">{d.getDate()}</span></div>
+                <div className="space-y-1.5">
+                  {slots.map((s) => {
+                    const at = dayItems.filter((it) => it.slot_local!.slice(11) === s)
+                    return (
+                      <div
+                        key={s}
+                        onDragOver={(e) => !past && e.preventDefault()}
+                        onDrop={(e) => {
+                          e.preventDefault()
+                          onDrop(Number(e.dataTransfer.getData('text/plain')), `${key}T${s}`)
+                        }}
+                        className="min-h-12 space-y-1 rounded-lg border border-dashed border-border/60 p-1"
+                      >
+                        {at.length ? at.map((it) => <ItemChip key={it.id} it={it} onOpen={() => onOpen(it)} />) : (
+                          <div className="px-1 py-2 text-[10px] text-muted-foreground/60">{s}</div>
+                        )}
+                      </div>
+                    )
+                  })}
+                  {dayItems.filter((it) => !slots.includes(it.slot_local!.slice(11))).map((it) => (
+                    <ItemChip key={it.id} it={it} onOpen={() => onOpen(it)} />
+                  ))}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+      <p className="mt-2 text-xs text-muted-foreground">Drag a clip onto another slot to move it. Only clips not yet on YouTube can move.</p>
+    </div>
+  )
+}
+
+function ListView({ items, onOpen, channelId }: { items: QueueItem[]; onOpen: (it: QueueItem) => void; channelId: string }) {
+  const qc = useQueryClient()
+  const [sel, setSel] = useState<number[]>([])
+  const bulk = useMutation({
+    mutationFn: (a: { action: 'unschedule' | 'delete' | 'shift' | 'regenerate'; days?: number }) => pub.bulk({ ids: sel, ...a }),
+    onSuccess: (r) => {
+      toast.success(`${r.done.length} updated${r.errors.length ? `, ${r.errors.length} skipped: ${r.errors[0].error}` : ''}`)
+      setSel([])
+      qc.invalidateQueries({ queryKey: ['queue', channelId] })
+    },
+    onError: (e) => toast.error(e.message),
+  })
+  const toggle = (id: number) => setSel((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]))
+  return (
+    <div className="space-y-3">
+      {sel.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/30 p-2 text-sm">
+          <span className="px-2">{sel.length} selected</span>
+          <Button size="sm" variant="outline" onClick={() => bulk.mutate({ action: 'shift', days: 1 })}>+1 day</Button>
+          <Button size="sm" variant="outline" onClick={() => bulk.mutate({ action: 'shift', days: -1 })}>−1 day</Button>
+          <Button size="sm" variant="outline" onClick={() => bulk.mutate({ action: 'unschedule' })}>Unschedule</Button>
+          <Button size="sm" variant="outline" onClick={() => bulk.mutate({ action: 'regenerate' })}>Regenerate metadata</Button>
+          <Button size="sm" variant="ghost" className="text-destructive" onClick={() => window.confirm('Remove selected clips from the queue?') && bulk.mutate({ action: 'delete' })}>Remove</Button>
+        </div>
+      )}
+      <div className="divide-y rounded-xl border">
+        {items.map((it) => (
+          <div key={it.id} className="flex items-center gap-3 p-3 text-sm">
+            <Checkbox checked={sel.includes(it.id)} onCheckedChange={() => toggle(it.id)} aria-label="Select" />
+            <button className="min-w-0 flex-1 text-left" onClick={() => onOpen(it)}>
+              <div className="truncate font-medium">{it.title || 'Writing metadata…'}</div>
+              <div className="truncate text-xs text-muted-foreground">{istLabel(it.slot_local)} · {it.episode_title} · score {it.score.toFixed(1)}{it.error ? ` · ${it.error}` : ''}</div>
+            </button>
+            <Badge variant="outline" className={cn('shrink-0 border-transparent', STATUS_STYLE[it.status])}>{STATUS_LABEL[it.status]}</Badge>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function SyncDialog({ result, onClose }: { result: SyncResult | null; onClose: () => void }) {
+  return (
+    <Dialog open={!!result} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Sync with YouTube</DialogTitle></DialogHeader>
+        {result && (
+          <div className="space-y-3 text-sm">
+            <p>Linked <b>{result.matched.length}</b> upload(s) to your queue.</p>
+            {result.unmatched_items.length > 0 && (
+              <div>
+                <div className="font-medium">Queue clips not found on YouTube yet</div>
+                <ul className="mt-1 list-disc pl-5 text-muted-foreground">{result.unmatched_items.map((u) => <li key={u.queue_id}>{u.title}</li>)}</ul>
+                <p className="mt-1 text-xs text-muted-foreground">Uploaded with a different title? Open the clip and paste its YouTube link to link it.</p>
+              </div>
+            )}
+            {result.unmatched_videos.length > 0 && (
+              <div>
+                <div className="font-medium">Recent Shorts not from the queue</div>
+                <ul className="mt-1 list-disc pl-5 text-muted-foreground">
+                  {result.unmatched_videos.slice(0, 8).map((v) => <li key={v.video_id}>{v.title} <code className="text-xs">{v.video_id}</code></li>)}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+export default function Schedule() {
+  const qc = useQueryClient()
+  const [channelId, setChannelId] = useState<string>()
+  const { data: channels = [], isLoading: chLoading } = useChannels()
+  const { data: status } = usePublishing()
+  const { data: items = [], isLoading } = useQueue(channelId)
+  const [open, setOpen] = useState<QueueItem | null>(null)
+  const [sync, setSync] = useState<SyncResult | null>(null)
+  const ch = channels.find((c) => c.id === channelId)
+  const drafts = items.filter((i) => i.status === 'draft')
+  const planned = items.filter((i) => i.status !== 'draft')
+  const refresh = () => qc.invalidateQueries({ queryKey: ['queue', channelId] })
+
+  const auto = useMutation({
+    mutationFn: () => pub.autoschedule(channelId!),
+    onSuccess: (r) => {
+      toast.success(`${r.scheduled.length} clip(s) scheduled`, {
+        description: r.still_draft.length ? `${r.still_draft.length} still need attention (open them in Drafts).` : undefined,
+      })
+      refresh()
+    },
+    onError: (e) => toast.error(e.message),
+  })
+  const batch = useMutation({
+    mutationFn: () => pub.prepareBatch(channelId!),
+    onSuccess: (b) => {
+      toast.success(`Batch ready: ${b.count} clips`, { description: b.folder })
+      window.open(b.url, '_blank')
+      refresh()
+    },
+    onError: (e) => toast.error(e.message),
+  })
+  const doSync = useMutation({
+    mutationFn: () => pub.sync(channelId!),
+    onSuccess: (r) => {
+      setSync(r)
+      refresh()
+    },
+    onError: (e) => toast.error(e.message),
+  })
+  const run = useMutation({
+    mutationFn: pub.runScheduler,
+    onSuccess: () => toast('Uploading due clips in the background…'),
+  })
+  const move = useMutation({
+    mutationFn: ({ id, slot }: { id: number; slot: string }) => pub.patch(id, { slot_local: slot }),
+    onSuccess: () => {
+      toast.success('Moved')
+      refresh()
+    },
+    onError: (e) => toast.error(e.message),
+  })
+
+  if (!chLoading && !channels.length) {
+    return (
+      <>
+        <PageHeader title="Schedule" />
+        <EmptyState icon={CalendarClock} title="Connect a channel first" action={<Button asChild><Link to="/channels">Go to Channels</Link></Button>}>
+          ClipForge plans your Shorts per YouTube channel.
+        </EmptyState>
+      </>
+    )
+  }
+  const mode = status?.mode ?? 'assisted'
+  return (
+    <>
+      <PageHeader
+        title="Schedule"
+        description={
+          <span className="flex flex-wrap items-center gap-2">
+            <Badge variant="outline">{mode === 'api' ? 'API mode — ClipForge uploads' : 'Assisted mode — you upload in Studio'}</Badge>
+            {status && <span>{status.uploads_left_today}/{status.quota.inserts_limit} API uploads left today</span>}
+            {ch?.paused && <Badge variant="outline" className="text-amber-300">channel paused</Badge>}
+          </span>
+        }
+        actions={
+          <>
+            <ChannelPicker value={channelId} onChange={setChannelId} />
+            <Button onClick={() => auto.mutate()} disabled={!channelId || auto.isPending}>
+              {auto.isPending ? <Loader2 className="animate-spin" /> : <Sparkles />} Schedule approved clips
+            </Button>
+            {mode === 'assisted' ? (
+              <Button variant="outline" onClick={() => batch.mutate()} disabled={!channelId || batch.isPending}><FolderUp /> Prepare batch</Button>
+            ) : (
+              <Button variant="outline" onClick={() => run.mutate()} disabled={run.isPending}><UploadCloud /> Upload due now</Button>
+            )}
+            <Button variant="outline" onClick={() => doSync.mutate()} disabled={!channelId || doSync.isPending}>
+              {doSync.isPending ? <Loader2 className="animate-spin" /> : <RefreshCw />} Sync with YouTube
+            </Button>
+          </>
+        }
+      />
+      {status?.banner && (
+        <div className={cn('mb-5 flex items-start gap-3 rounded-xl border p-4 text-sm',
+          status.banner.level === 'warning' ? 'border-orange-500/40 bg-orange-500/10' : 'border-sky-500/30 bg-sky-500/10')}>
+          <Info className="mt-0.5 size-4 shrink-0" />
+          <div>{status.banner.text} <a className="text-primary underline" href={status.banner.link} target="_blank" rel="noreferrer">Audit &amp; quota form</a></div>
+        </div>
+      )}
+      {ch && !ch.confirmed && mode === 'api' && (
+        <div className="mb-5 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm">
+          Uploads to <b>{ch.title}</b> are blocked until you confirm the channel on the <Link className="text-primary underline" to="/channels">Channels</Link> page.
+        </div>
+      )}
+
+      {drafts.length > 0 && (
+        <Card className="mb-6">
+          <CardHeader><CardTitle className="text-base">Drafts — {drafts.length} clip(s) not scheduled yet</CardTitle></CardHeader>
+          <CardContent className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {drafts.map((d) => (
+              <button key={d.id} onClick={() => setOpen(d)} className="rounded-lg border p-3 text-left text-sm hover:border-primary/50">
+                <div className="line-clamp-2 font-medium">{d.meta_status === 'pending' ? <span className="flex items-center gap-2 text-muted-foreground"><Loader2 className="size-3 animate-spin" />Writing metadata…</span> : d.title}</div>
+                <div className="mt-1 text-xs text-muted-foreground">{d.episode_title} · score {d.score.toFixed(1)}</div>
+                {d.problems.length > 0 && <div className="mt-1 text-xs text-amber-300">{d.problems[0]}</div>}
+              </button>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {isLoading || !channelId ? <Skeleton className="h-96 rounded-xl" /> : !planned.length ? (
+        <EmptyState icon={CalendarDays} title="Nothing scheduled yet">
+          Approve clips in a job's gallery, use <b>Add to schedule</b> there, then click <b>Schedule approved clips</b>.
+        </EmptyState>
+      ) : (
+        <Tabs defaultValue="week">
+          <div className="mb-3 flex items-center justify-between">
+            <TabsList>
+              <TabsTrigger value="week"><CalendarDays /> Week</TabsTrigger>
+              <TabsTrigger value="list"><List /> List</TabsTrigger>
+            </TabsList>
+            <Button variant="ghost" size="sm" asChild><a href={`/api/queue.csv?channel_id=${channelId}`}><Download /> CSV</a></Button>
+          </div>
+          <TabsContent value="week">
+            <WeekView items={planned} slots={ch?.settings.slots ?? []} onOpen={setOpen} onDrop={(id, slot) => move.mutate({ id, slot })} />
+          </TabsContent>
+          <TabsContent value="list"><ListView items={planned} onOpen={setOpen} channelId={channelId} /></TabsContent>
+        </Tabs>
+      )}
+      <div className="mt-6 flex flex-wrap gap-3 text-xs">
+        {Object.entries(STATUS_LABEL).map(([k, v]) => <span key={k} className={cn('rounded px-2 py-0.5', STATUS_STYLE[k])}>{v}</span>)}
+      </div>
+      <QueueItemDialog item={open ? items.find((i) => i.id === open.id) ?? open : null} onClose={() => setOpen(null)} />
+      <SyncDialog result={sync} onClose={() => setSync(null)} />
+    </>
+  )
+}

@@ -46,3 +46,4 @@ Thumbs.db
 # Phase 12 publishing
 workspace/channels/
 client_secret*.json
+workspace_demo/

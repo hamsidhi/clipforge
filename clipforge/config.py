@@ -191,9 +191,15 @@ class ConfigError(RuntimeError):
     """Raised when config.yaml is missing or invalid."""
 
 
+def config_path() -> Path:
+    """config.yaml in the repo, or the file named by CLIPFORGE_CONFIG (e.g. a demo/test workspace)."""
+    env = os.environ.get("CLIPFORGE_CONFIG")
+    return Path(env) if env else DEFAULT_CONFIG_PATH
+
+
 def load_config(path: Path | str | None = None) -> Config:
     """Load and validate config.yaml. Missing file -> defaults."""
-    path = Path(path) if path else DEFAULT_CONFIG_PATH
+    path = Path(path) if path else config_path()
     if not path.exists():
         return Config()
     try:
@@ -242,7 +248,7 @@ def update_yaml_text(text: str, data: dict[str, dict[str, Any]]) -> tuple[str, b
 
 def save_config(cfg: Config, path: Path | str | None = None) -> None:
     """Write the config back to YAML (Settings page), keeping the comments in config.yaml."""
-    path = Path(path) if path else DEFAULT_CONFIG_PATH
+    path = Path(path) if path else config_path()
     data = cfg.model_dump(mode="json")
     if path.exists():
         text, complete = update_yaml_text(path.read_text(encoding="utf-8"), data)

@@ -12,6 +12,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
+import PublishingSettings from '@/components/PublishingSettings'
 
 type Cfg = Record<string, Record<string, unknown>>
 
@@ -229,6 +230,8 @@ export default function Settings() {
             </Row>
           </CardContent>
         </Card>
+
+        <PublishingSettings cfg={cfg} set={set} />
 
         <PresetEditor />
       </div>

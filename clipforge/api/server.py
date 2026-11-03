@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import socket
 import subprocess
@@ -40,7 +41,8 @@ async def lifespan(app: FastAPI):
         manager.start()
     from clipforge.publish.worker import worker
 
-    worker.start(ticker=getattr(app.state, "publish_ticker", True))
+    # CLIPFORGE_NO_TICKER=1: never contact YouTube in the background (demo / screenshots)
+    worker.start(ticker=getattr(app.state, "publish_ticker", True) and os.environ.get("CLIPFORGE_NO_TICKER") != "1")
     yield
 
 

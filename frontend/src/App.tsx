@@ -9,6 +9,10 @@ import PublishKit from '@/pages/PublishKit'
 import Tracker from '@/pages/Tracker'
 import Settings from '@/pages/Settings'
 import SystemCheck from '@/pages/SystemCheck'
+import Channels from '@/pages/Channels'
+import Schedule from '@/pages/Schedule'
+import Batches from '@/pages/Batches'
+import PublishDashboard from '@/pages/PublishDashboard'
 
 export default function App() {
   return (
@@ -23,6 +27,10 @@ export default function App() {
         <Route path="tracker" element={<Tracker />} />
         <Route path="settings" element={<Settings />} />
         <Route path="system" element={<SystemCheck />} />
+        <Route path="channels" element={<Channels />} />
+        <Route path="schedule" element={<Schedule />} />
+        <Route path="batches" element={<Batches />} />
+        <Route path="dashboard" element={<PublishDashboard />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

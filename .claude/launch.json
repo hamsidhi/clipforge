@@ -6,6 +6,16 @@
       "runtimeExecutable": "E:\\youtube\\clipforge\\.venv\\Scripts\\clipforge.exe",
       "runtimeArgs": ["ui", "--no-browser", "--port", "8000"],
       "port": 8000
+    },
+    {
+      "name": "clipforge-demo",
+      "runtimeExecutable": "E:\\youtube\\clipforge\\.venv\\Scripts\\clipforge.exe",
+      "runtimeArgs": ["ui", "--no-browser", "--port", "8010"],
+      "env": {
+        "CLIPFORGE_CONFIG": "E:\\youtube\\clipforge\\workspace_demo\\config.yaml",
+        "CLIPFORGE_NO_TICKER": "1"
+      },
+      "port": 8010
     }
   ]
 }

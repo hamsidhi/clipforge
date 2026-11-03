@@ -51,16 +51,45 @@ function ViewsCell({ post }: { post: Post }) {
   )
 }
 
+const SUBMISSION: Post['submission_status'][] = ['not_submitted', 'submitted', 'approved', 'rejected', 'paid']
+const SUB_STYLE: Record<string, string> = {
+  not_submitted: 'text-muted-foreground', submitted: 'text-sky-300', approved: 'text-success', rejected: 'text-destructive', paid: 'text-primary',
+}
+
+/** Submission status: change inline. */
+function StatusCell({ post }: { post: Post }) {
+  const qc = useQueryClient()
+  const upd = useMutation({
+    mutationFn: (submission_status: Post['submission_status']) => api.updatePost(post.id, { submission_status }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['posts'] }),
+  })
+  return (
+    <Select value={post.submission_status} onValueChange={(v) => upd.mutate(v as Post['submission_status'])}>
+      <SelectTrigger size="sm" className={`h-8 w-32 ${SUB_STYLE[post.submission_status]}`}><SelectValue /></SelectTrigger>
+      <SelectContent>{SUBMISSION.map((x) => <SelectItem key={x} value={x}>{x.replace('_', ' ')}</SelectItem>)}</SelectContent>
+    </Select>
+  )
+}
+
 export default function Tracker() {
   const qc = useQueryClient()
   const [params, setParams] = useSearchParams()
   const { data, isLoading, error } = useQuery({ queryKey: ['posts'], queryFn: api.posts })
   const [open, setOpen] = useState(false)
-  const empty: Partial<Post> = { platform: 'instagram', url: '', posted_at: today(), campaign: '', rate_per_1k: 0, views: 0, clip_title: '' }
+  const empty: Partial<Post> = {
+    platform: 'instagram', url: '', posted_at: today(), campaign: '', rate_per_1k: 0, views: 0, clip_title: '',
+    campaign_fee_pct: 0, submission_status: 'not_submitted', submission_link: '', approved_views: null,
+  }
   const [form, setForm] = useState<Partial<Post>>(empty)
 
   useEffect(() => {
-    if (params.get('title')) {
+    if (params.get('queue')) {
+      // from the Dashboard's "published but not submitted" list
+      setForm({ ...empty, platform: 'youtube', queue_id: Number(params.get('queue')), clip_title: params.get('title') ?? '',
+        url: params.get('url') ?? '', submission_status: 'submitted' })
+      setOpen(true)
+      setParams({}, { replace: true })
+    } else if (params.get('title')) {
       setForm({ ...empty, job_id: Number(params.get('job')), clip_rank: Number(params.get('rank')), clip_title: params.get('title') ?? '' })
       setOpen(true)
       setParams({}, { replace: true })
@@ -119,6 +148,7 @@ export default function Tracker() {
                       <TableHead>Platform</TableHead>
                       <TableHead>Posted</TableHead>
                       <TableHead>Campaign</TableHead>
+                      <TableHead>Submission</TableHead>
                       <TableHead className="text-right">Rate / 1k</TableHead>
                       <TableHead className="text-right">Views</TableHead>
                       <TableHead className="text-right">Earnings</TableHead>
@@ -138,7 +168,8 @@ export default function Tracker() {
                         </TableCell>
                         <TableCell className="capitalize">{p.platform}</TableCell>
                         <TableCell className="tabular-nums">{p.posted_at ?? '—'}</TableCell>
-                        <TableCell>{p.campaign || '—'}</TableCell>
+                        <TableCell>{p.campaign || '—'}{p.campaign_fee_pct ? <span className="text-xs text-muted-foreground"> · fee {p.campaign_fee_pct}%</span> : null}</TableCell>
+                        <TableCell><StatusCell post={p} /></TableCell>
                         <TableCell className="text-right tabular-nums">{money(p.rate_per_1k)}</TableCell>
                         <TableCell className="text-right"><div className="flex justify-end"><ViewsCell post={p} /></div></TableCell>
                         <TableCell className="text-right font-medium tabular-nums">{money(p.earnings)}</TableCell>
@@ -197,7 +228,29 @@ export default function Tracker() {
               <Label>Views so far</Label>
               <Input type="number" min={0} value={form.views ?? 0} onChange={(e) => f('views', Number(e.target.value))} />
             </div>
+            <div className="space-y-2">
+              <Label>Campaign fee %</Label>
+              <Input type="number" min={0} max={100} value={form.campaign_fee_pct ?? 0} onChange={(e) => f('campaign_fee_pct', Number(e.target.value))} />
+            </div>
+            <div className="space-y-2">
+              <Label>Approved views (if different)</Label>
+              <Input type="number" min={0} value={form.approved_views ?? ''} onChange={(e) => f('approved_views', e.target.value === '' ? null : Number(e.target.value))} />
+            </div>
+            <div className="space-y-2">
+              <Label>Submission status</Label>
+              <Select value={form.submission_status} onValueChange={(v) => f('submission_status', v as Post['submission_status'])}>
+                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {SUBMISSION.map((x) => <SelectItem key={x} value={x}>{x.replace('_', ' ')}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Submission link</Label>
+              <Input placeholder="https://whop.com/…" value={form.submission_link ?? ''} onChange={(e) => f('submission_link', e.target.value)} />
+            </div>
           </div>
+          <p className="text-xs text-muted-foreground">Earnings = (approved views or views) ÷ 1000 × rate × (1 − fee %). Rejected submissions count as ₹0.</p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
             <Button onClick={() => create.mutate()} disabled={create.isPending}>Save</Button>

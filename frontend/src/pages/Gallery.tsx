@@ -13,6 +13,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import AddToQueueDialog from '@/components/AddToQueueDialog'
 
 type Filter = 'all' | 'approved' | 'rejected' | 'pending'
 
@@ -85,6 +86,7 @@ export default function Gallery() {
             <Button variant="outline" onClick={() => renderAll.mutate()} disabled={renderAll.isPending || job?.busy}>
               <RefreshCw /> Render {counts.stale ? `changed (${counts.stale})` : 'all'}
             </Button>
+            <AddToQueueDialog jobId={jobId} label={`Add approved to schedule${counts.approved ? ` (${counts.approved})` : ''}`} disabled={!counts.approved} />
             <Button asChild>
               <a href={`/api/jobs/${jobId}/export.zip`}>
                 <FileArchive /> Export ZIP {counts.approved ? `(${counts.approved})` : ''}

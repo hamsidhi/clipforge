@@ -11,6 +11,7 @@ import { ErrorBox, ScoreBadge } from '@/components/common'
 import CropOverride from '@/components/CropOverride'
 import PhoneFramePlayer from '@/components/PhoneFramePlayer'
 import WaveformTrimmer from '@/components/WaveformTrimmer'
+import AddToQueueDialog from '@/components/AddToQueueDialog'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -261,6 +262,7 @@ function ClipEditor({ clipId }: { clipId: string }) {
             <Button variant={clip.approved === false ? 'destructive' : 'outline'} onClick={() => approve.mutate(clip.approved === false ? null : false)}>
               <X /> Reject
             </Button>
+            <div className="col-span-2 [&>button]:w-full"><AddToQueueDialog jobId={jobId} ranks={[clip.rank]} label="Add to schedule" disabled={!clip.rendered} /></div>
             <Button variant="outline" className="col-span-2" asChild>
               <Link to={`/clips/${clipId}/publish`}><Send /> Publish kit</Link>
             </Button>

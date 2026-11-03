@@ -11,9 +11,19 @@ const { chromium } = require('playwright-core')
 const base = process.argv[2] ?? 'http://127.0.0.1:8000'
 const job = process.argv[3] ?? '1'
 const clip = process.argv[4] ?? `${job}-1`
-const out = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'docs', 'screenshots')
+const set = process.argv[5] ?? 'main'
+const out = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'docs', 'screenshots', ...(set === 'phase12' ? ['phase12'] : []))
 
-const pages = [
+const PHASE12 = [
+  ['01-channels', '/channels'],
+  ['02-schedule-week', '/schedule'],
+  ['03-batches', '/batches'],
+  ['04-dashboard', '/dashboard'],
+  ['05-tracker', '/tracker'],
+  ['06-settings-publishing', '/settings#publishing'],
+  ['07-gallery-add-to-schedule', `/jobs/${job}/clips`],
+]
+const MAIN = [
   ['01-dashboard', '/'],
   ['02-new-job', '/new'],
   ['03-job-progress', `/jobs/${job}`],
@@ -24,7 +34,9 @@ const pages = [
   ['08-settings', '/settings'],
   ['09-system-check', '/system'],
 ]
-const mobile = ['01-dashboard', '04-gallery', '05-clip-editor', '02-new-job']
+const pages = set === 'phase12' ? PHASE12 : MAIN
+const mobile = set === 'phase12' ? ['01-channels', '02-schedule-week', '04-dashboard', '03-batches']
+  : ['01-dashboard', '04-gallery', '05-clip-editor', '02-new-job']
 
 let browser
 for (const channel of ['msedge', 'chrome']) {
@@ -46,6 +58,7 @@ for (const [label, vp] of [['desktop', { width: 1440, height: 900 }], ['mobile',
     page.on('pageerror', (e) => msgs.push(String(e)))
     await page.goto(base + url, { waitUntil: 'networkidle', timeout: 60000 }).catch(() => {})
     await page.waitForTimeout(name === '09-system-check' ? 6000 : 1500)
+    if (url.includes('#')) await page.evaluate((id) => document.getElementById(id)?.scrollIntoView(), url.split('#')[1])
     const file = path.join(out, `${name}${label === 'mobile' ? '-mobile' : ''}.png`)
     await page.screenshot({ path: file, fullPage: label === 'desktop' })
     // SSE connections closed by navigation are not app errors

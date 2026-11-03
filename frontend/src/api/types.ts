@@ -171,6 +171,12 @@ export interface Post {
   views: number
   notes: string
   earnings: number
+  campaign_fee_pct: number
+  submission_status: 'not_submitted' | 'submitted' | 'approved' | 'rejected' | 'paid'
+  submission_link: string
+  approved_views: number | null
+  queue_id: number | null
+  youtube_video_id: string
 }
 
 export interface PostsResponse {
