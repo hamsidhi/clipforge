@@ -57,6 +57,15 @@ class MockProvider(LLMProvider):
         if task == "transliterate":
             pairs = re.findall(r"^(\d+): (.+)$", prompt, re.MULTILINE)
             return json.dumps({k: romanize_word(w.strip()) for k, w in pairs}, ensure_ascii=False)
+        if task == "ytmeta":
+            m = re.search(r"Clip's working title: (.*)", prompt)
+            base = (m.group(1).strip() if m else "Podcast moment")[:50]
+            return json.dumps({
+                "titles": [f"{base} — the real story", f"Why {base.lower()}?", f"{base}: 3 lessons"],
+                "summary": f"{base}. Watch till the end.",
+                "tags": ["podcast", "business", "india", "startup", "money"],
+                "hashtags": ["#business", "#startup", "#india"],
+            })
         if task == "metadata":
             return json.dumps({
                 "yt_description": "Full episode link in the description. Follow for more!",

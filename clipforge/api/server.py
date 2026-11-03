@@ -38,6 +38,9 @@ async def lifespan(app: FastAPI):
     load_custom_presets()
     if not manager.thread.is_alive():
         manager.start()
+    from clipforge.publish.worker import worker
+
+    worker.start(ticker=getattr(app.state, "publish_ticker", True))
     yield
 
 
@@ -49,6 +52,9 @@ def create_app() -> FastAPI:
     app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
                        allow_methods=["*"], allow_headers=["*"])
     app.include_router(router)
+    from clipforge.api.publish_routes import router as publish_router
+
+    app.include_router(publish_router)
 
     if (FRONTEND_DIST / "assets").exists():
         app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")

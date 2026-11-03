@@ -72,8 +72,28 @@ render:
 output:
   dir: workspace
 
-upload:
-  enabled: false       # YouTube upload is off until you finish the setup in README
-  privacy: private     # private | unlisted | public
-  schedule_hours_apart: 24
-  category_id: "22"
+publishing:
+  mode: assisted       # assisted (you upload in YouTube Studio, ClipForge prepares everything) | api (auto upload)
+  api_audited: false   # set true once Google approved your YouTube API compliance audit (raises quota)
+  unverified_lock: false  # Google lifted the private-only lock for unverified API projects on 2026-11-02
+  timezone: Asia/Kolkata
+  slots: ["12:30", "18:30", "21:00"]   # default publish times (IST) for new channels
+  peak_slots: ["18:30", "21:00"]       # best clips go here, weaker ones to the other slots
+  posts_per_day: 3
+  min_gap_hours: 2.5   # 18:30 → 21:00 is 2.5 h; a larger gap would drop a default slot
+  upload_ahead_days: 5   # api mode: upload this many days ahead with publishAt (laptop needn't be on at publish time)
+  insert_calls_per_day: 100   # videos.insert quota bucket (official default)
+  units_per_day: 10000        # all other YouTube Data API calls
+  batch_max: 15        # assisted mode: files per Studio upload batch
+  category_id: "27"    # 27 Education, 22 People & Blogs
+  language: hi
+  sync_every_hours: 12 # how often stats are pulled while the app runs
+
+ypp:                   # YouTube Partner Program targets — edit if YouTube changes them
+  ad_subs: 1000
+  ad_shorts_views_90d: 10000000
+  fan_subs: 500
+  fan_shorts_views_90d: 3000000
+  fan_uploads_90d: 3
+  new_rule_date: "2027-02-01"
+  new_ad_shorts_views_90d: 20000000

@@ -199,24 +199,6 @@ def ui(
     serve(host=host, port=port, dev=dev, open_browser=not no_browser)
 
 
-@app.command()
-def upload(
-    video_id: str,
-    only: Optional[str] = typer.Option(None, "--only", help="Clip ranks to upload, e.g. 1,2,3"),
-    privacy: Optional[str] = typer.Option(None, "--privacy", help="private | unlisted | public"),
-) -> None:
-    """Upload rendered clips to YouTube as private/scheduled Shorts (needs setup — see README)."""
-    from clipforge import pipeline
-    from clipforge.stages import upload as up
-
-    cfg = _cfg({"upload.privacy": privacy})
-    ranks = [int(x) for x in only.split(",") if x.strip()] if only else None
-    try:
-        up.upload_clips(pipeline.open_workspace(video_id, cfg), cfg, ranks)
-    except Exception as exc:
-        _fail(exc)
-
-
 @app.command(name="list")
 def list_videos() -> None:
     """List processed videos in the workspace."""
@@ -246,6 +228,11 @@ def _summary(video_id: str, rendered: bool = True) -> None:
     console.print(t)
     if rendered:
         console.print(f"Output folder: [bold]{ws.clips_dir}[/bold]   metadata: {ws.metadata_csv}")
+
+
+from clipforge.cli_publish import register as _register_publish  # noqa: E402
+
+_register_publish(app)
 
 
 def main() -> None:

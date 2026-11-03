@@ -114,11 +114,36 @@ class OutputConfig(_Section):
     dir: str = "workspace"
 
 
-class UploadConfig(_Section):
-    enabled: bool = False
-    privacy: Literal["private", "unlisted", "public"] = "private"
-    schedule_hours_apart: float = 24
-    category_id: str = "22"
+class PublishingConfig(_Section):
+    """YouTube publishing defaults. Per-channel settings (slots, templates, …) live in the Channels page/DB."""
+
+    mode: Literal["assisted", "api"] = "assisted"
+    api_audited: bool = False
+    unverified_lock: bool = False  # Google lifted the private-only lock for unverified projects on 2026-11-02
+    timezone: str = "Asia/Kolkata"
+    slots: list[str] = ["12:30", "18:30", "21:00"]
+    peak_slots: list[str] = ["18:30", "21:00"]
+    posts_per_day: int = Field(3, ge=1, le=20)
+    min_gap_hours: float = 2.5  # default slots 18:30 and 21:00 are 2.5 h apart
+    upload_ahead_days: int = Field(5, ge=1, le=14)
+    insert_calls_per_day: int = 100   # videos.insert has its own bucket (Data API, since 2026-06-01)
+    units_per_day: int = 10_000       # all other Data API calls
+    batch_max: int = 15
+    category_id: str = "27"
+    language: str = "hi"
+    sync_every_hours: float = 12
+
+
+class YppConfig(_Section):
+    """YouTube Partner Program targets (edit when YouTube changes them)."""
+
+    ad_subs: int = 1000
+    ad_shorts_views_90d: int = 10_000_000
+    fan_subs: int = 500
+    fan_shorts_views_90d: int = 3_000_000
+    fan_uploads_90d: int = 3
+    new_rule_date: str = "2027-02-01"
+    new_ad_shorts_views_90d: int = 20_000_000
 
 
 class Config(_Section):
@@ -130,7 +155,8 @@ class Config(_Section):
     captions: CaptionsConfig = CaptionsConfig()
     render: RenderConfig = RenderConfig()
     output: OutputConfig = OutputConfig()
-    upload: UploadConfig = UploadConfig()
+    publishing: PublishingConfig = PublishingConfig()
+    ypp: YppConfig = YppConfig()
 
     @property
     def workspace(self) -> Path:

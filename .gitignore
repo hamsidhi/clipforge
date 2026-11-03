@@ -42,3 +42,7 @@ frontend/.vite/
 Thumbs.db
 .idea/
 .vscode/
+
+# Phase 12 publishing
+workspace/channels/
+client_secret*.json

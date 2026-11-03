@@ -840,11 +840,20 @@ class PostIn(BaseModel):
     rate_per_1k: float = 0
     views: int = 0
     notes: str = ""
+    campaign_fee_pct: float = 0
+    submission_status: Literal["not_submitted", "submitted", "approved", "rejected", "paid"] = "not_submitted"
+    submission_link: str = ""
+    approved_views: Optional[int] = None
+    queue_id: Optional[int] = None
+    youtube_video_id: str = ""
 
 
 def _post_out(p: db.Post) -> dict:
+    from clipforge.publish.analytics import earnings
+
     d = p.model_dump()
-    d["earnings"] = round(p.views / 1000 * p.rate_per_1k, 2)
+    # approved views × rate per 1,000 × (1 − campaign fee); rejected submissions earn nothing
+    d["earnings"] = 0.0 if p.submission_status == "rejected" else earnings(p)
     return d
 
 
@@ -898,7 +907,8 @@ def delete_post(post_id: int) -> dict:
 def posts_csv() -> Response:
     data = list_posts()["posts"]
     out = io.StringIO()
-    cols = ["id", "platform", "url", "posted_at", "campaign", "clip_title", "views", "rate_per_1k", "earnings", "notes"]
+    cols = ["id", "platform", "url", "posted_at", "campaign", "clip_title", "views", "approved_views", "rate_per_1k",
+            "campaign_fee_pct", "submission_status", "submission_link", "earnings", "notes"]
     w = csv.writer(out)
     w.writerow(cols)
     for r in data:
