@@ -58,3 +58,19 @@ Every choice made without asking, with the reason. Newest at the bottom of each 
 - 2-pass loudnorm per clip (measure, then `linear=true`) → consistent −14 LUFS.
 - Workers: `min(4, cores/4)` parallel libx264 encodes (each x264 is itself multi-threaded); 1 with NVENC.
 - One previous render kept in `_work/NN/previous.mp4` for undo in the web editor.
+
+## Code review fixes (after Phase 8)
+A review subagent audited the engine; fixed:
+- **Snapping**: Whisper segment boundaries now count as sentence boundaries (Hinglish transcripts have very little
+  punctuation). End selection prefers sentence ends within the length limits before any word end; a clip whose
+  start *or* end isn't on a boundary is penalised. Off-boundary snaps on random spans: ~45 % → ~15 %.
+- **LLM selection**: candidates are validated one by one (one bad item no longer discards an 8-minute window); a bare
+  JSON list is accepted; windows that fail after retries are retried on the next run (stage not marked done).
+- **Caching**: download fingerprint uses the video id (youtu.be vs watch?v= no longer re-transcribes); transcribe/analyze
+  fingerprints use the audio file instead of timestamps; selection is checked before contacting the LLM and is keyed on
+  the configured (not resolved) model; re-selection only deletes renders whose rank now holds a different clip.
+- **Windows paths**: ffmpeg runs inside the clip's `_work/NN/` folder with relative `ass`/`sendcmd`/`fontsdir` paths,
+  so user names with `'` or spaces work. Temp renders live in `_work/`, never next to finished clips.
+- **Fallbacks aren't cached forever**: template metadata and batch-failed rule-based romanization are retried when the LLM is back.
+- **Long episodes**: transcription checkpoints every 2 min (`transcript.partial.json`) and resumes after a crash/cancel;
+  audio scaling in place and chunked RMS keep memory down; failed scene detection / frame decoding is reported and retried.

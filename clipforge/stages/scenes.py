@@ -72,9 +72,9 @@ def ensure(ws: Workspace, ranges: list[tuple[float, float]], duration: float) ->
     for a, b in todo:
         try:
             cuts.update(detect_cuts(ws, a, b))
-        except Exception as exc:
-            log.warning(f"Scene detection failed for {a:.0f}-{b:.0f}s ({exc}); treating it as one shot")
-        covered.append((a, b))
+            covered.append((a, b))
+        except Exception as exc:  # not marked covered -> retried next time
+            log.warning(f"Scene detection failed for {a:.0f}-{b:.0f}s ({exc}); treating it as one shot for now")
     data = {"covered": _merge(covered), "cuts": sorted(cuts)}  # type: ignore[arg-type]
     ws.write_json(ws.scenes, data)
     return data["cuts"]

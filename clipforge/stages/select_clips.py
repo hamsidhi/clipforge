@@ -8,7 +8,7 @@ from pathlib import Path
 from clipforge.config import Config, PROMPTS_DIR
 from clipforge.llm.base import LLMError, LLMProvider
 from clipforge.llm.mock_provider import romanize_word
-from clipforge.models import LLMCandidate, LLMCandidateList, Segment, Transcript, VideoInfo
+from clipforge.models import LLMCandidate, RawCandidateList, Segment, Transcript, VideoInfo
 from clipforge.utils.ffmpeg import Timer
 from clipforge.utils.log import ProgressReporter, check_cancel, log
 from clipforge.workspace import Workspace, fingerprint
@@ -73,13 +73,15 @@ def build_prompt(template: str, info: VideoInfo, transcript_text: str, cfg: Conf
 
 
 def run(ws: Workspace, cfg: Config, llm: LLMProvider, reporter: ProgressReporter, info: VideoInfo,
-        transcript: Transcript) -> list[LLMCandidate]:
+        transcript: Transcript) -> tuple[list[LLMCandidate], int]:
+    """Returns (candidates, number of windows that failed and should be retried next run)."""
     template = load_prompt()
     # Latin script costs far fewer tokens than Devanagari on local models; cloud models get the original.
     latin = llm.name in ("ollama", "mock")
     windows = make_windows(transcript.duration, cfg.llm.window_min, cfg.llm.overlap_min)
     timer = Timer()
     all_cands: list[LLMCandidate] = []
+    failed = 0
     for i, (a, b) in enumerate(windows):
         check_cancel(reporter)
         text = window_lines(transcript.segments, a, b, latin)
@@ -88,19 +90,22 @@ def run(ws: Workspace, cfg: Config, llm: LLMProvider, reporter: ProgressReporter
         prompt = build_prompt(template, info, text, cfg, a, b)
         cache = ws.select_cache / f"w{i:03d}_{fingerprint(llm.name, llm.model, prompt)}.json"
         if cache.exists():
-            cands = LLMCandidateList.model_validate_json(cache.read_text(encoding="utf-8")).candidates
+            cands = RawCandidateList.model_validate_json(cache.read_text(encoding="utf-8")).valid()
         else:
             reporter.progress(i / len(windows), timer.eta(i / len(windows)) if i else None,
                               f"LLM window {i + 1}/{len(windows)} ({int(a // 60)}-{int(b // 60)} min)")
             try:
-                res = llm.complete_json(prompt, LLMCandidateList, system=SYSTEM, retries=cfg.llm.max_retries,
+                res = llm.complete_json(prompt, RawCandidateList, system=SYSTEM, retries=cfg.llm.max_retries,
                                         task="select")
             except LLMError as exc:
                 if "not running" in str(exc) or "not found" in str(exc) or "API_KEY" in str(exc):
                     raise
-                log.warning(f"Skipping window {i + 1} ({int(a // 60)}-{int(b // 60)} min): {exc}")
+                log.warning(f"Skipping window {i + 1} ({int(a // 60)}-{int(b // 60)} min) for now: {exc}")
+                failed += 1
                 continue
-            cands = res.candidates
+            cands = res.valid()
+            if len(cands) < len(res.candidates):
+                log.warning(f"window {i + 1}: ignored {len(res.candidates) - len(cands)} malformed candidate(s)")
             Path(cache).write_text(res.model_dump_json(indent=2), encoding="utf-8")
         # keep only candidates inside this window (models sometimes hallucinate times)
         valid = [c for c in cands if a - 5 <= c.start < c.end <= b + 5]
@@ -109,4 +114,4 @@ def run(ws: Workspace, cfg: Config, llm: LLMProvider, reporter: ProgressReporter
         all_cands += valid
     reporter.progress(1.0, 0, f"{len(all_cands)} raw candidates")
     ws.write_json(ws.llm_candidates, [json.loads(c.model_dump_json()) for c in all_cands])
-    return all_cands
+    return all_cands, failed

@@ -77,6 +77,10 @@ def get_llm(cfg: Config, required: bool = True):
 
 
 # ----------------------------------------------------------------------------- stages
+def _size(p: Path) -> int:
+    return p.stat().st_size if p.exists() else 0
+
+
 def prepare(source: str, cfg: Config, reporter: ProgressReporter | None = None,
             section: tuple[float, float] | None = None, video_id: str | None = None) -> Workspace:
     """download → transcribe → analyze. Returns the workspace."""
@@ -85,7 +89,8 @@ def prepare(source: str, cfg: Config, reporter: ProgressReporter | None = None,
     reporter = reporter or NullReporter()
     ws = Workspace(cfg.workspace, video_id or video_id_for(source, section))
 
-    fp = fingerprint(source, section)
+    # keyed on the video id, not the raw string: youtu.be/ID and watch?v=ID&si=… are the same video
+    fp = fingerprint(ws.video_id, section)
     if ws.stage_done("download", fp, [ws.source, ws.info, ws.audio]):
         reporter.stage("download", "skipped")
         info = load_info(ws)
@@ -96,7 +101,7 @@ def prepare(source: str, cfg: Config, reporter: ProgressReporter | None = None,
         reporter.stage("download", "done", f"{info.title} ({info.duration / 60:.1f} min)")
     check_cancel(reporter)
 
-    fp = fingerprint(cfg.whisper.model_dump(), ws.stage_time("download"))
+    fp = fingerprint(cfg.whisper.model_dump(), _size(ws.audio))
     if ws.stage_done("transcribe", fp, [ws.transcript]):
         reporter.stage("transcribe", "skipped")
     else:
@@ -106,7 +111,7 @@ def prepare(source: str, cfg: Config, reporter: ProgressReporter | None = None,
         reporter.stage("transcribe", "done")
     check_cancel(reporter)
 
-    fp = fingerprint("energy-v1", ws.stage_time("download"))
+    fp = fingerprint("energy-v1", _size(ws.audio))
     if ws.stage_done("analyze", fp, [ws.energy]):
         reporter.stage("analyze", "skipped")
     else:
@@ -122,9 +127,9 @@ def select(ws: Workspace, cfg: Config, reporter: ProgressReporter | None = None,
     from clipforge.stages import refine, select_clips
 
     reporter = reporter or NullReporter()
-    llm = get_llm(cfg)
     prompt_text = (PROMPTS_DIR / "clip_selection.md").read_text(encoding="utf-8")
-    fp = fingerprint(llm.name, llm.model, cfg.llm.model_dump(exclude={"timeout_sec"}), cfg.clips.model_dump(),
+    # configured (not resolved) model: pulling a new Ollama model must not invalidate a finished selection
+    fp = fingerprint(cfg.llm.model_dump(exclude={"timeout_sec", "ollama_url"}), cfg.clips.model_dump(),
                      cfg.scoring_weights.model_dump(), prompt_text, ws.stage_time("transcribe"))
     if not force and ws.stage_done("select", fp, [ws.candidates]):
         reporter.stage("select", "skipped")
@@ -135,21 +140,44 @@ def select(ws: Workspace, cfg: Config, reporter: ProgressReporter | None = None,
         reporter.stage("select", "skipped", "kept hand-edited candidates.json")
         return load_candidates(ws)
 
+    llm = get_llm(cfg)  # only now: a cached selection must not need a running LLM
     reporter.stage("select", "running", f"{llm.name}:{llm.model}")
     info = load_info(ws)
     transcript = load_transcript(ws)
-    raw = select_clips.run(ws, cfg, llm, reporter, info, transcript)
+    raw, failed = select_clips.run(ws, cfg, llm, reporter, info, transcript)
     energy = ws.read_model(ws.energy, EnergyData) if ws.energy.exists() else None
-    cands = refine.refine(raw, transcript.all_words(), energy, cfg, info.duration)
+    cands = refine.refine(raw, transcript.all_words(), energy, cfg, info.duration, transcript.boundaries())
     if not cands:
         raise RuntimeError("No usable clips were found. Check the transcript, try another LLM provider, "
                            "or lower clips.min_sec in config.yaml.")
-    if ws.clips_dir.exists():  # new selection: old renders no longer match their ranks
-        shutil.rmtree(ws.clips_dir, ignore_errors=True)
+    _drop_stale_renders(ws, cands)
     save_candidates(ws, cands)
-    ws.mark_done("select", fp)
-    reporter.stage("select", "done", f"{len(cands)} clips")
+    if failed:
+        # keep what we have, but don't mark the stage done: the next run retries only the failed windows
+        log.warning(f"{failed} transcript window(s) failed in the LLM — re-run to retry them (others are cached).")
+        reporter.stage("select", "done", f"{len(cands)} clips ({failed} window(s) to retry)")
+    else:
+        ws.mark_done("select", fp)
+        reporter.stage("select", "done", f"{len(cands)} clips")
     return cands
+
+
+def _drop_stale_renders(ws: Workspace, cands: list[ClipCandidate]) -> None:
+    """After a new selection, remove renders whose rank now holds a different clip (keep identical ones)."""
+    by_rank = {c.rank: c for c in cands}
+    for f in ws.clips_dir.glob("*.mp4"):
+        try:
+            rank = int(f.name.split("_", 1)[0])
+        except ValueError:
+            continue
+        work = ws.clips_dir / "_work" / f"{rank:02d}"
+        prev = {}
+        if (work / "render.json").exists():
+            prev = json.loads((work / "render.json").read_text(encoding="utf-8")).get("candidate", {})
+        new = by_rank.get(rank)
+        if new is None or (prev.get("start"), prev.get("end")) != (new.start, new.end):
+            f.unlink(missing_ok=True)
+            shutil.rmtree(work, ignore_errors=True)
 
 
 def _clip_fp(c: ClipCandidate, cfg: Config, words_sig: str) -> str:
@@ -311,7 +339,7 @@ def metadata(ws: Workspace, cfg: Config, reporter: ProgressReporter | None = Non
             continue
         f = ws.find_clip(c.rank)
         cache = ws.work_dir(c.rank) / "meta.json"
-        fp = fingerprint(c.title, c.hook, c.start, c.end, info.title, info.url)
+        fp = fingerprint(c.title, c.hook, c.start, c.end, info.title, info.url, cfg.llm.provider, cfg.llm.model)
         m = None
         if cache.exists():
             data = json.loads(cache.read_text(encoding="utf-8"))
@@ -319,8 +347,9 @@ def metadata(ws: Workspace, cfg: Config, reporter: ProgressReporter | None = Non
                 m = ClipMetadata.model_validate(data["meta"])
                 m.file, m.rank, m.score = (f.name if f else ""), c.rank, c.score
         if m is None:
-            m = md.build(c, f, info, words, llm, cfg.captions.script)
-            ws.write_json(cache, {"fingerprint": fp, "meta": m.model_dump()})
+            m, by_llm = md.build(c, f, info, words, llm, cfg.captions.script)
+            if by_llm:  # template fallbacks are regenerated next time (the LLM may be back)
+                ws.write_json(cache, {"fingerprint": fp, "meta": m.model_dump()})
         metas.append(m)
     md.write(metas, ws.metadata_csv, ws.metadata_json)
     ws.gallery.write_text(md.gallery_html(info, [m for m in metas if m.file]), encoding="utf-8")

@@ -10,7 +10,7 @@ from clipforge.utils.log import log
 from clipforge.utils.timecode import overlap_ratio, snap_to_words
 
 PEAK_BOOST = 0.4       # per energy peak inside the clip (max 2)
-MID_SENTENCE_PENALTY = 0.8
+MID_SENTENCE_PENALTY = 0.8  # start or end could not be put on a sentence boundary
 
 
 def weighted_score(s: Scores, w: ScoringWeights) -> float:
@@ -33,25 +33,29 @@ def similar(a: ClipCandidate, b: ClipCandidate) -> bool:
     return False
 
 
-def snap_candidate(c: LLMCandidate, words: list[Word], cfg: Config, duration: float) -> tuple[float, float, bool] | None:
+def snap_candidate(c: LLMCandidate, words: list[Word], cfg: Config, duration: float,
+                   boundaries: tuple[set[float], set[float]] | None = None) -> tuple[float, float, bool] | None:
     start = max(0.0, min(c.start, duration))
     end = max(0.0, min(c.end, duration))
     if end - start < 3:
         return None
-    s, e, mid = snap_to_words(words, start, end, min_len=cfg.clips.min_sec, max_len=cfg.clips.max_sec - 0.4)
+    starts, ends = boundaries or (set(), set())
+    s, e, mid = snap_to_words(words, start, end, min_len=cfg.clips.min_sec, max_len=cfg.clips.max_sec - 0.4,
+                              seg_starts=starts, seg_ends=ends)
     if e - s < cfg.clips.min_sec * 0.9 or e - s > cfg.clips.max_sec + 0.5:
         return None
     return s, min(e, duration), mid
 
 
 def refine(
-    cands: list[LLMCandidate], words: list[Word], energy: EnergyData | None, cfg: Config, duration: float
+    cands: list[LLMCandidate], words: list[Word], energy: EnergyData | None, cfg: Config, duration: float,
+    boundaries: tuple[set[float], set[float]] | None = None,
 ) -> list[ClipCandidate]:
     words = sorted(words, key=lambda w: w.start)
     peaks = energy.peaks if energy else []
     scored: list[ClipCandidate] = []
     for c in cands:
-        snapped = snap_candidate(c, words, cfg, duration)
+        snapped = snap_candidate(c, words, cfg, duration, boundaries)
         if not snapped:
             continue
         s, e, mid = snapped

@@ -47,7 +47,8 @@ def credit_line(info: VideoInfo) -> str:
 
 
 def build(clip: ClipCandidate, file: Path | None, info: VideoInfo, words: list[Word], llm: LLMProvider | None,
-          script: str) -> ClipMetadata:
+          script: str) -> tuple[ClipMetadata, bool]:
+    """Returns (metadata, written_by_llm). Template fallbacks are not cached by the caller."""
     text = " ".join(w.display(script) for w in words_in_range(words, clip.start, clip.end))
     meta: MetaOut | None = None
     if llm is not None:
@@ -59,6 +60,7 @@ def build(clip: ClipCandidate, file: Path | None, info: VideoInfo, words: list[W
             )
         except LLMError as exc:
             log.warning(f"Metadata LLM failed for clip {clip.rank}; using a template ({exc})")
+    used_llm = meta is not None
     if meta is None:
         meta = MetaOut(
             yt_description=f"{clip.hook or clip.title}. Full podcast: {info.title}.",
@@ -75,7 +77,7 @@ def build(clip: ClipCandidate, file: Path | None, info: VideoInfo, words: list[W
         yt_description=f"{meta.yt_description.strip()}\n\n{credit}\n\n{' '.join(tags)}",
         ig_caption=f"{meta.ig_caption.strip()}\n\n{credit}\n\n{' '.join(tags)}",
         hashtags=tags, credit=credit,
-    )
+    ), used_llm
 
 
 def write(metas: list[ClipMetadata], csv_path: Path, json_path: Path) -> None:

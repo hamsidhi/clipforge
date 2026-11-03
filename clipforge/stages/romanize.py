@@ -36,17 +36,18 @@ class RomanOut(BaseModel):
     model_config = {"extra": "allow"}
 
 
-def _fallback(words: list[Word]) -> None:
+def _fallback(words: list[Word], src: str = "rule-failed") -> None:
+    """Rule-based romanization. "rule-failed" marks words to retry with the LLM on the next render."""
     for w in words:
         w.roman = romanize_word(w.text)
+        w.roman_src = src
 
 
 def romanize_words(words: list[Word], llm: LLMProvider | None, reporter: ProgressReporter, retries: int = 2) -> int:
     """Fill `roman` for the given words in place. Returns how many words were changed."""
-    todo = [w for w in words if w.roman is None]
+    todo = [w for w in words if w.roman is None or (llm is not None and w.roman_src == "rule-failed")]
     for w in todo:
-        if not is_devanagari(w.text):
-            w.roman = w.text
+        w.roman = None if is_devanagari(w.text) else w.text
     todo = [w for w in todo if w.roman is None]
     if not todo:
         return 0
@@ -68,15 +69,16 @@ def romanize_words(words: list[Word], llm: LLMProvider | None, reporter: Progres
                 data = {str(k): v for k, v in enumerate(data["roman"])} if len(data["roman"]) == len(batch) else {}
         except LLMError as exc:
             log.warning(f"Transliteration batch fell back to rule-based romanization: {exc}")
-            data = {}
+            _fallback(batch)
+            continue
         for k, w in enumerate(batch):
             r = str(data.get(str(k), "")).strip()
             # guard: missing, still Devanagari, or obviously merged words -> rule-based for this word only
             if not r or is_devanagari(r) or len(r.split()) > 2:
-                w.roman = romanize_word(w.text)
+                w.roman, w.roman_src = romanize_word(w.text), "rule"
                 misses += 1
             else:
-                w.roman = r
+                w.roman, w.roman_src = r, "llm"
     if misses:
         log.info(f"Romanization: {misses}/{len(todo)} words used the rule-based fallback")
     return len(todo)

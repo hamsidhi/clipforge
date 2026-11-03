@@ -144,20 +144,27 @@ def sample_frames(source: str, start: float, end: float, fps: float, src_w: int,
     h = int(round(src_h * w / src_w / 2) * 2)
     cmd = [ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-nostdin", "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}",
            "-i", source, "-an", "-vf", f"fps={fps},scale={w}:{h}", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    size = w * h * 3
-    i = 0
-    assert proc.stdout is not None
-    try:
-        while True:
-            buf = proc.stdout.read(size)
-            if len(buf) < size:
-                break
-            yield i / fps, np.frombuffer(buf, np.uint8).reshape(h, w, 3)
-            i += 1
-    finally:
-        proc.stdout.close()
-        proc.wait()
+    import tempfile
+
+    with tempfile.TemporaryFile() as err:  # file, not a pipe: can't deadlock, and we can report errors
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err)
+        size = w * h * 3
+        i = 0
+        assert proc.stdout is not None
+        try:
+            while True:
+                buf = proc.stdout.read(size)
+                if len(buf) < size:
+                    break
+                yield i / fps, np.frombuffer(buf, np.uint8).reshape(h, w, 3)
+                i += 1
+        finally:
+            proc.stdout.close()
+            proc.wait()
+            if i == 0:
+                err.seek(0)
+                msg = err.read().decode("utf-8", "replace").strip()[-300:]
+                log.warning(f"Could not decode frames {start:.1f}-{end:.1f}s for face tracking: {msg or 'no frames'}")
 
 
 def smooth_track(xs: list[float | None], smoothing: float, deadzone: float, lo: float, hi: float) -> list[float]:

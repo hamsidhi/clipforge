@@ -415,8 +415,10 @@ def patch_clip(clip_id: str, body: ClipPatch) -> dict:
         if end - start < 3:
             raise HTTPException(400, "A clip must be at least 3 seconds long")
         if body.snap:
-            words = pipeline.load_transcript(ws).all_words()
-            start, end, _ = snap_to_words(words, start, end, pad_start=0.15, pad_end=0.3, search=1.5)
+            tr = pipeline.load_transcript(ws)
+            starts, ends = tr.boundaries()
+            start, end, _ = snap_to_words(tr.all_words(), start, end, pad_start=0.15, pad_end=0.3, search=1.5,
+                                          seg_starts=starts, seg_ends=ends)
         if (start, end) != (c.start, c.end):
             c.word_edits = {}  # word indices shift when the range changes
             c.crop_overrides = []
@@ -689,16 +691,18 @@ def estimate(duration: float = 3600, clips: int = 20, provider: Optional[str] = 
 
     cfg = _cfg()
     cuda = cuda_available()
-    whisper_rt = 0.06 if cuda else (0.5 if cpu_count() >= 12 else 0.9)  # fraction of real time (turbo int8 on CPU, greedy)
+    # measured on a Ryzen 7 (8 cores, no CUDA): turbo int8 greedy ≈ 0.4× real time; qwen2.5:7b ≈ 120 s per 8-min window
+    whisper_rt = 0.06 if cuda else (0.45 if cpu_count() >= 12 else 0.8)
     prov = provider or cfg.llm.provider
-    llm_per_window = {"ollama": 45 if not cuda else 15, "gemini": 8, "groq": 4, "mock": 0}.get(prov, 30)
-    windows = max(1, int(duration / ((cfg.llm.window_min - cfg.llm.overlap_min) * 60)))
+    llm_per_window = {"ollama": 30 if cuda else 130, "gemini": 10, "groq": 5, "mock": 0}.get(prov, 60)
+    llm_per_clip = {"ollama": 8 if cuda else 30, "gemini": 3, "groq": 2, "mock": 0}.get(prov, 10)  # romanize + copy
+    windows = max(1, int(duration / ((cfg.llm.window_min - cfg.llm.overlap_min) * 60)) + 1)
     parts = {
-        "download": duration * 0.05,
+        "download": max(20, duration * 0.03),
         "transcribe": duration * whisper_rt,
         "select": windows * llm_per_window,
-        "reframe": clips * 12,
-        "render": clips * (12 if cuda else 35),
+        "captions": clips * llm_per_clip,
+        "render": clips * (4 if cuda else 8),
     }
     return {"total_sec": round(sum(parts.values())), "parts": {k: round(v) for k, v in parts.items()}}
 

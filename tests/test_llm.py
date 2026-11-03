@@ -32,7 +32,7 @@ def test_extract_json_variants():
 
 
 def test_retry_then_success_includes_error():
-    p = FlakyProvider(["not json", '{"candidates":[{"start":5,"end":2,"title":"bad"}]}', GOOD])
+    p = FlakyProvider(["not json", '{"wrong": 1}', GOOD])
     res = p.complete_json("PROMPT", LLMCandidateList, retries=3)
     assert len(res.candidates) == 1
     assert "invalid" in p.prompts[1].lower() and "PROMPT" in p.prompts[2]
@@ -100,3 +100,10 @@ def test_romanize_keyed_output_tolerates_missing_words():
           Word(start=3, end=4, text="okay")]
     romanize_words(ws, Partial("x"), NullReporter())
     assert [w.roman for w in ws] == ["kya", "baat", "hai", "okay"]
+
+
+def test_raw_candidates_keep_good_items():
+    from clipforge.models import RawCandidateList
+
+    raw = RawCandidateList.model_validate([{"start": 1, "end": 30, "title": "ok"}, {"start": 5, "end": 2, "title": "bad"}, {"x": 1}])
+    assert [c.title for c in raw.valid()] == ["ok"]

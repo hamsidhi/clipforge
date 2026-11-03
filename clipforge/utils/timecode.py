@@ -69,41 +69,59 @@ def snap_to_words(
     search: float = 4.0,
     min_len: float = 0.0,
     max_len: float = 1e9,
+    seg_starts: set[float] | None = None,
+    seg_ends: set[float] | None = None,
 ) -> tuple[float, float, bool]:
     """Snap [start, end] to word boundaries so no word is ever cut in half.
 
-    Start moves to the nearest sentence-starting word within `search` seconds (else nearest word
-    start); end moves to the nearest sentence-ending word (else nearest word end). Then padding is
-    applied without spilling into the neighbouring words.
+    A sentence boundary is punctuation, a pause ≥ 0.6 s, or a Whisper segment boundary
+    (`seg_starts` / `seg_ends` = word start/end times that begin/end a segment — Whisper often
+    omits punctuation in Hinglish, so segments are the most reliable sentence signal).
 
-    Returns (new_start, new_end, started_mid_sentence).
+    Start moves to the nearest sentence start within `search` seconds (else the nearest word start).
+    End preference: sentence end near `end` within the length limits → any sentence end within the
+    length limits → any word end near `end` within the limits → anything. Padding is then applied
+    without spilling into neighbouring words.
+
+    Returns (new_start, new_end, not_on_sentence_boundary).
     """
     if not words:
         return start, end, False
     words = sorted(words, key=lambda w: w.start)
+    seg_starts = seg_starts or set()
+    seg_ends = seg_ends or set()
+
+    def starts_ok(i: int) -> bool:
+        return _starts_sentence(words, i) or words[i].start in seg_starts
+
+    def ends_ok(i: int) -> bool:
+        return _ends_sentence(words, i) or words[i].end in seg_ends
 
     # --- start
     in_range = [i for i, w in enumerate(words) if abs(w.start - start) <= search]
-    sent_starts = [i for i in in_range if _starts_sentence(words, i)]
+    sent_starts = [i for i in in_range if starts_ok(i)]
     if sent_starts:
         si = min(sent_starts, key=lambda i: abs(words[i].start - start))
-        mid = False
     else:
         si = min(range(len(words)), key=lambda i: abs(words[i].start - start))
-        mid = not _starts_sentence(words, si)
 
-    # --- end (must be after start word)
-    cand = [i for i in range(si, len(words)) if abs(words[i].end - end) <= search]
-    sent_ends = [i for i in cand if _ends_sentence(words, i)]
-    pool = sent_ends or cand or list(range(si, len(words)))
-
-    def _len_ok(i: int) -> bool:
+    # --- end (must be after the start word)
+    def len_ok(i: int) -> bool:
         return min_len <= words[i].end - words[si].start <= max_len
 
-    ok = [i for i in pool if _len_ok(i)]
-    if not ok:  # relax: any word end that satisfies the length limits
-        ok = [i for i in range(si, len(words)) if _len_ok(i)] or pool
-    ei = min(ok, key=lambda i: abs(words[i].end - end))
+    after = range(si, len(words))
+    near = [i for i in after if abs(words[i].end - end) <= search]
+    for pool in (
+        [i for i in near if ends_ok(i) and len_ok(i)],
+        [i for i in after if ends_ok(i) and len_ok(i)],
+        [i for i in near if len_ok(i)],
+        [i for i in after if len_ok(i)],
+        near or list(after),
+    ):
+        if pool:
+            ei = min(pool, key=lambda i: abs(words[i].end - end))
+            break
+    mid = not starts_ok(si) or not ends_ok(ei)
 
     new_start = words[si].start - pad_start
     if si > 0:

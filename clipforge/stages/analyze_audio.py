@@ -15,9 +15,13 @@ def compute_energy(samples: np.ndarray, sr: int) -> EnergyData:
     n_sec = int(len(samples) // sr)
     if n_sec == 0:
         return EnergyData(rms_db=[], peaks=[])
-    x = samples[: n_sec * sr].astype(np.float32) / 32768.0
-    x = x.reshape(n_sec, sr)
-    rms = np.sqrt(np.mean(x * x, axis=1) + 1e-12)
+    # per-second RMS in chunks of 10 minutes: never materialise a float copy of a 3-hour file
+    rms = np.empty(n_sec, dtype=np.float64)
+    step = 600
+    for a in range(0, n_sec, step):
+        b = min(n_sec, a + step)
+        x = samples[a * sr : b * sr].astype(np.float32).reshape(b - a, sr) / 32768.0
+        rms[a:b] = np.sqrt(np.mean(x * x, axis=1) + 1e-12)
     db = 20 * np.log10(rms + 1e-9)
 
     # rolling median / MAD over ±60 s gives a local baseline robust to quiet/loud sections

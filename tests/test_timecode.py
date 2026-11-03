@@ -52,3 +52,14 @@ def test_snap_respects_max_len():
 def test_words_in_range(words):
     inside = words_in_range(words, words[2].start, words[5].end)
     assert [w.text for w in inside] == [w.text for w in words[2:6]]
+
+
+def test_snap_uses_segment_boundaries_when_no_punctuation():
+    # no punctuation, no pauses: only Whisper segment ends mark sentences
+    ws = make_words(" ".join(f"w{i}" for i in range(120)), dur=0.4, gap=0.1)  # 0.5 s per word
+    seg_ends = {ws[i].end for i in range(9, 120, 10)}  # every 10th word ends a segment (every 5 s)
+    seg_starts = {ws[i].start for i in range(0, 120, 10)}
+    s, e, mid = snap_to_words(ws, 11.2, 38.3, min_len=20, max_len=59, seg_starts=seg_starts, seg_ends=seg_ends)
+    assert not mid
+    assert any(0 <= e - x <= 0.31 for x in seg_ends)  # padding stops at the next word
+    assert any(0 <= x - s <= 0.16 for x in seg_starts)

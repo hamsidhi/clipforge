@@ -55,7 +55,7 @@ def _transcript() -> Transcript:
 @pytest.fixture
 def workspace(tmp_path):
     cfg = Config().with_overrides({
-        "output.dir": str(tmp_path), "llm.provider": "mock", "clips.count": 2, "clips.min_sec": 20, "clips.max_sec": 40,
+        "output.dir": str(tmp_path / "D'Souza workspace"), "llm.provider": "mock",  # quote + space in path "clips.count": 2, "clips.min_sec": 20, "clips.max_sec": 40,
         "render.preset": "ultrafast", "render.workers": 2,
     })
     ws = Workspace(cfg.workspace, "synthetic")

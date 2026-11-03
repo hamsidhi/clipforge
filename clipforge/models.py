@@ -37,6 +37,7 @@ class Word(BaseModel):
     text: str
     prob: float = 1.0
     roman: str | None = None  # Roman-Hinglish form of `text` (same timing)
+    roman_src: str | None = None  # llm | rule | rule-failed (LLM unavailable -> retried on next render)
 
     def display(self, script: str) -> str:
         if script == "roman" and self.roman:
@@ -63,6 +64,11 @@ class Transcript(BaseModel):
 
     def all_words(self) -> list[Word]:
         return [w for s in self.segments for w in s.words]
+
+    def boundaries(self) -> tuple[set[float], set[float]]:
+        """(start times of segment-first words, end times of segment-last words) — sentence-ish boundaries."""
+        segs = [s for s in self.segments if s.words]
+        return {s.words[0].start for s in segs}, {s.words[-1].end for s in segs}
 
 
 class Scene(BaseModel):
@@ -113,6 +119,33 @@ class LLMCandidate(BaseModel):
 
 class LLMCandidateList(BaseModel):
     candidates: list[LLMCandidate]
+
+
+class RawCandidateList(BaseModel):
+    """Lenient wrapper for the selection reply: items are validated one by one later, so one bad
+    candidate doesn't throw away the whole window. A bare JSON list is accepted too."""
+
+    candidates: list[dict]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _wrap(cls, v):
+        if isinstance(v, list):
+            return {"candidates": v}
+        if isinstance(v, dict) and "candidates" not in v:
+            for key in ("clips", "moments", "results"):
+                if isinstance(v.get(key), list):
+                    return {"candidates": v[key]}
+        return v
+
+    def valid(self) -> list[LLMCandidate]:
+        out = []
+        for item in self.candidates:
+            try:
+                out.append(LLMCandidate.model_validate(item))
+            except Exception:
+                continue
+        return out
 
 
 Layout = Literal["auto", "track", "split", "blur"]

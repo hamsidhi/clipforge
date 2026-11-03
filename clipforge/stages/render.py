@@ -78,6 +78,23 @@ def _split_box(cx: float, cy: float, face_h: float, g: Geometry, out_w: int, hal
     return rw, rh, x, y
 
 
+def _filter_dir(target: Path, cwd: Path) -> str:
+    """Path for a filter option, relative to ffmpeg's cwd when possible.
+
+    Relative paths avoid Windows drive colons and characters like ' in user names, which cannot be
+    escaped reliably inside quoted filter options. Falls back to an escaped absolute path (different drive).
+    """
+    import os
+
+    try:
+        rel = os.path.relpath(target, cwd).replace("\\", "/")
+        if "'" not in rel:
+            return rel
+    except ValueError:  # different drive on Windows
+        pass
+    return escape_filter_path(target)
+
+
 def build_filtergraph(plan: CropPlan, ass_path: Path | None, work: Path, cfg: Config,
                       loud: dict | None) -> tuple[str, str, str]:
     """Return (filter_complex, video_label, audio_label)."""
@@ -113,7 +130,7 @@ def build_filtergraph(plan: CropPlan, ass_path: Path | None, work: Path, cfg: Co
             target = f"crop@c{i}"
             cmd_file = work / f"crop_{i}.cmd"
             moving = seg.mode == "track" and write_sendcmd(seg, g, fps, target, cmd_file)
-            send = f"sendcmd=f='{escape_filter_path(cmd_file)}'," if moving else ""
+            send = f"sendcmd=f='{cmd_file.name}'," if moving else ""  # relative: ffmpeg runs in `work`
             parts.append(f"{head},{send}{target}=w={g.cw}:h={g.ch}:x={x0}:y={y0},{tail}[v{i}]")
     if n > 1:
         parts.append("".join(f"[v{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=0[vc]")
@@ -123,7 +140,7 @@ def build_filtergraph(plan: CropPlan, ass_path: Path | None, work: Path, cfg: Co
     if ass_path is not None:
         from clipforge.config import FONTS_DIR
 
-        parts.append(f"[{vlabel}]ass=filename='{escape_filter_path(ass_path)}':fontsdir='{escape_filter_path(FONTS_DIR)}'[vout]")
+        parts.append(f"[{vlabel}]ass=filename='{ass_path.name}':fontsdir='{_filter_dir(FONTS_DIR, work)}'[vout]")
         vlabel = "vout"
 
     target_i = r.loudness_lufs
@@ -152,10 +169,10 @@ def render_clip(source: Path, start: float, end: float, plan: CropPlan, ass_path
     graph, vlabel, alabel = build_filtergraph(plan, ass_path, work, cfg, loud)
     graph_file = work / "filtergraph.txt"
     graph_file.write_text(graph, encoding="utf-8")
-    tmp = out.with_suffix(".tmp.mp4")
+    tmp = work / "render.tmp.mp4"  # not in clips/: a leftover must never look like a finished clip
     args = [
-        "-ss", f"{start:.3f}", "-t", f"{duration:.3f}", "-i", str(source),
-        "-/filter_complex", str(graph_file),  # read the graph from a file (ffmpeg ≥7 syntax)
+        "-ss", f"{start:.3f}", "-t", f"{duration:.3f}", "-i", str(Path(source).resolve()),
+        "-/filter_complex", graph_file.name,  # read the graph from a file (ffmpeg ≥7 syntax)
         "-map", f"[{vlabel}]", "-map", f"[{alabel}]",
         *video_codec_args(cfg),
         "-r", str(cfg.render.fps),
@@ -163,8 +180,11 @@ def render_clip(source: Path, start: float, end: float, plan: CropPlan, ass_path
         "-t", f"{duration:.3f}",
         "-movflags", "+faststart",
         "-metadata", "comment=", "-map_metadata", "-1",
-        str(tmp),
+        str(tmp.resolve()),
     ]
-    run_ffmpeg(args, duration=duration, on_progress=on_progress, cancel=cancel)
-    tmp.replace(out)
+    try:
+        run_ffmpeg(args, duration=duration, on_progress=on_progress, cancel=cancel, cwd=work)
+        tmp.replace(out)
+    finally:
+        tmp.unlink(missing_ok=True)
     return out
