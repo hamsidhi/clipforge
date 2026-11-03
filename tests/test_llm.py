@@ -16,7 +16,7 @@ class FlakyProvider(LLMProvider):
         self.replies = list(replies)
         self.prompts = []
 
-    def generate(self, prompt, *, system=None, json_mode=True, task=""):
+    def generate(self, prompt, *, system=None, json_mode=True, task="", json_schema=None):
         self.prompts.append(prompt)
         return self.replies.pop(0)
 
@@ -93,7 +93,7 @@ def test_romanize_keyed_output_tolerates_missing_words():
     class Partial(LLMProvider):
         name = "partial"
 
-        def generate(self, prompt, *, system=None, json_mode=True, task=""):
+        def generate(self, prompt, *, system=None, json_mode=True, task="", json_schema=None):
             return '{"0": "kya", "2": "hai"}'  # index 1 missing
 
     ws = [Word(start=0, end=1, text="क्या"), Word(start=1, end=2, text="बात"), Word(start=2, end=3, text="है"),

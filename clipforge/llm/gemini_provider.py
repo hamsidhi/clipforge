@@ -21,7 +21,8 @@ class GeminiProvider(LLMProvider):
         self.api_key = api_key
         super().__init__(DEFAULT_MODEL if model == "auto" else model, temperature, timeout)
 
-    def generate(self, prompt: str, *, system: str | None = None, json_mode: bool = True, task: str = "") -> str:
+    def generate(self, prompt: str, *, system: str | None = None, json_mode: bool = True, task: str = "",
+                 json_schema: dict | None = None) -> str:
         body: dict = {
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": self.temperature},

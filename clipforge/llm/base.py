@@ -13,6 +13,21 @@ from clipforge.utils.text import extract_json
 T = TypeVar("T", bound=BaseModel)
 
 
+def strict_schema(model: type[BaseModel]) -> dict:
+    """JSON schema with EVERY property required (pydantic marks fields with defaults optional, and a
+    schema-constrained model then happily omits them — e.g. all scores missing)."""
+    schema = model.model_json_schema()
+
+    def fix(node: dict) -> None:
+        if node.get("type") == "object" and "properties" in node:
+            node["required"] = list(node["properties"])
+        for v in node.get("$defs", {}).values():
+            fix(v)
+
+    fix(schema)
+    return schema
+
+
 class LLMError(RuntimeError):
     """The provider could not be reached or kept returning invalid output."""
 
@@ -26,18 +41,21 @@ class LLMProvider(ABC):
         self.timeout = timeout
 
     @abstractmethod
-    def generate(self, prompt: str, *, system: str | None = None, json_mode: bool = True, task: str = "") -> str:
-        """Return the raw text completion. `task` is a hint used only by the mock provider."""
+    def generate(self, prompt: str, *, system: str | None = None, json_mode: bool = True, task: str = "",
+                 json_schema: dict | None = None) -> str:
+        """Return the raw text completion. `task` is a hint used only by the mock provider; `json_schema`
+        constrains the output on providers that support structured outputs (Ollama)."""
 
     def complete_json(
-        self, prompt: str, schema: type[T], *, system: str | None = None, retries: int = 3, task: str = ""
+        self, prompt: str, schema: type[T], *, system: str | None = None, retries: int = 3, task: str = "",
+        json_schema: dict | None = None,
     ) -> T:
         """Ask for JSON matching `schema`; on parse/validation errors, retry with the error appended."""
         last_err = ""
         attempt_prompt = prompt
         for attempt in range(1, retries + 1):
             try:
-                raw = self.generate(attempt_prompt, system=system, json_mode=True, task=task)
+                raw = self.generate(attempt_prompt, system=system, json_mode=True, task=task, json_schema=json_schema)
             except LLMError:
                 raise
             except Exception as exc:  # network etc.

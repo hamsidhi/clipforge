@@ -26,6 +26,7 @@ llm:
   max_candidates_per_window: 6
   ollama_url: http://127.0.0.1:11434
   timeout_sec: 600
+  max_tokens: 2048     # cap per LLM reply (stops runaway generations on slow CPUs)
 
 scoring_weights:
   hook: 0.3

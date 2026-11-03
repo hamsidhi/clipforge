@@ -62,6 +62,7 @@ class LLMConfig(_Section):
     max_candidates_per_window: int = 6
     ollama_url: str = "http://127.0.0.1:11434"
     timeout_sec: int = 600
+    max_tokens: int = 2048  # cap per LLM reply (6 candidates ≈ 900 tokens)
 
 
 class ScoringWeights(_Section):

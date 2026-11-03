@@ -6,9 +6,9 @@ import json
 from pathlib import Path
 
 from clipforge.config import Config, PROMPTS_DIR
-from clipforge.llm.base import LLMError, LLMProvider
+from clipforge.llm.base import LLMError, LLMProvider, strict_schema
 from clipforge.llm.mock_provider import romanize_word
-from clipforge.models import LLMCandidate, RawCandidateList, Segment, Transcript, VideoInfo
+from clipforge.models import LLMCandidate, LLMCandidateList, RawCandidateList, Segment, Transcript, VideoInfo
 from clipforge.utils.ffmpeg import Timer
 from clipforge.utils.log import ProgressReporter, check_cancel, log
 from clipforge.workspace import Workspace, fingerprint
@@ -96,7 +96,7 @@ def run(ws: Workspace, cfg: Config, llm: LLMProvider, reporter: ProgressReporter
                               f"LLM window {i + 1}/{len(windows)} ({int(a // 60)}-{int(b // 60)} min)")
             try:
                 res = llm.complete_json(prompt, RawCandidateList, system=SYSTEM, retries=cfg.llm.max_retries,
-                                        task="select")
+                                        task="select", json_schema=strict_schema(LLMCandidateList))
             except LLMError as exc:
                 if "not running" in str(exc) or "not found" in str(exc) or "API_KEY" in str(exc):
                     raise

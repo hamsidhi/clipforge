@@ -32,7 +32,7 @@ class OllamaProvider(LLMProvider):
     name = "ollama"
 
     def __init__(self, model: str = "auto", temperature: float = 0.3, timeout: int = 600,
-                 url: str = "http://127.0.0.1:11434") -> None:
+                 url: str = "http://127.0.0.1:11434", max_tokens: int = 2048) -> None:
         self.url = url.rstrip("/")
         if model == "auto":
             try:
@@ -47,8 +47,10 @@ class OllamaProvider(LLMProvider):
                 raise LLMError("Ollama has no models. Run: ollama pull qwen2.5:7b")
             model = chosen
         super().__init__(model, temperature, timeout)
+        self.max_tokens = max_tokens
 
-    def generate(self, prompt: str, *, system: str | None = None, json_mode: bool = True, task: str = "") -> str:
+    def generate(self, prompt: str, *, system: str | None = None, json_mode: bool = True, task: str = "",
+                 json_schema: dict | None = None) -> str:
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
@@ -57,10 +59,13 @@ class OllamaProvider(LLMProvider):
             "model": self.model,
             "messages": messages,
             "stream": False,
-            "options": {"temperature": self.temperature, "num_ctx": 16384},
+            # num_predict caps runaway generations (JSON mode can otherwise emit whitespace until the context
+            # is full — minutes on a CPU); keep_alive avoids reloading the model between windows
+            "options": {"temperature": self.temperature, "num_ctx": 16384, "num_predict": self.max_tokens},
+            "keep_alive": "30m",
         }
         if json_mode:
-            body["format"] = "json"
+            body["format"] = json_schema or "json"  # a schema = Ollama structured outputs
         try:
             r = httpx.post(f"{self.url}/api/chat", json=body, timeout=self.timeout)
         except httpx.HTTPError as exc:
