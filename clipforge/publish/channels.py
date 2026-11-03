@@ -74,14 +74,25 @@ def mark_reauth(channel_id: str, message: str) -> None:
     log.warning(f"Channel {channel_id} needs re-login: {message}")
 
 
+def missing_scopes(creds) -> list[str]:
+    granted = set(getattr(creds, "granted_scopes", None) or getattr(creds, "scopes", None) or [])
+    return [s for s in yt.SCOPES if granted and s not in granted]
+
+
 def register(info: dict, creds, cfg: Config | None = None) -> db.Channel:
     """Store the token and upsert the channel row (keeps existing settings)."""
+    missing = missing_scopes(creds)
+    if yt.SCOPES[1] in missing:
+        raise ValueError("ClipForge needs read access to your channel — sign in again and tick every permission.")
     yt.save_credentials(info["id"], creds, cfg)
     with db.session() as s:
         ch = s.get(db.Channel, info["id"]) or db.Channel(id=info["id"])
         ch.title, ch.handle, ch.thumbnail = info["title"], info.get("handle", ""), info.get("thumbnail", "")
         ch.uploads_playlist = info.get("uploads_playlist", "")
         ch.auth_status, ch.auth_error = "ok", ""
+        if missing:  # granular consent: user unticked some boxes
+            ch.auth_error = ("Not granted: " + ", ".join(m.rsplit("/", 1)[-1] for m in missing)
+                             + ". Uploads (API mode) or analytics won't work — Reconnect and tick every box.")
         s.add(ch)
         s.commit()
         s.refresh(ch)

@@ -141,3 +141,23 @@ A review subagent audited the engine; fixed:
 - Old single-channel `clipforge upload` + `upload:` config were replaced by the multi-channel system.
 - `CLIPFORGE_CONFIG` (alternative config.yaml) and `CLIPFORGE_NO_TICKER=1` exist for demo/testing;
   `scripts/demo_publish.py` builds a demo workspace with a fake YouTube client (used for the screenshots).
+
+### Phase 12 code-review fixes
+A review subagent confirmed 16 issues with scratch tests; all fixed:
+- **Runner works on live data:** each upload re-reads the item + channel and claims it atomically
+  (`UPDATE … WHERE status='queued' AND slot=? AND no video id AND no batch`), so pausing, unscheduling or moving
+  during a long run is respected.
+- **Never upload twice:** items with a YouTube id or in a Studio batch are never uploaded; `move` refuses linked
+  items; batches are blocked in API mode; an upload interrupted by a crash becomes "Needs you" (check Studio + Sync)
+  instead of being re-uploaded blindly.
+- **Process lock** holds pid + token + heartbeat (refreshed per upload); taken over only if the holder is dead
+  (Windows check via OpenProcess — `os.kill(pid, 0)` would kill the process there) or silent for 6 h; only the owner deletes it.
+- **Per-channel isolation:** any error (token refresh, HTTP, network) is caught per channel; auth problems
+  (`RefreshError`, invalid_grant, insufficient scopes) mark the channel "needs re-login".
+- **Missed slots** are flagged in both modes; Studio batches skip past slots; batches are written fully before items
+  are marked, into unique folders.
+- Linked `needs_manual` items refresh to scheduled/published; Link checks channel ownership and double-linking;
+  the item's own upload is not a duplicate title; Regenerate is blocked for clips on YouTube or in a batch; per-video
+  analytics wait 5 days and retry incomplete data; unticked OAuth permissions are reported on the channel.
+- Batch file route validates the path before touching the filesystem (a `//host/share` path would make Windows
+  open an SMB connection and leak an NTLM hash).

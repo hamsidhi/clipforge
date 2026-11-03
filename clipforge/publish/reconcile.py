@@ -107,7 +107,13 @@ def link(item_id: int, video_id: str, cfg: Config | None = None, client: yt.YouT
     if not it:
         raise q.QueueError("Unknown queue item")
     client = client or yt.client_for(it.channel_id, cfg or load_config())
+    others = [o for o in q.items(it.channel_id) if o.youtube_video_id == video_id and o.id != it.id]
+    if others:
+        raise q.QueueError(f"That video is already linked to another clip (“{others[0].title}”).")
     vids = client.videos([video_id])
     if not vids:
         raise q.QueueError("That video wasn't found on YouTube.")
+    owner = vids[0].get("snippet", {}).get("channelId")
+    if owner and owner != it.channel_id:
+        raise q.QueueError("That video belongs to a different channel.")
     return apply_video(it, vids[0])

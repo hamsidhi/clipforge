@@ -81,6 +81,8 @@ def test_full_flow(api):
     page = c.get(b["url"])
     assert page.status_code == 200 and "YouTube Studio" in page.text
     assert c.get("/api/batches/files/../config.yaml").status_code == 404
+    assert c.get("/api/batches/files/%2F%2Fattacker%2Fshare%2Fx").status_code == 404  # UNC path: never resolved
+    assert c.get("/api/batches/files/batches%2F..%2F..%2Fconfig.yaml").status_code == 404
 
     # "uploaded in Studio": reconcile links them
     for it in c.get("/api/queue?channel_id=UCapi&status=queued").json()[:2]:

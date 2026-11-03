@@ -93,15 +93,18 @@ def _per_video_analytics(channel_id: str, client: yt.YouTubeClient, now: dt.date
     """views in the first 24 h / 72 h (Analytics days ≈ Pacific days), average view %, subscribers gained."""
     with db.session() as s:
         perfs = [p for p in s.exec(select(db.VideoPerf).where(db.VideoPerf.channel_id == channel_id)).all()
-                 if p.published_at and as_utc(p.published_at) <= now - dt.timedelta(hours=72) and p.views_72h is None]
+                 # Analytics data lags 1–3 days: wait 5 days so the first 3 days are complete
+                 if p.published_at and as_utc(p.published_at) <= now - dt.timedelta(days=5) and p.views_72h is None]
         for p in perfs[:limit]:
             pub_day = as_utc(p.published_at).astimezone(PACIFIC).date()
             try:
                 rows = client.analytics(pub_day.isoformat(), (pub_day + dt.timedelta(days=2)).isoformat(), "views",
                                         dimensions="day", filters=f"video=={p.youtube_video_id}")
                 daily = [int(r[1]) for r in sorted(rows, key=lambda r: r[0])]
-                p.views_24h = daily[0] if daily else 0
-                p.views_72h = sum(daily[:3]) if daily else 0
+                if len(daily) < 3:
+                    continue  # incomplete data: leave None so the next sync retries
+                p.views_24h = daily[0]
+                p.views_72h = sum(daily[:3])
                 tot = client.analytics(pub_day.isoformat(), now.astimezone(PACIFIC).date().isoformat(),
                                        "averageViewPercentage,subscribersGained", filters=f"video=={p.youtube_video_id}")
                 if tot:

@@ -42,9 +42,9 @@ export default function Batches() {
             <div className="text-xs text-muted-foreground">Clips (max {max} per Studio upload)</div>
             <Input type="number" min={1} max={max} value={n} onChange={(e) => setN(Math.min(max, Math.max(1, Number(e.target.value))))} className="w-28" />
           </div>
-          <Button onClick={() => prep.mutate()} disabled={!channelId || !waiting.length || prep.isPending}><FolderUp /> Prepare batch</Button>
+          <Button onClick={() => prep.mutate()} disabled={!channelId || !waiting.length || prep.isPending || status?.mode === 'api'}><FolderUp /> Prepare batch</Button>
           <span className="text-muted-foreground">{waiting.length} scheduled clip(s) waiting for a batch</span>
-          {status?.mode === 'api' && <span className="text-xs text-amber-300">You're in API mode — ClipForge uploads by itself; batches are optional.</span>}
+          {status?.mode === 'api' && <span className="text-xs text-amber-300">You're in API mode — ClipForge uploads by itself, so batches are off (they'd upload clips twice).</span>}
         </CardContent>
       </Card>
       {!batches.length ? (

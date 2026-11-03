@@ -308,6 +308,11 @@ def queue_patch(item_id: int, body: QueuePatch) -> dict:
 @router.post("/queue/{item_id}/regenerate", summary="Write new title/description/tags with the LLM")
 def queue_regenerate(item_id: int) -> dict:
     it = _item_or_404(item_id)
+    if it.youtube_video_id or it.status in ("uploading", "scheduled", "published"):
+        raise HTTPException(409, "Already on YouTube — new metadata here wouldn't change the video. Edit it in Studio.")
+    if it.batch:
+        raise HTTPException(409, "This clip is in a prepared Studio batch — regenerating would no longer match the "
+                                 "checklist. Unschedule it first (removes it from the batch).")
     it.meta_status = "pending"
     q.save(it)
     _queue_metadata([item_id])
@@ -341,7 +346,7 @@ def queue_bulk(body: BulkIn) -> dict:
             elif body.action == "delete":
                 q.delete(i)
             elif body.action == "regenerate":
-                queue_regenerate(i)
+                queue_regenerate(i)  # raises 409 for clips already on YouTube / in a batch
             else:
                 it = q.get(i)
                 if not it or not it.slot_utc:
@@ -418,6 +423,11 @@ def batches() -> list[dict]:
 
 @router.get("/batches/files/{path:path}", include_in_schema=False)
 def batch_file(path: str) -> FileResponse:
+    # validate BEFORE touching the filesystem: on Windows, resolving "//host/share" would open an SMB connection
+    parts = path.replace("\\", "/").split("/")
+    if (not path.startswith("batches/") or ":" in path or path.startswith(("/", "\\"))
+            or any(p in ("", ".", "..") for p in parts)):
+        raise HTTPException(404, "Not found")
     root = (load_config().workspace / "batches").resolve()
     target = (load_config().workspace / path).resolve()
     if root not in target.parents or not target.is_file():

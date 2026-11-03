@@ -287,7 +287,7 @@ def test_e2e_queue_schedule_upload_batch_reconcile_dashboard(env):
     for it in two:
         q.generate_metadata(it.id, cfg)
     q.autoschedule("UCtwo", now=NOW)
-    b = batch.prepare("UCtwo", cfg=cfg)
+    b = batch.prepare("UCtwo", cfg=cfg.with_overrides({"publishing.mode": "assisted"}))
     assert b["count"] == 2 and (tmp / "ws" / b["relative"] / "batch.html").exists()
     for it in q.items("UCtwo", ("queued",)):  # "I uploaded them in Studio"
         fake2.add_video(f"s{it.id}", it.title, int(it.duration), privacy="private",
@@ -370,4 +370,112 @@ def test_process_lock_and_stuck_recovery(env):
     stuck.status = "uploading"  # crash mid-upload
     q.save(stuck)
     rep = runner.run_once(cfg, now=NOW)
-    assert rep.uploaded == [it.id] and q.get(it.id).status == "scheduled"
+    # never re-upload blindly: YouTube may already have the file
+    assert rep.uploaded == [] and q.get(it.id).status == "needs_manual" and "interrupted" in q.get(it.id).error
+
+
+def _one_channel_two_items(env, confirmed=True):
+    from clipforge.api import db
+    from clipforge.config import load_config
+    from clipforge.publish import queue as q
+
+    tmp, fake = env
+    cfg = load_config()
+    _seed_episode(cfg.workspace, "epU", 2)
+    with db.session() as s:
+        s.add(db.Channel(id="UCtest", title="T", uploads_playlist="UUtest", confirmed=confirmed))
+        s.commit()
+    its = q.add_clips("UCtest", "epU", None)
+    for it in its:
+        q.generate_metadata(it.id, cfg)
+    q.autoschedule("UCtest", now=NOW)
+    return cfg, fake, [q.get(i.id) for i in its]
+
+
+def test_unschedule_during_run_is_respected(env):
+    from clipforge.publish import queue as q, runner
+
+    cfg, fake, (a, b) = _one_channel_two_items(env)
+    first = sorted([a, b], key=lambda x: x.slot_utc)
+    orig = fake.upload
+
+    def upload_and_user_unschedules(path, body, on_progress=None):
+        vid = orig(path, body, on_progress)
+        q.unschedule(first[1].id)  # user clicks Unschedule while the first upload runs
+        return vid
+
+    fake.upload = upload_and_user_unschedules
+    rep = runner.run_once(cfg, now=NOW)
+    assert rep.uploaded == [first[0].id]
+    assert q.get(first[1].id).status == "draft" and not q.get(first[1].id).youtube_video_id
+
+
+def test_linked_or_batched_items_never_reuploaded(env):
+    from clipforge.publish import batch, queue as q, runner
+
+    cfg, fake, (a, b) = _one_channel_two_items(env)
+    a.youtube_video_id, a.status = "studio1", "needs_manual"  # linked from Studio, not scheduled yet
+    q.save(a)
+    with pytest.raises(q.QueueError):
+        q.move(a.id, NOW + dt.timedelta(days=2))
+    b.batch = "batches/x/y"
+    q.save(b)
+    rep = runner.run_once(cfg, now=NOW)
+    assert rep.uploaded == []
+    assert fake.uploaded_bodies == []
+    with pytest.raises(q.QueueError, match="API mode"):
+        batch.prepare("UCtest", cfg=cfg)  # env is in API mode: batches would duplicate uploads
+
+
+def test_refresh_error_marks_channel_and_continues(env):
+    from google.auth.exceptions import RefreshError
+
+    from clipforge.api import db
+    from clipforge.publish import channels as chs, runner
+
+    tmp, fake = env
+    from clipforge.config import load_config
+
+    cfg = load_config()
+    with db.session() as s:
+        s.add(db.Channel(id="UCa", title="A", uploads_playlist="UUa"))
+        s.add(db.Channel(id="UCb", title="B", uploads_playlist="UUb"))
+        s.commit()
+
+    class Broken(FakeYouTube):
+        def uploads(self, playlist_id, max_items=100):
+            raise RefreshError("invalid_grant: Token has been expired or revoked.")
+
+    from clipforge.publish import youtube as yt
+
+    yt.set_client_factory(lambda cid, c: Broken(cid) if cid == "UCa" else FakeYouTube(cid))
+    rep = runner.run_once(cfg, now=NOW)
+    assert chs.get("UCa").auth_status == "needs_reauth"
+    assert "UCb" in rep.synced
+
+
+def test_batch_paths_and_missed_slots(env):
+    from clipforge.publish import batch, queue as q
+
+    from clipforge.config import load_config
+
+    cfg = load_config().with_overrides({"publishing.mode": "assisted"})
+    tmp, fake = env
+    _seed_episode(cfg.workspace, "epB2", 3)
+    from clipforge.api import db
+
+    with db.session() as s:
+        s.add(db.Channel(id="UCtest", title="T", uploads_playlist="UUtest"))
+        s.commit()
+    its = q.add_clips("UCtest", "epB2", None, cfg)
+    for it in its:
+        q.generate_metadata(it.id, cfg)
+    q.autoschedule("UCtest", cfg=cfg, now=NOW)
+    b1 = batch.prepare("UCtest", 1, cfg, now=NOW)
+    b2 = batch.prepare("UCtest", 1, cfg, now=NOW)  # same minute: must not overwrite b1
+    assert b1["relative"] != b2["relative"]
+    later = NOW + dt.timedelta(days=30)  # all remaining slots are in the past now
+    with pytest.raises(q.QueueError):
+        batch.prepare("UCtest", None, cfg, now=later)
+    left = [it for it in q.items("UCtest") if not it.batch]
+    assert all(it.status == "needs_manual" for it in left)

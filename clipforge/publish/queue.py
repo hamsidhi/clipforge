@@ -56,6 +56,19 @@ def save(item: db.QueueItem) -> db.QueueItem:
         return item
 
 
+def claim_for_upload(item_id: int, slot_utc: dt.datetime) -> bool:
+    """Atomically move queued → uploading, only if nobody changed the item (status, slot, link, batch) meanwhile."""
+    from sqlalchemy import update
+
+    with db.session() as s:
+        res = s.exec(update(db.QueueItem)  # type: ignore[call-overload]
+                     .where(db.QueueItem.id == item_id, db.QueueItem.status == "queued",
+                            db.QueueItem.slot_utc == slot_utc, db.QueueItem.youtube_video_id == "", db.QueueItem.batch == "")
+                     .values(status="uploading", attempts=db.QueueItem.attempts + 1, updated_at=db.now()))
+        s.commit()
+        return res.rowcount == 1
+
+
 def delete(item_id: int) -> None:
     with db.session() as s:
         it = s.get(db.QueueItem, item_id)
@@ -74,7 +87,10 @@ def existing_titles(channel_id: str, exclude_id: int | None = None) -> list[str]
     planned = [it for it in q if it.id != exclude_id and it.status != "draft" and it.title]
     planned.sort(key=lambda it: it.updated_at, reverse=True)
     titles = [it.title for it in planned[:100]]
-    titles += [p.title for p in sorted(perf, key=lambda p: p.published_at or dt.datetime.min, reverse=True)[:100]]
+    own_vid = next((it.youtube_video_id for it in q if it.id == exclude_id), "")
+    # the item's own YouTube upload (synced into VideoPerf) is not a "duplicate"
+    others = [p for p in perf if p.queue_id != exclude_id and (not own_vid or p.youtube_video_id != own_vid)]
+    titles += [p.title for p in sorted(others, key=lambda p: p.published_at or dt.datetime.min, reverse=True)[:100]]
     return titles
 
 
@@ -197,12 +213,15 @@ def move(item_id: int, slot_utc: dt.datetime, now: dt.datetime | None = None) ->
         raise QueueError("Unknown queue item")
     if it.status not in ("draft", "queued", "needs_manual", "failed"):
         raise QueueError(f"Can't move a clip that is {it.status} — change it in YouTube Studio.")
+    if it.youtube_video_id:  # already uploaded (e.g. linked from Studio): moving here would upload it twice
+        raise QueueError("This clip is already on YouTube — set its time in YouTube Studio, then Sync.")
     if as_utc(slot_utc) < (now or now_utc()) + slots.LEAD:
         raise QueueError("Pick a time at least 30 minutes in the future.")
     clash = [o for o in items(it.channel_id, PLANNED) if o.id != it.id and o.slot_utc and as_utc(o.slot_utc) == as_utc(slot_utc)]
     if clash:
         raise QueueError("Another clip is already scheduled at that exact time.")
     it.slot_utc, it.status, it.error, it.attempts, it.next_attempt_at = as_utc(slot_utc), "queued", "", 0, None
+    it.batch = ""  # a new time means a new batch (the old checklist shows the old time)
     return save(it)
 
 
@@ -210,7 +229,7 @@ def unschedule(item_id: int) -> db.QueueItem:
     it = get(item_id)
     if not it:
         raise QueueError("Unknown queue item")
-    if it.status in ("uploading", "scheduled", "published"):
+    if it.status in ("uploading", "scheduled", "published") or it.youtube_video_id:
         raise QueueError("Already on YouTube — change or delete it in YouTube Studio.")
     it.slot_utc, it.status, it.batch = None, "draft", ""
     return save(it)

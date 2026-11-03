@@ -73,16 +73,64 @@ def _upload_allowed(cfg: Config, rep: RunReport) -> int | None:
     return None
 
 
-LOCK_STALE = dt.timedelta(hours=2)
+LOCK_STALE = dt.timedelta(hours=6)  # the lock is refreshed after every upload; older = the holder died
+
+
+def pid_alive(pid: int) -> bool:
+    """Is a process with this pid running? (Never uses os.kill(pid, 0): on Windows that TERMINATES the process.)"""
+    import os
+    import sys
+
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        code = ctypes.c_ulong()
+        ok = kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        kernel32.CloseHandle(handle)
+        return bool(ok) and code.value == 259  # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
 
 
 class _ProcessLock:
     """Only one process publishes at a time (the web app's worker and Task Scheduler's `scheduler --once` could
-    otherwise upload the same clip twice). Atomic file creation; a lock older than 2 h is considered stale."""
+    otherwise upload the same clip twice). The lock file holds pid + token + heartbeat; it is taken over only when
+    its process is dead or its heartbeat is older than LOCK_STALE, and only the owner (same token) removes it."""
 
     def __init__(self, cfg: Config) -> None:
+        import uuid
+
         self.path = cfg.workspace / "publish.lock"
+        self.token = uuid.uuid4().hex
         self.held = False
+
+    def _write(self, fd: int | None = None) -> None:
+        import os
+
+        data = f"{os.getpid()} {self.token} {now_utc().isoformat()}".encode()
+        if fd is None:
+            self.path.write_bytes(data)
+        else:
+            os.write(fd, data)
+            os.close(fd)
+
+    def _read(self) -> tuple[int, str, dt.datetime] | None:
+        try:
+            pid, token, ts = self.path.read_text().split()
+            return int(pid), token, dt.datetime.fromisoformat(ts)
+        except (OSError, ValueError):
+            return None
 
     def __enter__(self) -> bool:
         import os
@@ -90,49 +138,70 @@ class _ProcessLock:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         for _ in range(2):
             try:
-                fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.write(fd, f"{os.getpid()} {now_utc().isoformat()}".encode())
-                os.close(fd)
+                self._write(os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
                 self.held = True
                 return True
             except FileExistsError:
-                try:
-                    age = now_utc() - dt.datetime.fromisoformat(self.path.read_text().split()[1])
-                except (OSError, ValueError, IndexError):
-                    age = LOCK_STALE
-                if age < LOCK_STALE:
+                info = self._read()
+                if info and pid_alive(info[0]) and now_utc() - as_utc(info[2]) < LOCK_STALE:
                     return False
-                self.path.unlink(missing_ok=True)  # stale (crashed run): take over
+                self.path.unlink(missing_ok=True)  # holder died (or the file is garbage): take over
         return False
 
+    def heartbeat(self) -> None:
+        info = self._read()
+        if self.held and info and info[1] == self.token:
+            self._write()
+
     def __exit__(self, *exc) -> None:
-        if self.held:
+        info = self._read()
+        if self.held and info and info[1] == self.token:
             self.path.unlink(missing_ok=True)
 
 
+_current_lock: _ProcessLock | None = None
+
+
 def recover_stuck(now: dt.datetime) -> int:
-    """Items left 'uploading' by a crash: if YouTube never returned an id, try again (queued)."""
+    """Items left 'uploading' by a crash. We can't know whether YouTube received the file (the process may have died
+    after the last chunk but before saving the id), so never re-upload blindly: ask the user to check Studio + Sync."""
     n = 0
     for it in q.items(statuses=("uploading",)):
         if it.youtube_video_id:
             it.status = "scheduled"
         else:
-            it.status, it.error = "queued", "The previous upload was interrupted — retrying."
+            it.status, it.error = "needs_manual", ("The upload was interrupted. Check YouTube Studio: if the video is "
+                                                  "there, use Sync with YouTube (or Link); if not, move it to a new time.")
         q.save(it)
         n += 1
     return n
 
 
 def run_once(cfg: Config | None = None, now: dt.datetime | None = None, progress=None) -> RunReport:
+    global _current_lock
     cfg = cfg or load_config()
     now = as_utc(now or now_utc())
-    with _ProcessLock(cfg) as got:
+    lock = _ProcessLock(cfg)
+    with lock as got:
         if not got:
             rep = RunReport()
             rep.messages.append("Another ClipForge process is publishing right now — skipped this run.")
             return rep
         recover_stuck(now)  # safe: we hold the lock, so nobody else is mid-upload
-        return _run_locked(cfg, now, progress)
+        _current_lock = lock
+        try:
+            return _run_locked(cfg, now, progress)
+        finally:
+            _current_lock = None
+
+
+def _is_auth_error(exc: Exception) -> bool:
+    from google.auth.exceptions import RefreshError
+
+    if isinstance(exc, (yt.NeedsReauth, RefreshError)):
+        return True
+    msg = yt.describe_http_error(exc)
+    return "insufficientPermissions" in msg or "ACCESS_TOKEN_SCOPE_INSUFFICIENT" in msg or "invalid_grant" in msg
 
 
 def _run_locked(cfg: Config, now: dt.datetime, progress) -> RunReport:
@@ -145,16 +214,9 @@ def _run_locked(cfg: Config, now: dt.datetime, progress) -> RunReport:
         if ch.auth_status == "needs_reauth":
             rep.skipped_channels[ch.id] = "needs re-login"
             continue
+        _flag_missed(ch.id, now, rep)  # both modes: a passed slot never silently stays "queued"
         try:
             client = yt.client_for(ch.id, cfg)
-        except yt.NeedsReauth as exc:
-            chs.mark_reauth(ch.id, str(exc))
-            rep.skipped_channels[ch.id] = "needs re-login"
-            continue
-        except FileNotFoundError as exc:
-            rep.skipped_channels[ch.id] = str(exc)
-            continue
-        try:
             if cfg.publishing.mode == "api" and budget != 0 and not rep.quota_exhausted:
                 budget = _upload_due(ch, client, cfg, now, rep, budget, progress)
             _refresh_status(ch, client, cfg, now, rep)
@@ -162,34 +224,53 @@ def _run_locked(cfg: Config, now: dt.datetime, progress) -> RunReport:
             if last is None or now - as_utc(last) >= dt.timedelta(hours=cfg.publishing.sync_every_hours):
                 analytics.sync_channel(ch.id, client, cfg, now)
                 rep.synced.append(ch.id)
-        except yt.NeedsReauth as exc:
-            chs.mark_reauth(ch.id, str(exc))
-            rep.skipped_channels[ch.id] = "needs re-login"
+        except FileNotFoundError as exc:
+            rep.skipped_channels[ch.id] = str(exc)
+        except Exception as exc:  # one channel's problem must never stop the others
+            if _is_auth_error(exc):
+                chs.mark_reauth(ch.id, str(exc) if isinstance(exc, yt.NeedsReauth) else
+                                f"Google refused the saved login or permissions ({yt.describe_http_error(exc)}). Reconnect.")
+                rep.skipped_channels[ch.id] = "needs re-login"
+            else:
+                log.error(f"[publish] channel {ch.id}: {yt.describe_http_error(exc)}")
+                rep.skipped_channels[ch.id] = f"error: {yt.describe_http_error(exc)[:200]}"
     return rep
 
 
-def _upload_due(ch: db.Channel, client, cfg: Config, now: dt.datetime, rep: RunReport, budget: int | None, progress) -> int | None:
-    settings = chs.settings_of(ch, cfg)
-    horizon = now + dt.timedelta(days=cfg.publishing.upload_ahead_days)
-    for it in q.items(ch.id, ("queued",)):
-        slot = as_utc(it.slot_utc) if it.slot_utc else None
-        if slot is None:
-            continue
-        if slot < now + MIN_LEAD:
-            it.status, it.error = "needs_manual", "The slot passed before the clip could be uploaded — pick a new time."
+def _flag_missed(channel_id: str, now: dt.datetime, rep: RunReport) -> None:
+    for it in q.items(channel_id, ("queued",)):
+        if it.slot_utc and not it.youtube_video_id and as_utc(it.slot_utc) < now + MIN_LEAD:
+            it.status = "needs_manual"
+            it.error = ("The publish time passed. If you uploaded it in Studio, use Sync with YouTube; otherwise pick a new time."
+                        if it.batch else "The slot passed before the clip could be uploaded — pick a new time.")
             q.save(it)
             rep.missed.append(it.id)
+
+
+def _upload_due(ch: db.Channel, client, cfg: Config, now: dt.datetime, rep: RunReport, budget: int | None, progress) -> int | None:
+    horizon = now + dt.timedelta(days=cfg.publishing.upload_ahead_days)
+    candidates = [it.id for it in q.items(ch.id, ("queued",))
+                  if it.slot_utc and as_utc(it.slot_utc) <= horizon and not it.youtube_video_id and not it.batch]
+    for item_id in candidates:
+        if budget is not None and budget <= 0:
+            break
+        # re-read the channel and the item right before uploading: the user may have paused, unscheduled,
+        # moved or deleted things while earlier uploads (minutes each) were running
+        live_ch = chs.get(ch.id)
+        if not live_ch or live_ch.paused or live_ch.auth_status != "ok":
+            break
+        it = q.get(item_id)
+        if not it or it.status != "queued" or not it.slot_utc or it.youtube_video_id or it.batch:
             continue
-        if slot > horizon:
-            break  # items are sorted by slot
+        slot = as_utc(it.slot_utc)
+        if slot < now + MIN_LEAD or slot > horizon:
+            continue
         if it.next_attempt_at and as_utc(it.next_attempt_at) > now:
             continue
-        if not ch.confirmed:
+        if not live_ch.confirmed:
             it.error = "Confirm this channel (Channels page) before the first upload."
             q.save(it)
             continue
-        if budget is not None and budget <= 0:
-            break
         problems = q.problems(it)
         if problems:
             it.status, it.error = "needs_manual", " ".join(problems)
@@ -197,8 +278,15 @@ def _upload_due(ch: db.Channel, client, cfg: Config, now: dt.datetime, rep: RunR
             continue
         try:
             path = q.clip_file(it, cfg)
-            it.status, it.attempts = "uploading", it.attempts + 1
+        except q.QueueError as exc:
+            it.status, it.error = "needs_manual", str(exc)
             q.save(it)
+            continue
+        if not q.claim_for_upload(it.id, it.slot_utc):
+            continue  # changed under us between the read and the claim
+        it = q.get(item_id)
+        settings = chs.settings_of(live_ch, cfg)
+        try:
             vid = client.upload(path, upload_body(it, settings, slot),
                                 on_progress=(lambda f, i=it: progress(i.id, f)) if progress else None)
             it.youtube_video_id, it.status, it.error, it.next_attempt_at = vid, "scheduled", "", None
@@ -208,20 +296,23 @@ def _upload_due(ch: db.Channel, client, cfg: Config, now: dt.datetime, rep: RunR
                 budget -= 1
             log.info(f"Uploaded queue item {it.id} → {vid} (publishes {slot.isoformat()})")
             _check_lock(it, client, slot, rep)
+            if _current_lock is not None:
+                _current_lock.heartbeat()
         except yt.QuotaExceeded as exc:
             it.status, it.error = "queued", str(exc)
             q.save(it)
             rep.quota_exhausted = True
             q.log_quota_rollover(cfg)
             break
-        except (yt.NeedsReauth, KeyboardInterrupt):
+        except KeyboardInterrupt:
             it.status = "queued"
             q.save(it)
             raise
-        except q.QueueError as exc:
-            it.status, it.error = "needs_manual", str(exc)
-            q.save(it)
-        except Exception as exc:  # network / API error: retry with backoff
+        except Exception as exc:
+            if _is_auth_error(exc):
+                it.status = "queued"
+                q.save(it)
+                raise
             msg = yt.describe_http_error(exc)
             if "quotaExceeded" in msg or "uploadLimitExceeded" in msg:
                 it.status, it.error = "queued", "YouTube says the daily upload limit is reached — retrying tomorrow."
@@ -255,7 +346,16 @@ def _check_lock(it: db.QueueItem, client, slot: dt.datetime, rep: RunReport) -> 
 
 
 def _refresh_status(ch: db.Channel, client, cfg: Config, now: dt.datetime, rep: RunReport) -> None:
-    """scheduled → published once YouTube made it public (also catches later rejections)."""
+    """scheduled → published once YouTube made it public (also catches later rejections); linked needs_manual
+    items (uploaded in Studio but not scheduled yet) are re-checked too."""
+    from clipforge.publish import reconcile
+
+    linked = [it for it in q.items(ch.id, ("needs_manual",)) if it.youtube_video_id]
+    if linked:
+        by = {v["id"]: v for v in client.videos([it.youtube_video_id for it in linked])}
+        for it in linked:
+            if it.youtube_video_id in by:
+                reconcile.apply_video(it, by[it.youtube_video_id])
     due = [it for it in q.items(ch.id, ("scheduled",)) if it.youtube_video_id and it.slot_utc
            and as_utc(it.slot_utc) <= now]
     if not due:

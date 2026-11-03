@@ -26,7 +26,7 @@ Details and sources are in [DECISIONS.md → Phase 12](DECISIONS.md).
 | 12E Tracker: campaign fee %, submission status/link, approved views; earnings = approved views × rate × (1 − fee) | ✅ |
 | 12F API (OpenAPI at `/docs`, tag "publishing"), pages Channels / Schedule / Batches / Dashboard, Settings → Publishing, "Add to schedule" in Gallery + Clip editor, CLI commands | ✅ |
 | 12G Safety: always private + publishAt; first-upload confirmation with avatar; per-channel pause; one clip once per channel; never over quota; copyright note next to the credit line; no browser automation of YouTube | ✅ |
-| Tests: 64 pass (fake YouTube, no network); e2e: 6 clips → metadata → 2-day schedule → API upload → publish → stats, plus assisted batch → Studio upload → reconcile | ✅ |
+| Tests: 67 pass (fake YouTube, no network; includes regression tests for every code-review finding); e2e: 6 clips → metadata → 2-day schedule → API upload → publish → stats, plus assisted batch → Studio upload → reconcile | ✅ |
 | Screenshots of every new page, desktop + mobile, no console errors | ✅ `docs/screenshots/phase12/` |
 
 ## What YOU must do with your Google account (one time, ~15 min)
@@ -76,6 +76,8 @@ once. ClipForge then uploads each clip about 5 days ahead as private + scheduled
 - **Custom thumbnails** (`thumbnails.set` now supports Shorts) aren't used. YouTube picks a frame.
 - **YPP targets** come from news coverage of YouTube's 10 Aug 2026 announcement. Check YouTube's help page and edit `config.yaml → ypp`
   if needed.
+- **Switching modes:** clips already in a Studio batch are never uploaded by API mode, so finish uploading them in Studio and Sync. If
+  an upload is interrupted (crash or power cut), the clip becomes "Needs you": check Studio, then Sync or pick a new time.
 - **Adding channels from your phone doesn't work:** Google sends desktop-app logins back to localhost, so add them on the laptop.
 - **Instagram stays manual:** the batch page has an Instagram kit, and the Publish Kit copies captions.
 

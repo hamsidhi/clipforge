@@ -37,7 +37,8 @@ export default function QueueItemDialog({ item, onClose }: { item: QueueItem | n
     qc.invalidateQueries({ queryKey: ['queue'] })
     qc.invalidateQueries({ queryKey: ['channels'] })
   }
-  const locked = !!item && ['uploading', 'scheduled', 'published'].includes(item.status)
+  const locked = !!item && (['uploading', 'scheduled', 'published'].includes(item.status) || !!item.youtube_video_id)
+  const inBatch = !!item?.batch
   const save = useMutation({
     mutationFn: () => {
       const body: Parameters<typeof pub.patch>[1] = {
@@ -138,7 +139,7 @@ export default function QueueItemDialog({ item, onClose }: { item: QueueItem | n
             )}
             <div className="flex flex-wrap gap-2 pt-2">
               <Button onClick={() => save.mutate()} disabled={locked || save.isPending || item.meta_status === 'pending'}><Save /> Save</Button>
-              <Button variant="outline" onClick={() => act.mutate('regen')} disabled={locked || act.isPending}><RefreshCw /> Regenerate</Button>
+              <Button variant="outline" onClick={() => act.mutate('regen')} disabled={locked || inBatch || act.isPending} title={inBatch ? 'In a prepared Studio batch — unschedule first' : undefined}><RefreshCw /> Regenerate</Button>
               {item.slot_utc && !locked && <Button variant="outline" onClick={() => act.mutate('unschedule')}><Undo2 /> Unschedule</Button>}
               {!locked && (
                 <Button variant="ghost" className="ml-auto text-destructive" onClick={() => window.confirm('Remove this clip from the queue?') && act.mutate('delete')}>

@@ -28,23 +28,45 @@ def _link_or_copy(src: Path, dst: Path) -> None:
         shutil.copy2(src, dst)
 
 
-def prepare(channel_id: str, n: int | None = None, cfg: Config | None = None) -> dict:
-    """Take the next N queued clips (not yet in a batch) and build workspace/batches/<channel>/<date>/."""
+def prepare(channel_id: str, n: int | None = None, cfg: Config | None = None, now=None, force: bool = False) -> dict:
+    """Take the next N queued clips (not yet in a batch) and build workspace/batches/<channel>/<date_time>/."""
+    import datetime as dt
+
+    from clipforge.publish.timez import as_utc
+
     cfg = cfg or load_config()
+    if cfg.publishing.mode == "api" and not force:
+        raise q.QueueError("You're in API mode — ClipForge uploads these clips itself. A Studio batch would upload them "
+                           "twice. Switch to assisted mode first (Settings → Publishing).")
     ch = chs.get(channel_id)
     if not ch:
         raise q.QueueError("Unknown channel")
+    now = as_utc(now or now_utc())
     zone = chs.settings_of(ch, cfg)["timezone"]
     n = min(n or cfg.publishing.batch_max, cfg.publishing.batch_max)
-    todo = [it for it in q.items(channel_id, ("queued",)) if it.slot_utc and not it.batch][:n]
+    todo = []
+    for it in q.items(channel_id, ("queued",)):
+        if not it.slot_utc or it.batch or it.youtube_video_id:
+            continue
+        if as_utc(it.slot_utc) < now + dt.timedelta(minutes=30):  # Studio can't schedule in the past
+            it.status, it.error = "needs_manual", "The publish time passed before it was uploaded — pick a new time."
+            q.save(it)
+            continue
+        todo.append(it)
+    todo = todo[:n]
     if not todo:
-        raise q.QueueError("No scheduled clips waiting for a batch — schedule approved clips first.")
-    stamp = utc_to_local(now_utc(), zone).strftime("%Y-%m-%d_%H%M")
-    folder = batches_root(cfg) / slugify(ch.title or ch.id, 30) / stamp
-    folder.mkdir(parents=True, exist_ok=True)
+        raise q.QueueError("No upcoming scheduled clips waiting for a batch — schedule approved clips first.")
+    sources = [(it, q.clip_file(it, cfg)) for it in todo]  # resolve everything before touching anything
+    stamp = utc_to_local(now, zone).strftime("%Y-%m-%d_%H%M%S")
+    base = batches_root(cfg) / slugify(ch.title or ch.id, 30)
+    folder = base / stamp
+    k = 2
+    while folder.exists():  # two batches in the same second never overwrite each other
+        folder = base / f"{stamp}_{k}"
+        k += 1
+    folder.mkdir(parents=True)
     entries = []
-    for i, it in enumerate(todo, 1):
-        src = q.clip_file(it, cfg)
+    for i, (it, src) in enumerate(sources, 1):
         slot = utc_to_local(it.slot_utc, zone)
         name = f"{i:02d}_{slot:%Y-%m-%d_%H%M}_{slugify(it.title, 40)}.mp4"
         _link_or_copy(src, folder / name)
@@ -55,13 +77,14 @@ def prepare(channel_id: str, n: int | None = None, cfg: Config | None = None) ->
                         "title": it.title, "description": it.description, "tags": ", ".join(it.tags),
                         "slot_local": f"{slot:%d %b %Y}", "slot_time": f"{slot:%I:%M %p}",
                         "slot_pretty": fmt_local(it.slot_utc, zone), "ig_caption": it.ig_caption})
-        it.batch = str(folder.relative_to(cfg.workspace)).replace("\\", "/")
-        q.save(it)
+    rel = str(folder.relative_to(cfg.workspace)).replace("\\", "/")
     (folder / "batch.json").write_text(json.dumps({"channel": ch.title, "channel_id": ch.id, "items": entries},
                                                   indent=2, ensure_ascii=False), encoding="utf-8")
     (folder / "batch.html").write_text(render_html(ch.title, ch.thumbnail, entries, zone), encoding="utf-8")
-    return {"folder": str(folder), "relative": str(folder.relative_to(cfg.workspace)).replace("\\", "/"),
-            "count": len(entries), "items": entries}
+    for it, _ in sources:  # only now mark them as batched (a failure above leaves nothing half-done)
+        it.batch = rel
+        q.save(it)
+    return {"folder": str(folder), "relative": rel, "count": len(entries), "items": entries}
 
 
 def list_batches(cfg: Config | None = None) -> list[dict]:
