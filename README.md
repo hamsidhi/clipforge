@@ -17,6 +17,8 @@ a **local LLM via Ollama** (or the free tiers of Gemini/Groq), FastAPI and React
 
 ---
 
+> **Want it to run by itself?** Follow the step-by-step [AUTOMATION_GUIDE.md](AUTOMATION_GUIDE.md).
+
 ## 1. Install
 
 ### Windows 10/11
