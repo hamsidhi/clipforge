@@ -200,6 +200,16 @@ class TelegramConfig(_Section):
     commands_per_minute: int = Field(30, ge=5, le=300)  # per chat; more are ignored
     mini_app: bool = False              # "Open app" buttons as a Telegram Mini App (needs Tailscale HTTPS; see docs/TELEGRAM.md)
 
+    @model_validator(mode="after")
+    def _safe_api_base(self) -> "TelegramConfig":
+        """The bot token travels in every request URL: only Telegram itself or a server on this machine."""
+        import re as _re
+
+        u = self.api_base_url.rstrip("/")
+        if u != "https://api.telegram.org" and not _re.fullmatch(r"http://(127\.0\.0\.1|localhost|\[::1\]):\d{2,5}", u):
+            raise ValueError("telegram.api_base_url must be https://api.telegram.org or a local server like http://127.0.0.1:8081")
+        return self
+
 
 class RemoteConfig(_Section):
     watch_folder: str = ""              # `clipforge watch`: auto-start jobs for files dropped here (off when empty)
@@ -237,6 +247,20 @@ class ServerConfig(_Section):
     rclone_remote: str = ""             # optional copy to e.g. gdrive-crypt:clipforge (an rclone crypt remote)
     download_cookies_file: str = ""     # optional yt-dlp cookies.txt (server only; use a throwaway Google account)
     download_max_attempts: int = Field(3, ge=1, le=6)  # bot-check retries with backoff before asking you
+
+    @model_validator(mode="after")
+    def _valid_recipient(self) -> "ServerConfig":
+        r = self.backup_recipient.strip()
+        if r and not (r.startswith("age1") and len(r) > 50):
+            import base64 as _b64
+
+            try:
+                ok = r.startswith("cfpk1:") and len(_b64.urlsafe_b64decode(r[6:])) == 32
+            except Exception:
+                ok = False
+            if not ok:
+                raise ValueError("server.backup_recipient must be a cfpk1:… key (clipforge server backup-keygen) or an age1… key")
+        return self
 
 
 class Config(_Section):
@@ -358,7 +382,36 @@ def update_yaml_text(text: str, data: dict[str, dict[str, Any]]) -> tuple[str, b
             replaced_indent = len(m.group("indent"))
             continue
         out.append(line)
-    return "\n".join(out) + "\n", not remaining
+    if remaining:
+        out = _insert_missing(out, data, remaining)
+    return "\n".join(out) + "\n", True
+
+
+def _insert_missing(lines: list[str], data: dict[str, dict[str, Any]], remaining: set) -> list[str]:
+    """Keys an older config.yaml doesn't have yet (new features): add them at the end of their section — or add the
+    whole section at the end of the file — instead of rewriting the file and losing its comments."""
+    by_section: dict[str, list[str]] = {}
+    for s, k in sorted(remaining, key=lambda x: list(data[x[0]]).index(x[1])):
+        by_section.setdefault(s, []).append(k)
+    headers = {m.group("key"): i for i, ln in enumerate(lines) if (m := _SECTION_LINE.match(ln))}
+    inserts: list[tuple[int, list[str]]] = []
+    tail: list[str] = []
+    for s in sorted(by_section, key=lambda x: list(data).index(x)):
+        new = [f"  {k}: {_yaml_scalar(data[s][k])}" for k in by_section[s]]
+        if s in headers:
+            start = headers[s]
+            later = [i for i in headers.values() if i > start]
+            end = min(later) if later else len(lines)
+            while end > start + 1 and not lines[end - 1].strip():
+                end -= 1  # before the blank line(s) that separate sections
+            inserts.append((end, new))
+        else:
+            tail += ["", f"{s}:", *new]
+    for pos, new in sorted(inserts, reverse=True):
+        lines[pos:pos] = new
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return lines + tail
 
 
 def save_config(cfg: Config, path: Path | str | None = None) -> None:
@@ -393,6 +446,11 @@ def save_secret(name: str, value: str) -> None:
     else:
         os.environ.pop(name, None)
     ENV_PATH.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    if os.name != "nt":
+        try:
+            os.chmod(ENV_PATH, 0o600)  # secrets: only the ClipForge user may read them (other server users can't)
+        except OSError:
+            pass
 
 
 def mask_secret(value: str | None) -> str | None:

@@ -533,3 +533,31 @@ class _NullRep:
 
     def cancelled(self):
         return False
+
+
+def test_laptop_coming_back_mid_job_takes_the_remaining_stages(srv, monkeypatch):
+    """Server transcribes itself (no worker online); the laptop comes online meanwhile → select goes to the laptop."""
+    from clipforge import pipeline
+    from clipforge.api.jobs import JobManager, Task
+    from clipforge.server import leases
+
+    app, tmp, _ = srv
+    job = _job()
+    ws = _seed_downloaded(tmp / "ws")
+    client, w, _ = _worker_client(app, tmp)
+
+    def server_prepare(source, cfg, rep, section, video_id):
+        words = [Word(start=i * 0.5, end=i * 0.5 + 0.4, text=f"w{i}") for i in range(50)]
+        ws.write_model(ws.transcript, Transcript(language="hi", model="t", duration=120,
+                                                 segments=[Segment(id=0, start=0, end=25, text="", words=words)]))
+        ws.mark_done("transcribe", pipeline.fp_transcribe(ws, cfg))
+        client.hello()  # the laptop wakes up while the server was transcribing
+        return ws
+
+    monkeypatch.setattr(pipeline, "prepare", server_prepare)
+    monkeypatch.setattr(pipeline, "run_analyze", lambda ws, rep: None)
+    monkeypatch.setattr(pipeline, "select", lambda *a, **k: (_ for _ in ()).throw(AssertionError("server must not select")))
+    m = JobManager()
+    m._run(Task(1, "pipeline", job.id, {}))
+    t = leases.active(job.id)
+    assert t is not None and t.stage == "select"  # handed to the laptop, not done on the server

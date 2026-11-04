@@ -318,10 +318,34 @@ router = APIRouter(prefix="/api", tags=["auth"])
 
 
 @router.get("/health", summary="Liveness check (no login needed; reveals nothing else)")
-def health() -> dict:
+def health(request: Request) -> dict:
     from clipforge import __version__
 
-    return {"ok": True, "version": __version__}
+    out = {"ok": True, "version": __version__}
+    if getattr(request.state, "local", False):
+        out["rev"] = _REV  # only on the machine itself: `clipforge server update` checks the NEW code answers
+    return out
+
+
+def _git_rev() -> str:
+    from clipforge.config import ROOT_DIR
+
+    try:
+        head = (ROOT_DIR / ".git" / "HEAD").read_text().strip()
+        if head.startswith("ref: "):
+            ref = ROOT_DIR / ".git" / head[5:]
+            if ref.exists():
+                return ref.read_text().strip()[:12]
+            for line in (ROOT_DIR / ".git" / "packed-refs").read_text().splitlines():  # fresh clones pack their refs
+                if line.endswith(" " + head[5:]):
+                    return line.split()[0][:12]
+            return ""
+        return head[:12]
+    except OSError:
+        return ""
+
+
+_REV = _git_rev()
 
 
 @router.get("/auth/status")

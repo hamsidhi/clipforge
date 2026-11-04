@@ -124,9 +124,17 @@ class JobManager:
     # -------------------------------------------------------------- lifecycle
     def start(self) -> None:
         # jobs that were running when the server stopped: mark them so the user can retry (resumes from cache)
+        server = load_config().deployment.mode == "server"
+        if server:
+            from clipforge.server import leases
+
+            leases.reset_after_restart()
         for job in db.list_jobs():
             if job.status in ("running", "queued"):
                 if _delegated(job.id):  # a worker still has it (server mode): it reports back by itself
+                    continue
+                if server:  # unattended box: just continue it (finished stages are reused)
+                    self.submit("pipeline", job.id)  # type: ignore[arg-type]
                     continue
                 db.update_job(job.id, status="failed", error="Interrupted (server restarted). Click Retry — finished stages are reused.")
         self.thread.start()
@@ -259,9 +267,13 @@ class JobManager:
                 ws = pipeline.prepare(job.source, cfg, rep, section, job.video_id)  # type: ignore[arg-type]
                 info = pipeline.load_info(ws)
                 db.update_job(job_id, video_id=ws.video_id, title=info.title, channel=info.channel, duration=info.duration)
+                if dispatch.delegate(db.get_job(job_id) or job, cfg, rep, task.payload):
+                    return  # server mode: a laptop came online meanwhile — the remaining heavy stages go there
                 cands = pipeline.select(ws, cfg, rep, force=bool(task.payload.get("force_select")))
                 db.update_job(job_id, n_clips=len(cands))
                 self.publish(job_id, {"type": "clips", "count": len(cands)})
+                if dispatch.delegate(db.get_job(job_id) or job, cfg, rep, task.payload):
+                    return
                 pipeline.render(ws, cfg, rep)
                 rep.stage("metadata", "running")
                 pipeline.metadata(ws, cfg, rep)

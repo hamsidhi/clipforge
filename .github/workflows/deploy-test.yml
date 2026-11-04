@@ -4,11 +4,10 @@ name: Deploy test (server + worker on linux/arm64)
 # Ampere A1 box available here): checks the Python wheels on aarch64 (mediapipe fallback), ffmpeg + libass, Whisper,
 # the worker protocol and a fake publish. install.sh itself is only linted here (it configures a firewall + Tailscale,
 # which a CI runner must not do).
+# Manual only (Actions → "Deploy test" → Run workflow): on a private repo every run uses your free Actions minutes,
+# and Arm runners may not be offered on every plan — nothing runs (or costs) unless you start it.
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths: ["deploy/**", "clipforge/server/**", "scripts/deploy_e2e*.py", ".github/workflows/deploy-test.yml"]
 
 permissions:
   contents: read

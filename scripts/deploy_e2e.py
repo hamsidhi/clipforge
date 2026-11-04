@@ -185,7 +185,16 @@ def report(ok: bool) -> str:
             f"{platform.system()} {platform.machine()} · Python {platform.python_version()}\n\n"
             "Two real processes over HTTP: `clipforge ui` in **server** mode and `clipforge worker` in **worker** mode, "
             "each with its own workspace and `.env`; mock LLM, Whisper `tiny`, ultrafast render, fake YouTube.\n"
-            "Run it yourself: `python scripts/deploy_e2e.py --out docs/DEPLOY_TEST.md`.\n\n```\n" + "\n".join(LOG) + "\n```\n")
+            "Run it yourself: `python scripts/deploy_e2e.py --out docs/DEPLOY_TEST.md`.\n\n```\n" + "\n".join(LOG) + "\n```\n"
+            + NOT_COVERED)
+
+
+NOT_COVERED = (
+    "\n**Not covered by this run:** Linux/Arm64 (run `.github/workflows/deploy-test.yml` from the Actions tab — the same "
+    "test on `ubuntu-24.04-arm`), `deploy/install.sh` on a real VM (only `bash -n` / shellcheck), real Tailscale/SSH, real "
+    "Whisper `large-v3-turbo` / Ollama speeds on Ampere (estimates in deploy/README.md). Failure drills (worker killed "
+    "mid-render, server restart mid-job, laptop sleeping through its lease, …): DECISIONS.md → reliability drills and "
+    "tests/test_reliability.py.\n")
 
 
 if __name__ == "__main__":

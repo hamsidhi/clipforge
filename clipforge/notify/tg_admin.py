@@ -147,6 +147,9 @@ def _danger_no(ctx: Ctx, p: dict) -> None:
 
 def _after_yes(ctx: Ctx, action: str, payload: dict) -> None:
     d = DANGERS[action]
+    if d.pin and pin_enabled() and ctx.chat_id < 0:  # a group: others would see the PIN (the bot may not delete it)
+        ctx.send("🔢 This needs your PIN — do it in your private chat with the bot, not in a group.")
+        return
     if d.pin and pin_enabled():
         left = pin_locked()
         if left:
@@ -178,7 +181,7 @@ def _pin_step(ctx: Ctx, text: str, p: dict) -> None:
     try:  # the PIN never stays in the chat history
         ctx.api.call("deleteMessage", chat_id=ctx.chat_id, message_id=ctx.message_id)
     except Exception:
-        pass
+        ctx.send("⚠️ I couldn't delete your PIN message — delete it yourself (long-press → Delete).")
     if check_pin(text.strip()):
         _run(ctx, p["a"], p.get("p", {}))
         return

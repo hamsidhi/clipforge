@@ -22,7 +22,7 @@ from clipforge.workspace import Workspace, safe_replace
 ALLOWED = re.compile(
     r"^(?:source\.mp4|audio\.wav|info\.json|thumbnail\.jpg|transcript\.json|scenes\.json|energy\.json|"
     r"llm_candidates\.json|candidates\.json|metadata\.json|metadata\.csv|gallery\.html|"
-    r"select_cache/[\w.-]{1,120}\.json|clips/\d{2}_[\w.-]{1,160}\.mp4|clips/_work/\d{2}/[\w.-]{1,80})$")
+    r"select_cache/[\w.-]{1,120}\.json|clips/\d{2}_[\w.-]{1,160}\.mp4|clips/_work/\d{2}/[\w.-]{1,80})\Z")
 MAX_FILE = 20 * 1024 ** 3  # 20 GB — a 3 h 1080p source is ~4 GB
 PULL_SETS = {  # what each stage needs from the server
     "download": [],
@@ -42,7 +42,7 @@ def check_path(rel: str) -> str:
     rel = rel.replace("\\", "/")
     if not rel or len(rel) > 300 or rel.startswith("/") or ":" in rel or any(p in ("", ".", "..") for p in rel.split("/")):
         raise ArtifactError("bad path")
-    if not ALLOWED.match(rel):
+    if not ALLOWED.fullmatch(rel):
         raise ArtifactError(f"'{rel}' isn't a workspace file")
     return rel
 
@@ -82,7 +82,7 @@ def manifest(ws: Workspace, stage: str = "render") -> list[dict]:
         if not f.is_file():
             continue
         rel = f.relative_to(ws.dir).as_posix()
-        if not ALLOWED.match(rel):
+        if not ALLOWED.fullmatch(rel):
             continue
         if "*" not in wanted and not any(rel == w or (w.endswith("/") and rel.startswith(w)) for w in wanted):
             continue
@@ -129,7 +129,12 @@ def write_chunk(workspace_root: Path, task_id: int, fence: int, rel: str, offset
     size = target.stat().st_size if target.exists() else 0
     if offset > size or offset < 0:
         raise ArtifactError(f"expected offset ≤ {size}")
-    free = shutil.disk_usage(workspace_root).free
+    du = shutil.disk_usage(workspace_root)
+    from clipforge.config import load_config
+
+    pause = load_config().server.disk_pause_pct
+    room = du.free - du.total * (100 - pause) / 100  # bytes we may still write before the disk passes the pause limit
+    free = int(min(du.free, room + 1024 ** 3))  # the check below keeps 1 GB of that room
     with open(target, "r+b" if target.exists() else "wb") as f:
         f.truncate(offset)  # a resent chunk after a partial write overwrites the partial data
         f.seek(offset)
@@ -197,7 +202,7 @@ def snapshot(ws_dir: Path) -> dict[str, tuple[int, int]]:
     for f in ws_dir.rglob("*"):
         if f.is_file():
             rel = f.relative_to(ws_dir).as_posix()
-            if ALLOWED.match(rel):
+            if ALLOWED.fullmatch(rel):
                 st = f.stat()
                 out[rel] = (st.st_size, st.st_mtime_ns)
     return out

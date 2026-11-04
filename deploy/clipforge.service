@@ -13,8 +13,8 @@ Environment=PYTHONUNBUFFERED=1
 ExecStart=/opt/clipforge/app/.venv/bin/clipforge ui --host 127.0.0.1 --port 8000 --no-browser
 Restart=on-failure
 RestartSec=10
-# hardening
-NoNewPrivileges=true
+# hardening (no NoNewPrivileges: `clipforge server update` uses one narrow sudo rule to restart itself)
+UMask=0077
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=read-only

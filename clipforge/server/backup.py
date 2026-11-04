@@ -332,7 +332,10 @@ def nightly_if_due(now: dt.datetime | None = None) -> Path | None:
         try:
             from clipforge.notify import telegram
 
-            telegram.bot().notify("job_failed", f"💾 Nightly backup failed: {exc}", key=f"backup_fail:{day}")
+            from clipforge.notify.tg_core import scrub
+
+            telegram.bot().notify("job_failed", f"💾 Nightly backup failed: {scrub(str(exc))[:300]} — details in the server log.",
+                                  key=f"backup_fail:{day}")
         except Exception:
             pass
         return None

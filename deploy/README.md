@@ -49,11 +49,20 @@ Copy it (`tskey-auth-…`). Also in Admin → DNS: MagicDNS **on**, HTTPS Certif
    (Always Free is home-region only).
 
 ### 4. Install ClipForge (5 min typing, ~20 min waiting)
+Your GitHub repo is **private**, so the server needs a read-only *deploy key* to clone it (2 min):
 ```bash
+# on the laptop (from the clipforge folder): copy the installer to the VM
+scp deploy/install.sh ubuntu@<public ip>:
 ssh ubuntu@<public ip>
-curl -fsSL https://raw.githubusercontent.com/hamsidhi/clipforge/main/deploy/install.sh -o install.sh
-sudo TS_AUTHKEY=tskey-auth-XXXX bash install.sh            # --model qwen2.5:3b for a smaller/faster LLM
+sudo mkdir -p /opt/clipforge/.ssh && sudo ssh-keygen -t ed25519 -N "" -f /opt/clipforge/.ssh/id_ed25519 -C clipforge-server
+sudo cat /opt/clipforge/.ssh/id_ed25519.pub
 ```
+GitHub → your repo → Settings → **Deploy keys** → Add deploy key → paste it, **leave "Allow write access" off**. Then:
+```bash
+sudo bash -c 'ssh-keyscan github.com >> /opt/clipforge/.ssh/known_hosts'
+sudo TS_AUTHKEY=tskey-auth-XXXX bash install.sh --repo git@github.com:hamsidhi/clipforge.git   # --model qwen2.5:3b = smaller LLM
+```
+(If you ever make the repo public, `--repo` isn't needed and cloud-init works as-is.)
 The key is read from the environment, written to a root-only file for a second, and never logged. At the end you see
 the tailnet address (`https://clipforge-server.<tailnet>.ts.net`), the health check and `clipforge doctor`.
 

@@ -22,15 +22,17 @@ from clipforge.config import Secrets, load_config
 from clipforge.notify import tg_store as st
 from clipforge.notify.tg_api import CLOUD_API, BotAPI, Limiter, TgError, esc  # noqa: F401  (re-exported)
 from clipforge.notify.tg_core import (ALIASES, CALLBACKS, COMMANDS, MENU_TEXT, ROLE_RANK, STEPS, Ctx, Denied,
-                                      InboundLimiter, audit, error_reply)
+                                      InboundLimiter, audit, error_reply, scrub)
 from clipforge.utils.log import log
 
 # importing the handler modules registers their commands / buttons / steps
 from clipforge.notify import tg_admin, tg_clips, tg_jobs, tg_publish  # noqa: E402,F401  isort: skip
 
 API = CLOUD_API
+LEASE_SECONDS = 300  # poller lease; renewed before every update
 VIDEO_LIMIT = 50 * 1024 * 1024
 URL_RE = re.compile(r"https?://\S+")
+ANONYMOUS_IDS = {1087968824, 777000, 136817688}  # GroupAnonymousBot, Telegram (linked channel), Channel_Bot
 PAIR_RE = re.compile(r"^/(?:pair|start)(?:@\w+)?\s+(\d{6})\s*$")
 HELP = tg_admin.INTRO
 
@@ -157,6 +159,9 @@ class Bot:
             return
         chat_id, user = msg["chat"]["id"], msg["from"]["id"]
         kind = msg["chat"].get("type", "private")
+        if user in ANONYMOUS_IDS or msg.get("sender_chat"):  # anonymous group admins / channel posts: nobody in particular
+            self._ignore(user, chat_id)
+            return
         text = (msg.get("text") or "").strip()
         row = st.chat(chat_id)
         if not row or (kind != "private" and row.user_id != user):
@@ -290,7 +295,7 @@ class Bot:
 
     def poll_once(self, timeout: int = 50) -> int:
         """One getUpdates round (holding the poller lease). Returns the number of updates handled, -1 = not our turn."""
-        if not st.acquire_poller(max(120, timeout + 60)):
+        if not st.acquire_poller(max(LEASE_SECONDS, timeout + 60)):
             return -1
         offset = int(st.kv_get("offset", 0) or 0)
         try:
@@ -305,18 +310,28 @@ class Bot:
                 st.release_poller()
                 return -1
             raise
+        handled = 0
         for u in updates:
-            st.kv_set("offset", u["update_id"] + 1)  # durable: a crash right here never replays this update
+            # a slow update (a 50 MB upload, 429 waits) must not let our lease lapse unnoticed: renew it per update,
+            # and stop if another poller took over meanwhile — it will get these updates itself
+            if not st.acquire_poller(LEASE_SECONDS):
+                break
+            if not st.advance_offset(u["update_id"] + 1):  # durable + only forwards: never handled twice
+                continue
             try:
                 self.handle(u)
             except Exception as exc:
                 log.warning(f"[telegram] update {u.get('update_id')} failed: {exc}")
-        return len(updates)
+            handled += 1
+        return handled
 
     def _loop(self) -> None:
         backoff = 1.0
         while not self.stop.is_set():
-            if not self.enabled():
+            if not self.enabled() or load_config().deployment.mode == "worker":
+                # disabled, or this laptop just became a worker (handover while the app was running): hand the bot over
+                if self.polling:
+                    st.release_poller()
                 self.polling = False
                 self.stop.wait(30)
                 continue
@@ -459,7 +474,7 @@ def on_run_report(rep) -> None:
         for iid in [*rep.failed, *rep.missed]:
             it = q.get(iid)
             if it:
-                b.notify("publish_failed", f"⚠️ {it.platform.title()} — {it.title}: {it.error[:300]}\nSend /needsyou for one-tap fixes.",
+                b.notify("publish_failed", f"⚠️ {it.platform.title()} — {it.title}: {scrub(it.error)[:300]}\nSend /needsyou for one-tap fixes.",
                          key=f"fail:{iid}:{it.status}:{it.reason}")
         for ch_id, why in rep.skipped_channels.items():
             if why == "needs re-login":

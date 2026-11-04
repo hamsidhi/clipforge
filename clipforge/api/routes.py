@@ -407,7 +407,11 @@ class SettingsUpdate(BaseModel):
     secrets: Optional[dict[str, Optional[str]]] = None
 
 
-LAPTOP_ONLY_SECTIONS = ("auth", "output", "remote")  # login rules, where files go, the watch folder
+# login rules, where files go, the watch folder, which machine does what, backups/cookies (Phase 15 security review)
+LAPTOP_ONLY_SECTIONS = ("auth", "output", "remote", "deployment", "server")
+# Telegram: a phone may only change what the bot tells it — never where the bot talks to (api_base_url) or the PIN rule
+TELEGRAM_REMOTE_OK = {"notify_job_done", "notify_job_failed", "notify_published", "notify_publish_failed", "notify_reauth",
+                      "notify_quota", "daily_summary", "daily_summary_time", "progress_every_sec", "clips_to_send"}
 
 
 @router.put("/settings", summary="Update config.yaml values and/or API keys (.env)")
@@ -417,6 +421,9 @@ def put_settings(body: SettingsUpdate, request: Request) -> dict:
         if not getattr(request.state, "local", True):
             changed = [s for s in LAPTOP_ONLY_SECTIONS if isinstance(body.config.get(s), dict)
                        and any(cur.get(s, {}).get(k) != v for k, v in body.config[s].items())]
+            tg = body.config.get("telegram")
+            if isinstance(tg, dict) and any(k not in TELEGRAM_REMOTE_OK and cur["telegram"].get(k) != v for k, v in tg.items()):
+                changed.append("telegram (security)")
             if changed:
                 raise HTTPException(403, f"Change {', '.join(changed)} settings on the laptop itself.")
         for section, values in body.config.items():

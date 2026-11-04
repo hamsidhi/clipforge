@@ -86,17 +86,21 @@ To go back: delete `api_base_url`, call `close` on the local server, wait 10 min
 
 * **Only paired chats.** Pairing codes are 6 digits, one-time, valid 10 minutes, burnt after 5 wrong guesses, made on
   the laptop (Settings or `clipforge telegram pair`). Unknown chats get **no reply at all** — one audit entry per hour.
-* **Groups** only with a code made for groups (`--group`), and in a group only the person who paired it counts.
+* **Groups** only with a code made for groups (`--group`), and in a group only the person who paired it counts;
+  anonymous admins and channel posts are ignored.
 * **Roles**: `owner` = everything; `viewer` = read-only (cards, previews, files, stats) — no edit, publish or delete.
 * **Buttons** carry only `c:<8 random chars>` (≤ 64 bytes); the action lives in the `tgcallback` table bound to the chat
   (expires after 14 days). Confirmations are bound to the user who asked, expire after **2 minutes** and work **once**.
 * **Dangerous actions** (publish now / public, delete a job, resume an account, unpair): Yes/No → for "public" you also
-  **type YES** → the **PIN** if enabled (`clipforge telegram set-pin`; scrypt hash in `.env`; the bot deletes your PIN
-  message right away; 5 wrong → locked 15 minutes).
+  **type YES** → the **PIN** if enabled (`clipforge telegram set-pin`, 6–8 digits; scrypt hash in `.env`; the bot
+  deletes your PIN message right away; 5 wrong → locked 15 minutes, then 30 min, 1 h … up to 24 h, and owners are
+  told). PIN actions are refused in groups — confirm them in your private chat with the bot.
 * **Laptop-only, never in Telegram**: bot token, pairing, PIN, password, output folders, remote setup, connecting /
-  disconnecting accounts and OAuth. Re-login links are never sent.
-* **Nothing secret is echoed**: replies are scrubbed of tokens, keys, IPs and absolute paths; unexpected errors become
-  "error a1b2c3" that you can find in `clipforge.log`.
+  disconnecting accounts and OAuth. Re-login links are never sent. From a phone (web app) only the notification
+  switches of the bot can be changed — not where it connects (`api_base_url` must be Telegram or this machine), not
+  the PIN rule, not `deployment` / `server` settings.
+* **Nothing secret is echoed**: replies are scrubbed of tokens/keys (incl. every value in `.env`), IPs, tailnet names
+  and absolute paths; unexpected errors become "error a1b2c3" that you can find in `clipforge.log`.
 * **Abuse limits**: `telegram.commands_per_minute` per chat (default 30); outbound ~1 message/s per chat, ≤ 20 edits a
   minute per chat, ≤ 25/s overall; HTTP 429 `retry_after` is honoured by every sender.
 * **Audit**: every command, button and confirmation goes to the audit log (Settings → Security); the daily summary

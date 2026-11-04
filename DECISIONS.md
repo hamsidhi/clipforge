@@ -485,3 +485,64 @@ Fallback design: `deployment.prefer_worker_for` = all stages + `worker_grace_min
 - **No Linux machine here** (no Docker, no WSL distro): the deploy end-to-end ran as two real processes on Windows
   (`scripts/deploy_e2e.py`, log in docs/DEPLOY_TEST.md); `.github/workflows/deploy-test.yml` runs the same test on
   GitHub's free `ubuntu-24.04-arm` runner. Server benchmarks on Ampere are estimates (scaled), labelled as such.
+
+### Phase 15 security review fixes (review agent, 13 findings — all fixed, regression tests in tests/test_phase15_security.py)
+1. **High — phone could change security settings**: `PUT /api/settings` from a remote session may no longer touch
+   `deployment`, `server` or any `telegram` key outside the notification/summary allow-list (a fake `api_base_url`
+   would have leaked the bot token and let a fake server impersonate the owner). `telegram.api_base_url` is validated
+   (Telegram or loopback only) and `server.backup_recipient` must decode to a real key.
+2. **Worker import could overwrite any job**: video ids `.`/`..`/leading dots refused, existing videos → 409,
+   `complete()` never takes the workspace from the worker's own result.
+3. **Scrubbing**: bot-token URLs, `access_token=`-style pairs, Google/Meta/Instagram/Groq/worker keys, any absolute
+   path (Windows, `E:/`, macOS, Linux), IPv6 and `*.ts.net` names, plus every loaded secret value replaced literally;
+   scheduler failure and backup-failure notifications are scrubbed too.
+4. **PIN in groups**: PIN-protected actions are refused in groups ("use your private chat"); a failed delete of the PIN
+   message tells you to delete it.
+5. **File modes on the server**: `.env` written 0600, imported tokens/secrets 0600, service `UMask=0077`, `/opt/clipforge` 0750.
+6. **Handover**: strict host pattern + `--` before the host (no `-oProxyCommand`), `shlex.quote` for remote names,
+   checksum step fails closed, staging extracted by the `clipforge` user with umask 077.
+7. **Fencing vs commit race**: `leased → committing` atomically with the fence before files are hashed/moved; the
+   reaper ignores committing tasks; a bad upload goes back to `leased`.
+8. Worker chunk uploads are streamed with a 16 MB cap (413 beyond).
+9. PIN: 6–8 digits, lockouts escalate 15 min → 24 h, owners are told.
+10. Messages from anonymous group admins / channel posts (`GroupAnonymousBot`, `sender_chat`) are ignored.
+11. Installer: the Tailscale key lives in a non-exported variable (children never inherit it); public SSH is only
+    closed when the install session already comes over Tailscale; cloud-init metadata caveat documented.
+12. Artifact path allowlist uses `fullmatch`/`\Z` (a trailing newline matched before).
+13. `server update`: a narrow sudoers rule lets the service user restart only `clipforge`; a failed restart rolls the
+    code back; health must answer with the NEW git revision (`/api/health` shows `rev` to local callers only).
+Also: the private GitHub repo needs a read-only deploy key on the server (documented in deploy/README.md step 4).
+
+### Phase 15 reliability drills (review agent ran 8 drills with real processes + fakes; 5 passed, fixes below)
+Drills: kill the worker mid-render (✅ server took over / restarted worker re-claimed at fence 2), restart the server
+mid-job (❌ → F1/F2/F3), disk full (✅ 409 on new jobs), YouTube blocked with no worker (✅ hold task survives restarts),
+expired tokens (✅ login_expired, no uploads), Telegram 429s + network drops (✅ nothing lost or repeated), two pollers
+(❌ duplicates when a batch outlived the lease → F4), laptop sleeping through its lease (✅ results dropped, re-claimed).
+- **F1 (high) endless loop after a lost hand-in**: a re-claimed task on a laptop that already had the result sent
+  nothing. The worker now always offers the stage's outputs that differ from the server's copy (plus the stage
+  state), and the server checks the stage is really done before accepting (`stage_output_missing` → 422). `delegate`
+  stops after 4 tasks for one stage and does it on the server.
+- **F2 (high) hand-in never retried**: `complete` (idempotent) is retried 5 s → 5 min through server restarts before
+  the worker takes new work; 422 hands the task back.
+- **F3 stuck "running" jobs**: `repair_stuck_jobs()` in the reaper resumes any running/queued job with no live task and
+  nothing queued; server start resumes interrupted jobs instead of failing them (standalone keeps "Interrupted → Retry");
+  `on_task_done` errors are logged and repaired.
+- **F4 Telegram updates handled twice**: the poller lease is renewed before every update (300 s) and the offset only
+  moves forward (`advance_offset`, atomic) — an old poller can never re-handle updates.
+- **F5 poison tasks**: after 3 vanished workers a task goes to the server (`fallback`), or fails if it's a `hold` task.
+- **F6 fence failed open**: if the fence can't be read, a server doesn't publish.
+- **F7 interrupted commits**: `committing` tasks are reset on server start and after 10 min; they're cancellable.
+- **F8**: imports respect the disk pause; worker uploads can't push the disk past `disk_pause_pct`.
+Regression tests: tests/test_reliability.py (each drill), plus the earlier unit tests.
+Not fixed by design: after `worker --standalone-emergency --server-is-down` the two databases diverge; keeping the
+old server from publishing when it comes back is on you (stop it; the fence is set the moment it's reachable).
+
+### Incident during Phase 15 (2026-11-04, 16:00–17:01 IST) and the config fixes it led to
+- While building Phase 15 the new keys were added to the working `config.yaml`. The **already running** `clipforge ui`
+  (old code, `extra="forbid"`) re-reads config.yaml on every request and rejected the whole file: its scheduler and
+  API failed for an hour. No post was missed (the posts due that hour were already on YouTube as private + publishAt,
+  and queued uploads were ten days ahead). Fixed at 17:01 by taking the new keys out of the working copy — every new
+  key has a default, so old and new code both read it; the committed `config.yaml` documents them.
+- Follow-up: `save_config` used to rewrite the whole file (losing comments) when a key was missing from it. It now
+  inserts missing keys at the end of their section (or appends the section), so an older config.yaml keeps its
+  comments and your own values. Restarting `clipforge ui` after pulling is still required for new code.

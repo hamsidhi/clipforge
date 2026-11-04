@@ -13,7 +13,7 @@ from collections import defaultdict
 from clipforge.config import load_config
 from clipforge.notify import tg_store as st
 from clipforge.notify.tg_api import esc
-from clipforge.notify.tg_core import Ctx, callback, command, danger, fmt_bytes, step
+from clipforge.notify.tg_core import Ctx, callback, command, danger, fmt_bytes, scrub, step
 from clipforge.notify.tg_jobs import job_arg
 from clipforge.publish import channels as chs
 from clipforge.publish import states
@@ -267,7 +267,7 @@ def needs_you_view(ctx: Ctx) -> None:
                 notes.append("YouTube keeps API uploads private until the API audit — see Settings → Publishing")
         rows_btn = [btns[i:i + 2] for i in range(0, len(btns), 2)]
         ctx.send(f"{_plat(it.platform)} <b>{esc(it.title[:70] or 'clip')}</b> · {esc(r['account'])}\n"
-                 f"{pub.when_local(it)} · {esc(r['label'])}" + ("".join(f"\n• {n}" for n in notes)), rows_btn or None)
+                 f"{pub.when_local(it)} · {esc(scrub(r['label']))}" + ("".join(f"\n• {n}" for n in notes)), rows_btn or None)
     if len(rows) > 15:
         ctx.send(f"…and {len(rows) - 15} more — open the Schedule page in the app.")
 

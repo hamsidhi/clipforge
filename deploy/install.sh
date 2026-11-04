@@ -11,6 +11,8 @@
 # `tailscale serve` (HTTPS only inside your tailnet), then `clipforge doctor` and a summary.
 set -euo pipefail
 set +x  # never echo commands: the auth key must not end up in a log
+# keep the auth key in a NON-exported shell variable: child processes (installers piped from curl, builds) never see it
+TSKEY="${TS_AUTHKEY:-}"; unset TS_AUTHKEY; export -n TSKEY 2>/dev/null || true
 
 MODEL="qwen2.5:7b"; WITH_OLLAMA=1; WITH_BOT_API=0; KEEP_PUBLIC_SSH=0
 BRANCH="main"; REPO="https://github.com/hamsidhi/clipforge"
@@ -70,7 +72,10 @@ fi
 
 step "User + app"
 id clipforge >/dev/null 2>&1 || useradd --system --create-home --home-dir /opt/clipforge --shell /bin/bash clipforge
-install -d -o clipforge -g clipforge /opt/clipforge
+install -d -m 750 -o clipforge -g clipforge /opt/clipforge
+if [[ -d /opt/clipforge/.ssh ]]; then  # deploy key for a private repo (deploy/README.md step 4)
+  chown -R clipforge:clipforge /opt/clipforge/.ssh && chmod 700 /opt/clipforge/.ssh && chmod 600 /opt/clipforge/.ssh/id_* 2>/dev/null || true
+fi
 if [[ -d $APP/.git ]]; then
   sudo -u clipforge git -C "$APP" fetch -q origin "$BRANCH" && sudo -u clipforge git -C "$APP" checkout -q "$BRANCH" \
     && sudo -u clipforge git -C "$APP" pull -q --ff-only
@@ -108,6 +113,10 @@ fi
 
 step "systemd service"
 install -m 644 deploy/clipforge.service /etc/systemd/system/clipforge.service
+# `clipforge server update` (run as clipforge) may restart/stop only this one service — nothing else
+SC=$(command -v systemctl)
+printf 'clipforge ALL=(root) NOPASSWD: %s restart clipforge, %s stop clipforge, %s start clipforge\n' "$SC" "$SC" "$SC" \
+  > /etc/sudoers.d/clipforge && chmod 440 /etc/sudoers.d/clipforge && visudo -cq
 systemctl daemon-reload
 systemctl enable clipforge >/dev/null
 systemctl restart clipforge
@@ -120,8 +129,8 @@ fi
 step "Tailscale"
 command -v tailscale >/dev/null || curl -fsSL https://tailscale.com/install.sh | sh >/dev/null
 if ! tailscale status >/dev/null 2>&1; then
-  [[ -n "${TS_AUTHKEY:-}" ]] || { echo "Set TS_AUTHKEY (Tailscale admin → Settings → Keys → Generate auth key)."; exit 1; }
-  KF=$(mktemp); chmod 600 "$KF"; printf '%s' "$TS_AUTHKEY" > "$KF"; unset TS_AUTHKEY
+  [[ -n "$TSKEY" ]] || { echo "Set TS_AUTHKEY (Tailscale admin → Settings → Keys → Generate auth key)."; exit 1; }
+  KF=$(mktemp); chmod 600 "$KF"; printf '%s' "$TSKEY" > "$KF"; TSKEY=""
   tailscale up --auth-key="file:$KF" --hostname=clipforge-server --ssh=false >/dev/null; rm -f "$KF"
 fi
 tailscale serve --bg --https=443 http://127.0.0.1:8000 >/dev/null 2>&1 || true
@@ -130,8 +139,17 @@ step "Firewall: nothing from the internet; the tailnet only"
 ufw --force reset >/dev/null
 ufw default deny incoming >/dev/null; ufw default allow outgoing >/dev/null
 ufw allow in on tailscale0 >/dev/null
-if [[ $KEEP_PUBLIC_SSH -eq 1 ]] || ! tailscale status >/dev/null 2>&1; then
-  ufw allow 22/tcp >/dev/null; SSH_NOTE="public SSH still open (--keep-public-ssh or Tailscale not up)"
+# Close public SSH only when this very session already comes over Tailscale (100.64.0.0/10) — otherwise you could lock
+# yourself out. Over the public IP: it stays open; test `ssh ubuntu@clipforge-server` from the laptop, then run
+# `sudo ufw delete allow 22/tcp` and remove the port-22 rule in Oracle's security list (deploy/README.md step 5).
+FROM_TAILNET=0
+if [[ -n "${SSH_CLIENT:-}" ]]; then
+  IP=${SSH_CLIENT%% *}; O1=${IP%%.*}; R=${IP#*.}; O2=${R%%.*}
+  [[ $O1 == 100 && $O2 -ge 64 && $O2 -le 127 ]] && FROM_TAILNET=1
+fi
+if [[ $KEEP_PUBLIC_SSH -eq 1 ]] || ! tailscale status >/dev/null 2>&1 || [[ $FROM_TAILNET -eq 0 && -n "${SSH_CLIENT:-}" ]]; then
+  ufw allow 22/tcp >/dev/null
+  SSH_NOTE="public SSH still OPEN — after checking 'ssh ubuntu@clipforge-server' works: sudo ufw delete allow 22/tcp"
 else
   SSH_NOTE="SSH only over Tailscale"
 fi

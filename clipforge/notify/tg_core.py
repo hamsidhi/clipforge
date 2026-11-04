@@ -184,7 +184,7 @@ class Ctx:
 
 
 # ============================================================================ PIN
-PIN_RE = re.compile(r"^\d{4,8}$")
+PIN_RE = re.compile(r"^\d{6,8}$")
 
 
 def pin_enabled() -> bool:
@@ -195,7 +195,7 @@ def set_pin(pin: str) -> None:
     from clipforge.api.auth import hash_password
 
     if not PIN_RE.match(pin):
-        raise ValueError("The PIN must be 4–8 digits.")
+        raise ValueError("The PIN must be 6–8 digits.")
     save_secret("TELEGRAM_PIN_HASH", hash_password(pin))
     st.kv_del("pin_fail")
 
@@ -222,25 +222,49 @@ def check_pin(pin: str) -> bool:
         return True
     rec["n"] = rec.get("n", 0) + 1
     if rec["n"] >= 5:
-        rec = {"n": 0, "locked_until": time.time() + 15 * 60}
-        audit("PIN locked for 15 minutes after 5 wrong tries")
-    st.kv_set("pin_fail", rec, dt.timedelta(hours=1))
+        strikes = rec.get("strikes", 0) + 1  # 15 min, 30 min, 1 h, 2 h … (max 24 h): guessing never gets cheap
+        minutes = min(15 * 2 ** (strikes - 1), 24 * 60)
+        rec = {"n": 0, "strikes": strikes, "locked_until": time.time() + minutes * 60}
+        audit(f"PIN locked for {minutes} minutes after 5 wrong tries (lockout #{strikes})")
+        _alert_owners(f"🔒 Someone typed a wrong ClipForge PIN 5 times — locked for {minutes} minutes.")
+    st.kv_set("pin_fail", rec, dt.timedelta(days=2))
     return False
+
+
+def _alert_owners(text: str) -> None:
+    try:
+        from clipforge.notify import telegram
+
+        telegram.bot().send_text(text, roles=("owner",))
+    except Exception:
+        pass
 
 
 # ============================================================================ safety helpers
 _SCRUB = [
-    (re.compile(r"\b\d{6,}:[A-Za-z0-9_-]{25,}\b"), "[token]"),                     # bot tokens
-    (re.compile(r"\b(?:ya29|EAA[A-Za-z0-9]{4})[A-Za-z0-9._-]{10,}"), "[token]"),   # Google / Meta access tokens
-    (re.compile(r"(?i)\b(?:api[_-]?key|secret|password|token)\s*[=:]\s*\S+"), "[secret]"),
+    (re.compile(r"\d{6,}:[A-Za-z0-9_-]{25,}"), "[token]"),                          # Telegram bot tokens (also inside /bot…/ URLs)
+    (re.compile(r"(?:ya29\.|1//0|GOCSPX-|AIza|EAA[A-Za-z0-9]{3}|IGQV|IGAA|gsk_|cfw_|cfsk1:|sk-)[A-Za-z0-9._/+=-]{8,}"), "[token]"),
+    (re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]{8,}"), "[secret]"),
+    (re.compile(r"(?i)(?:api[_-]?key|secret|password|passwd|token|access_token|refresh_token|client_secret|authorization)"
+                r"[\"']?\s*[=:]\s*[\"']?[^\s\"',;&]+"), "[secret]"),
     (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "[ip]"),
-    (re.compile(r"(?:[A-Za-z]:\\|\\\\)[^\s'\"]*?([^\\/\s'\"]+)(?=[\s'\".,)]|$)"), r"…\1"),  # Windows paths → file name
-    (re.compile(r"(?<![\w:/])/(?:home|root|opt|var|srv|mnt|tmp|usr|etc)/[^\s'\"]*?([^/\s'\"]+)(?=[\s'\".,)]|$)"), r"…\1"),
+    (re.compile(r"\b(?:[0-9a-f]{1,4}:){3,7}[0-9a-f]{1,4}\b", re.I), "[ip]"),
+    (re.compile(r"\b[\w-]+\.[\w-]+\.ts\.net\b", re.I), "[tailnet]"),
+    (re.compile(r"(?:[A-Za-z]:[\\/]|\\\\)(?:[^\\/\n\"'<>|]*[\\/])*([^\\/\s\"'<>|]+)"), r"…\1"),         # Windows paths
+    (re.compile(r"(?<![\w:/.])/(?:[^/\s\"'<>]+/)+([^/\s\"'<>]+)"), r"…\1"),                          # any absolute POSIX path
 ]
 
 
 def scrub(text: str) -> str:
-    """Remove tokens, secrets, IPs and absolute paths from a message before it goes to Telegram."""
+    """Remove tokens, secrets, IPs, tailnet names and absolute paths from a message before it goes to Telegram.
+    Also every secret ClipForge has loaded (.env values), replaced literally."""
+    text = str(text)
+    try:
+        for v in Secrets().model_dump().values():
+            if isinstance(v, str) and len(v) > 8:
+                text = text.replace(v, "[secret]")
+    except Exception:
+        pass
     for rx, rep in _SCRUB:
         text = rx.sub(rep, text)
     return text[:1500]

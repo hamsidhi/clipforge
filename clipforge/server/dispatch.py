@@ -21,18 +21,20 @@ from clipforge.server import leases
 from clipforge.utils.log import log
 
 DELEGATABLE = ("download", "transcribe", "select", "render")
+MAX_TASKS_PER_STAGE = 4
 _reaper: threading.Thread | None = None
 _stop = threading.Event()
 
 
 # ============================================================================ publishing guard / fence
 def fenced() -> str:
+    """'' = not fenced. Fails CLOSED: if the fence can't be read, a server must not publish (it might be fenced)."""
     try:
         from clipforge.notify import tg_store as st
 
         return st.kv_get("publishing_fenced") or ""
-    except Exception:
-        return ""
+    except Exception as exc:
+        return f"couldn't read the fence ({type(exc).__name__}) — not publishing until it can"
 
 
 def set_fenced(reason: str) -> None:
@@ -100,6 +102,9 @@ def delegate(job: db.Job, cfg: Config, reporter, payload: dict) -> bool:
             continue
         if stage in local or stage not in prefer:
             return False
+        if sum(1 for t in leases.tasks_for(job.id) if t.stage == stage) >= MAX_TASKS_PER_STAGE:
+            reporter.log(f"{stage}: workers didn't finish it after {MAX_TASKS_PER_STAGE} tries — doing it here", "warning")
+            return False
         if stage == "download" and not is_url(job.source):
             pipeline.run_download(ws, job.source, cfg, reporter, section)  # an uploaded file is already here
             continue
@@ -155,6 +160,29 @@ def _park_download(job: db.Job, why: str) -> None:
         log.warning(f"[server] couldn't tell Telegram about the blocked download: {exc}")
 
 
+def stage_output_missing(t: db.StageTask, job: db.Job) -> str:
+    """'' if the stage's results are really in the workspace now (checked before a task is marked done)."""
+    from clipforge import pipeline
+    from clipforge.api.jobs import job_config
+    from clipforge.workspace import Workspace
+
+    if t.stage == "import" or not job.video_id:
+        return ""
+    cfg = job_config(job.settings)
+    ws = Workspace(cfg.workspace, job.video_id)
+    section = tuple(job.settings["section"]) if job.settings.get("section") else None
+    if t.stage == "render":
+        try:
+            pipeline.adopt_renders(ws, cfg)
+        except Exception as exc:
+            return f"render results unreadable ({exc})"
+        todo = pipeline.render_todo(ws)
+        ranks = t.payload.get("ranks")
+        left = [r for r in todo if ranks is None or r in ranks]
+        return f"clips {left} not rendered" if left else ""
+    return "" if _stage_done(t.stage, ws, cfg, section) else f"{t.stage} results not complete"
+
+
 def on_task_done(task_id: int) -> None:
     """A worker finished a stage: adopt its results and continue the job."""
     from clipforge import pipeline
@@ -205,7 +233,8 @@ def on_task_failed(task_id: int, error: str, blocked: bool = False) -> None:
 
 # ============================================================================ reaper
 def tick() -> dict:
-    """Expired leases → back to the queue; unclaimed tasks past the grace time → the server does them."""
+    """Expired leases → back to the queue; unclaimed tasks past the grace time → the server does them; tasks that
+    crashed workers 3 times → the server / failed; and any job left 'running' with nothing working on it is resumed."""
     from clipforge.api.jobs import manager
 
     out = leases.reap()
@@ -214,6 +243,10 @@ def tick() -> dict:
             stages = [t.stage for t in leases.tasks_for(job_id) if t.status == "fallback"]
             log.info(f"[server] no worker took job {job_id} ({', '.join(stages)}) — running it here")
             manager.submit("pipeline", job_id, {"local": stages, "local_all": True})
+    for task_id in out.get("failed", []):
+        t = leases.get(task_id)
+        on_task_failed(task_id, (t.error if t else "") or "crashed the worker 3 times")
+    repair_stuck_jobs()
     try:
         leases.mark_offline_workers()
     except Exception:
@@ -225,6 +258,29 @@ def tick() -> dict:
     except Exception as exc:
         log.debug(f"[server] nightly: {exc}")
     return out
+
+
+def repair_stuck_jobs(min_age_sec: float = 120) -> list[int]:
+    """A job 'running'/'queued' with no live task and nothing queued here (a lost hand-off, a crash between a worker
+    finishing and the job continuing): submit its pipeline again — finished stages are skipped by the cache."""
+    import datetime as dt
+
+    from clipforge.api.jobs import manager
+
+    resumed = []
+    now = dt.datetime.now(dt.timezone.utc)
+    for job in db.list_jobs():
+        if job.status not in ("running", "queued") or manager.busy(job.id):  # type: ignore[arg-type]
+            continue
+        upd = job.updated_at.replace(tzinfo=dt.timezone.utc) if job.updated_at.tzinfo is None else job.updated_at
+        if (now - upd).total_seconds() < min_age_sec:
+            continue
+        tasks = leases.tasks_for(job.id)  # type: ignore[arg-type]
+        local_all = bool(tasks) and tasks[-1].status == "fallback"
+        log.info(f"[server] job {job.id} was waiting on nothing — resuming it")
+        manager.submit("pipeline", job.id, {"local_all": True} if local_all else {})  # type: ignore[arg-type]
+        resumed.append(job.id)  # type: ignore[arg-type]
+    return resumed
 
 
 def start_reaper(interval: float = 15.0) -> None:

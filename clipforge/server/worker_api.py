@@ -11,7 +11,7 @@ import threading
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from clipforge.api import db
@@ -20,6 +20,7 @@ from clipforge.server import artifacts, leases
 from clipforge.utils.log import log
 
 router = APIRouter(prefix="/api", tags=["server"])
+MAX_CHUNK = 16 * 1024 * 1024
 _commit_locks: dict[int, threading.Lock] = {}
 _commit_guard = threading.Lock()
 
@@ -133,30 +134,37 @@ def complete(body: CompleteIn, w: db.WorkerNode = Depends(worker_auth)) -> dict:
         if t and t.status == "done" and t.worker_id == w.id and t.fence == body.fence:
             return {"ok": True, "already": True}
         t = _lease(w, body.task_id, body.fence)
-        try:  # hold the lease while hashing big files
-            leases.heartbeat(w.id, t.id, t.fence, t.progress, None, "receiving results")  # type: ignore[arg-type]
-        except leases.StaleLease as exc:
-            raise HTTPException(409, str(exc))
         job = db.get_job(t.job_id)
         if not job:
             raise HTTPException(404, "The job was deleted")
         cfg = load_config()
         from clipforge.workspace import Workspace
 
-        video_id = job.video_id or body.result.get("video_id")
-        if not video_id:
-            raise HTTPException(400, "No video id")
-        ws = Workspace(cfg.workspace, video_id)
+        if not job.video_id:  # never from the worker's own result: the server decides which workspace it writes
+            raise HTTPException(400, "This job has no video id yet")
+        ws = Workspace(cfg.workspace, job.video_id)
+        try:  # leased → committing atomically (fence checked); the reaper never touches a committing task
+            leases.begin_commit(w.id, t.id, t.fence)  # type: ignore[arg-type]
+        except leases.StaleLease as exc:
+            raise HTTPException(409, str(exc))
         try:
             n = artifacts.commit(ws, cfg.workspace, t.id, t.fence, [f.model_dump() for f in body.files],  # type: ignore[arg-type]
                                  body.state, body.deleted)
         except artifacts.ArtifactError as exc:
+            leases.abort_commit(t.id, t.fence)  # type: ignore[arg-type]  # back to leased: the worker can re-upload
             raise HTTPException(422, str(exc))
+        missing = dispatch.stage_output_missing(t, job)
+        if missing:  # e.g. an empty hand-in: never mark a stage done that isn't — it would be delegated again forever
+            leases.abort_commit(t.id, t.fence)  # type: ignore[arg-type]
+            raise HTTPException(422, f"stage output missing: {missing}")
         try:
             leases.complete(w.id, t.id, t.fence, {**body.result, "files": n})  # type: ignore[arg-type]
         except leases.StaleLease as exc:
             raise HTTPException(409, str(exc))
-    dispatch.on_task_done(t.id)  # type: ignore[arg-type]
+    try:
+        dispatch.on_task_done(t.id)  # type: ignore[arg-type]
+    except Exception as exc:  # the reaper's repair step re-submits the job — never leave it hanging silently
+        log.error(f"[server] continuing job {t.job_id} after task {t.id} failed: {exc}")
     return {"ok": True, "files": n}
 
 
@@ -217,9 +225,13 @@ def staged(task_id: int, path: str, fence: int, w: db.WorkerNode = Depends(worke
 async def push(task_id: int, path: str, fence: int, request: Request, offset: int = 0,
                w: db.WorkerNode = Depends(worker_auth)) -> dict:
     _lease(w, task_id, fence)
-    body = await request.body()  # chunks are ≤ 8 MB (worker side), so buffering one is fine
+    body = bytearray()
+    async for part in request.stream():  # ≤ 16 MB per chunk (the worker sends 8 MB): never buffer an unbounded body
+        body += part
+        if len(body) > MAX_CHUNK:
+            raise HTTPException(413, "Chunk too large (max 16 MB)")
     try:
-        size = artifacts.write_chunk(load_config().workspace, task_id, fence, path, offset, [body])
+        size = artifacts.write_chunk(load_config().workspace, task_id, fence, path, offset, [bytes(body)])
     except artifacts.ArtifactError as exc:
         raise HTTPException(409 if "offset" in str(exc) else 400, str(exc))
     return {"size": size}
@@ -237,8 +249,13 @@ def import_job(body: ImportIn, w: db.WorkerNode = Depends(worker_auth)) -> dict:
     """A job the laptop ran while the server was unreachable: create it here, the worker then uploads its files."""
     import re
 
-    if not re.fullmatch(r"[\w.-]{1,80}", body.video_id):
+    if not re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9_.-]{0,79}", body.video_id) or ".." in body.video_id:
         raise HTTPException(400, "Bad video id")
+    if (load_config().workspace / body.video_id).exists() or any(j.video_id == body.video_id for j in db.list_jobs()):
+        raise HTTPException(409, "That video already exists on the server — nothing was overwritten.")
+    from clipforge.server import housekeeping
+
+    housekeeping.refuse_if_disk_full()
     with db.session() as s:
         job = db.Job(source=body.source[:500], video_id=body.video_id, title=body.title[:200], status="running",
                      stage="import", message=f"importing from {w.name}", settings_json=json.dumps(body.settings))

@@ -20,17 +20,23 @@ Tests: `tests/test_server.py`; real two-process run: `scripts/deploy_e2e.py` →
 ## Tasks, leases, fencing
 
 ```
-StageTask: queued ──claim──▶ leased(worker, fence=n, lease_until=now+lease_seconds) ──complete(fence=n)──▶ done
-              ▲                   │ heartbeat (every heartbeat_seconds = 30) renews lease_until, reports progress
-              └─ lease expired ───┘ → queued again; the next claim gets fence n+1
-            cancelled (job cancelled) · failed (3 attempts) · fallback (no worker claimed it in time → the server does it)
+StageTask: queued ──claim──▶ leased(worker, fence=n) ──complete(fence=n)──▶ committing ──verified──▶ done
+              ▲                   │ heartbeat (every 30 s) renews lease_until        │ checksum/output problem → leased (422)
+              └─ lease expired ───┘ → queued again; the next claim gets fence n+1     │ server died mid-commit → queued
+            cancelled (job cancelled) · failed (3 attempts / hold task that killed 3 workers)
+            fallback (no worker claimed it in time, or 3 workers vanished → the server does it)
 ```
 * **Claim** is atomic (`BEGIN IMMEDIATE`): the oldest queued task whose stage is in the worker's capabilities.
   Every claim increments `fence`.
 * **Heartbeat / complete / fail / artifact calls must carry the current fence.** A worker that slept through its lease
   gets 409 and drops its results — it can never overwrite newer work.
 * **Complete is idempotent**: the same (task, fence) completing twice is accepted once (`{"already": true}`).
-* **No job is lost**: an expired lease is re-queued (`reap`, every 15 s on the server); a task nobody claims within
+* **Committing**: `complete` moves the task `leased → committing` atomically with the fence check *before* hashing and
+  moving files, so the reaper can't hand it to another worker mid-commit; the server then checks the stage really is
+  done (`stage_output_missing`) — an empty or partial hand-in gets 422 and the task goes back to `leased`.
+* **No job is lost**: the worker retries `complete` (5 s → 5 min) through server restarts before taking new work, and
+  always offers the stage's outputs that differ from the server's copy (a re-claimed stage that was already cached on
+  the laptop still delivers). A job left "running" with no live task is resumed by the reaper. An expired lease is re-queued (`reap`, every 15 s on the server); a task nobody claims within
   `deployment.worker_grace_minutes` (default 10) falls back to the server — except `hold` tasks (a download YouTube
   blocked on the server), which wait for a worker however long it takes.
 * **No job is done twice**: one live task per (job, stage); results only with the current fence; publishing is
@@ -60,8 +66,9 @@ StageTask: queued ──claim──▶ leased(worker, fence=n, lease_until=now+l
 * Pull sets per stage: download → nothing; transcribe → info + audio; select → info, transcript, energy, candidates,
   LLM caches; render → everything. Files already on the worker with the same sha256 are skipped (a laptop that
   downloaded the source itself doesn't pull it back).
-* Push = every file the stage created or changed (snapshot of size + mtime before/after), plus deleted files
-  (e.g. a re-render renamed `03_old.mp4` → `03_new.mp4`).
+* Push = every file the stage created or changed (snapshot of size + mtime before/after) **plus** the stage's outputs
+  whose sha256 differs from the server's manifest, plus deleted files (a re-render renamed `03_old.mp4` → `03_new.mp4`)
+  and the stage's state entry.
 * sha256 hashes are cached by size + mtime in `<workspace>/<video>/.hashes.json` (a 4 GB source is hashed once).
 * Staging: `workspace/_incoming/<task>_<fence>/`, removed after commit; leftovers older than a day are cleaned up.
 

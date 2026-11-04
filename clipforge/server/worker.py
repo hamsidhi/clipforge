@@ -26,6 +26,15 @@ from clipforge.server import artifacts
 from clipforge.utils.log import CancelledError, log
 
 CHUNK = 8 * 1024 * 1024
+# what each stage produces — always offered to the server (if it differs from the server's copy), even when the stage
+# was already cached on this laptop: a re-claimed task whose first `complete` got lost must still deliver its results
+STAGE_OUTPUTS = {
+    "download": ["source.mp4", "audio.wav", "info.json", "thumbnail.jpg"],
+    "transcribe": ["transcript.json"],
+    "select": ["candidates.json", "llm_candidates.json", "energy.json", "select_cache/"],
+    "render": ["clips/", "metadata.json", "metadata.csv", "gallery.html", "transcript.json", "scenes.json"],
+}
+STAGE_STATE = {"download": ["download"], "transcribe": ["transcribe"], "select": ["analyze", "select"], "render": []}
 
 
 class ServerError(RuntimeError):
@@ -145,7 +154,7 @@ class WorkerClient:
             if rep.cancelled():
                 raise CancelledError("cancelled on the server")
             self.push(task, files)
-            self.call("POST", "/api/worker/complete", json={"task_id": task["id"], "fence": task["fence"], "files": [
+            self.complete_with_retry(task, {"task_id": task["id"], "fence": task["fence"], "files": [
                 {"path": p, "size": s, "sha256": h} for p, s, h in files], "deleted": deleted, "state": st, "result": result})
             _state.done += 1
             _state.history.append({"task": task["id"], "job": task["job_id"], "stage": task["stage"], "ok": True, "at": time.time()})
@@ -156,6 +165,13 @@ class WorkerClient:
         except ServerError as exc:
             if exc.status == 409:  # our lease is gone (expired while we slept, or cancelled): drop the results
                 log.warning(f"[worker] task {task['id']}: {exc} — results dropped (the server has newer ones)")
+                return True
+            if exc.status == 422:  # the server checked the results and something's missing/damaged: hand it back
+                try:
+                    self.call("POST", "/api/worker/fail", json={"task_id": task["id"], "fence": task["fence"],
+                                                                "error": f"results rejected: {exc}", "retryable": True})
+                except ServerError:
+                    pass
                 return True
             raise
         except Exception as exc:
@@ -174,6 +190,21 @@ class WorkerClient:
         finally:
             rep.cancel.set()  # stops the heartbeat thread
             _state.task = None
+
+    def complete_with_retry(self, task: dict, body: dict, attempts: int = 12) -> None:
+        """`complete` is idempotent on the server: keep trying (5 s → 5 min) through a server restart or a network blip,
+        before claiming anything new. 409 = our lease is gone (the server has newer results); 422 = bad upload."""
+        wait = 5.0
+        for i in range(attempts):
+            try:
+                self.call("POST", "/api/worker/complete", json=body)
+                return
+            except ServerError as exc:
+                if exc.status in (409, 422) or i == attempts - 1 or self.stop.is_set():
+                    raise
+                log.warning(f"[worker] couldn't hand in task {task['id']} ({exc}) — retrying in {wait:.0f} s")
+                self.sleep(wait)
+                wait = min(wait * 2, 300)
 
     def _heartbeat(self, task: dict, rep: Reporter) -> None:
         while not rep.cancel.wait(self.hb_seconds):
@@ -224,8 +255,18 @@ class WorkerClient:
         else:
             raise RuntimeError(f"unknown stage {stage}")
         changed, deleted = artifacts.changed_since(ws.dir, before)
-        st = {k: v for k, v in ws._state().items() if state_before.get(k) != v and k in artifacts.STATE_KEYS}
-        files = [(p, (ws.dir / p).stat().st_size, artifacts.local_sha(ws.dir, p) or "") for p in changed]
+        server_has = {f["path"]: f["sha256"] for f in task.get("manifest") or []}
+        wanted = STAGE_OUTPUTS.get(stage, [])
+        outputs = [p for p in artifacts.snapshot(ws.dir)
+                   if any(p == w or (w.endswith("/") and p.startswith(w)) for w in wanted)]
+        files = []
+        for p in sorted(set(changed) | set(outputs)):
+            sha = artifacts.local_sha(ws.dir, p) or ""
+            if server_has.get(p) != sha:  # the server doesn't have this exact file yet
+                files.append((p, (ws.dir / p).stat().st_size, sha))
+        state = ws._state()
+        st = {k: v for k, v in state.items() if k in artifacts.STATE_KEYS
+              and (state_before.get(k) != v or k in STAGE_STATE.get(stage, []))}
         return files, deleted, st, {"video_id": task["video_id"]}
 
     # ---- transfers

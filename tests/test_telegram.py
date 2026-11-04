@@ -202,7 +202,7 @@ def test_pin_with_deletion_and_lockout_and_type_yes(tg):
     from clipforge.publish import queue as q
 
     b, fake, tmp = tg
-    tg_core.set_pin("4321")
+    tg_core.set_pin("432199")
     save_config(load_config().with_overrides({"telegram.pin_required": True}))
     with db.session() as s:
         s.add(db.Channel(id="UCy", title="My Shorts", uploads_playlist="UUy", confirmed=True, paused=True))
@@ -211,7 +211,7 @@ def test_pin_with_deletion_and_lockout_and_type_yes(tg):
     press(b, fake, "✅ Yes")
     assert "PIN" in fake.last_text() and chs.get("UCy").paused
     for i in range(5):
-        upd = fake.msg("1111")
+        upd = fake.msg("111111")
         b.handle(upd)
         assert upd["message"]["message_id"] in fake.deleted  # the PIN message is deleted at once
     assert "locked" in fake.last_text() and chs.get("UCy").paused
@@ -224,7 +224,7 @@ def test_pin_with_deletion_and_lockout_and_type_yes(tg):
     st.kv_del("pin_fail")
     send(b, fake, "/resume my shorts")
     press(b, fake, "✅ Yes")
-    send(b, fake, "4321")
+    send(b, fake, "432199")
     assert not chs.get("UCy").paused and "Resumed" in fake.last_text()
     # publish now needs "type YES" too
     item = q.save(db.QueueItem(channel_id="UCy", video_id="v", rank=1, clip_key="k1", title="Hot take", status="missed",
@@ -531,3 +531,30 @@ def test_e2e_link_wizard_progress_clips_approve_schedule_queue(tg, monkeypatch):
         from pathlib import Path
 
         Path(out).write_text(fake.transcript(), encoding="utf-8")
+
+
+def test_running_bot_stops_polling_when_the_laptop_becomes_a_worker(tg):
+    """Handover while `clipforge ui` runs: the running bot must stop polling by itself (no restart needed)."""
+    import threading
+
+    from clipforge.config import load_config, save_config
+    from clipforge.notify import tg_store as st
+
+    b, fake, _ = tg
+    b.poll_once(timeout=0)
+    assert st.poller_owner() is not None
+    save_config(load_config().with_overrides({"deployment.mode": "worker"}))
+    b.polling = True
+    b.stop.clear()
+    calls = len(fake.of("getUpdates"))
+    t = threading.Thread(target=b._loop, daemon=True)
+    t.start()
+    import time
+
+    for _ in range(50):
+        if not b.polling:
+            break
+        time.sleep(0.05)
+    b.stop.set()
+    t.join(2)
+    assert b.polling is False and st.poller_owner() is None and len(fake.of("getUpdates")) == calls

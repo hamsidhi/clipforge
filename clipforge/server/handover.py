@@ -24,6 +24,8 @@ import datetime as dt
 import hashlib
 import json
 import os
+import re
+import shlex
 import shutil
 import socket
 import sqlite3
@@ -67,18 +69,27 @@ class Plan:
 
 
 # ============================================================================ transports
+HOST_RE = re.compile(r"(?:[a-z_][a-z0-9_-]{0,31}@)?[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?")
+
+
+def remote_quote(value: str) -> str:
+    """Quote a value for the remote POSIX shell (never json.dumps: "$(…)" would still run)."""
+    return shlex.quote(value)
+
+
 class SshTransport:
     def __init__(self, host: str, remote_dir: str = REMOTE_DIR, staging: str = STAGING) -> None:
-        if not host or any(c in host for c in " ;&|`$'\"\\"):
-            raise HandoverError("Give the server's Tailscale name, e.g. clipforge-server or ubuntu@clipforge-server")
+        if not host or not HOST_RE.fullmatch(host):
+            raise HandoverError("Give the server's Tailscale name, e.g. clipforge-server.tail1234.ts.net "
+                                "or ubuntu@clipforge-server (letters, digits, dots, dashes only)")
         self.host, self.remote_dir, self.staging = host, remote_dir, staging
 
     def describe(self) -> str:
         return f"ssh {self.host}:{self.remote_dir}"
 
     def _ssh(self, cmd: str, input_: bytes | None = None, timeout: float = 120) -> subprocess.CompletedProcess:
-        return subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", self.host, cmd], input=input_,
-                              capture_output=True, timeout=timeout)
+        return subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "--", self.host, cmd],
+                              input=input_, capture_output=True, timeout=timeout)
 
     def check(self) -> dict:
         r = self._ssh(f"test -x {self.remote_dir}/.venv/bin/clipforge && df -Pk {self.remote_dir} | tail -1")
@@ -89,9 +100,11 @@ class SshTransport:
         return {"free": free_kb * 1024}
 
     def send(self, items: list[tuple[Path, str]], manifest: dict[str, str]) -> None:
-        proc = subprocess.Popen(["ssh", "-o", "BatchMode=yes", self.host,
-                                 f"rm -rf {self.staging} && mkdir -p {self.staging} && tar -xf - -C {self.staging}"],
-                                stdin=subprocess.PIPE)
+        st = remote_quote(self.staging)
+        # extracted by the clipforge user with umask 077: it owns the staging folder, finish-import can move the files,
+        # and nobody else on the server can read the logins in it
+        cmd = f"sudo -u clipforge sh -c {remote_quote(f'umask 077 && rm -rf {st} && mkdir -p {st} && tar -xf - -C {st}')}"
+        proc = subprocess.Popen(["ssh", "-o", "BatchMode=yes", "--", self.host, cmd], stdin=subprocess.PIPE)
         assert proc.stdin
         with tarfile.open(fileobj=proc.stdin, mode="w|") as tar:
             for path, name in items:
@@ -107,17 +120,21 @@ class SshTransport:
             raise HandoverError("Copy to the server failed (ssh/tar). Nothing on the server was changed — run it again.")
 
     def verify(self) -> list[str]:
-        r = self._ssh(f"cd {self.staging} && sha256sum --quiet -c SHA256SUMS", timeout=3600)
-        return [ln for ln in r.stdout.decode(errors="replace").splitlines() if "FAILED" in ln] if r.returncode else []
+        st = remote_quote(self.staging)
+        r = self._ssh(f"sudo -u clipforge sh -c {remote_quote(f'cd {st} && sha256sum --quiet -c SHA256SUMS')}", timeout=3600)
+        if r.returncode == 0:
+            return []
+        out = r.stdout.decode(errors="replace").splitlines() + r.stderr.decode(errors="replace").splitlines()
+        return [ln for ln in out if ln.strip()][:10] or ["the checksum check couldn't run on the server"]  # fail closed
 
     def finish_import(self) -> None:
-        r = self._ssh(f"sudo -u clipforge {self.remote_dir}/.venv/bin/clipforge server finish-import --from {self.staging} "
-                      "&& sudo systemctl restart clipforge", timeout=600)
+        r = self._ssh(f"sudo -u clipforge {self.remote_dir}/.venv/bin/clipforge server finish-import --from "
+                      f"{remote_quote(self.staging)} && sudo systemctl restart clipforge", timeout=600)
         if r.returncode != 0:
             raise HandoverError(f"finish-import failed on the server: {r.stderr.decode(errors='replace')[:300]}")
 
     def add_worker(self, name: str) -> str:
-        r = self._ssh(f"sudo -u clipforge {self.remote_dir}/.venv/bin/clipforge server add-worker {json.dumps(name)} --key-only")
+        r = self._ssh(f"sudo -u clipforge {self.remote_dir}/.venv/bin/clipforge server add-worker {remote_quote(name)} --key-only")
         key = r.stdout.decode().strip().splitlines()[-1] if r.returncode == 0 and r.stdout else ""
         if not key.startswith("cfw_"):
             raise HandoverError("Couldn't create the worker key on the server — run `clipforge server add-worker` there.")
@@ -357,6 +374,8 @@ def finish_import(staging: Path, app_dir: Path, workspace: Path | None = None) -
         if dst.exists() and rel in (".env", "config.yaml"):
             shutil.copy2(dst, dst.with_name(dst.name + ".before-handover"))
         os.replace(f, dst)
+        if os.name != "nt" and (rel == ".env" or dst.name == "token.json" or rel == "client_secret.json"):
+            os.chmod(dst, 0o600)
         moved.append(rel)
     for wal in ("clipforge.db-wal", "clipforge.db-shm"):
         (ws / wal).unlink(missing_ok=True)
@@ -430,7 +449,7 @@ def import_token(to: str, channel: str | None = None, keep: bool = False, transp
     if isinstance(t, DirTransport):
         receive_tokens(t.staging, t.root / "app" / "workspace")
     else:
-        r = t._ssh(f"sudo -u clipforge {t.remote_dir}/.venv/bin/clipforge server receive-tokens --from {t.staging}")  # type: ignore[attr-defined]
+        r = t._ssh(f"sudo -u clipforge {t.remote_dir}/.venv/bin/clipforge server receive-tokens --from {remote_quote(t.staging)}")  # type: ignore[attr-defined]
         if r.returncode != 0:
             raise HandoverError("The server couldn't register the accounts: " + r.stderr.decode(errors="replace")[:300])
     rows_p.unlink(missing_ok=True)

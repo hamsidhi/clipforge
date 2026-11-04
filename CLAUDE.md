@@ -144,9 +144,10 @@ uploaded = private/unlisted by the user's choice (never goes public by itself)
 ### Always online (Phase 15b, `server/`, `deployment.mode: standalone | server | worker`)
 - `standalone` (default) = everything as before. `server` = owns DB, logins, publishing, Telegram; leases heavy stages to
   workers. `worker` = laptop: `server/worker.py` loop (or inside `clipforge ui`), never publishes, never polls Telegram.
-- `server/leases.py`: WorkerNode + StageTask (queued → leased(fence) → done); claim/heartbeat/complete/fail, `reap()`
-  re-queues expired leases and falls back unclaimed tasks to the server (`hold` tasks wait). Results only with the
-  current fence; complete is idempotent.
+- `server/leases.py`: WorkerNode + StageTask (queued → leased(fence) → committing → done); claim/heartbeat/complete/
+  fail, `reap()` re-queues expired leases, caps attempts (3), resets stuck commits and falls back unclaimed tasks to the
+  server (`hold` tasks wait). Results only with the current fence; complete is idempotent and verified
+  (`dispatch.stage_output_missing` → 422); `dispatch.repair_stuck_jobs()` resumes jobs with no live task.
 - `server/dispatch.py`: `delegate()` is called by the job manager before a pipeline task runs (first undone stage →
   worker if one is online, else local; blocked YouTube download → hold task); `on_task_done()` re-submits the job;
   `publishing_allowed()` guards every publish path; reaper thread + nightly backup/cleanup in server mode.

@@ -56,3 +56,21 @@ def test_save_config_keeps_comments(tmp_path):
     assert "# how many clips to output" in text  # comment kept
     again = load_config(p)
     assert again.clips.count == 17 and again.captions.highlight_color == "#FF0000" and again.llm.model == "qwen2.5:7b"
+
+
+def test_save_config_adds_new_keys_without_losing_comments(tmp_path):
+    """An older config.yaml (no Phase 15 keys) keeps its comments and the user's values when new keys are saved."""
+    from clipforge.config import load_config, save_config
+
+    p = tmp_path / "config.yaml"
+    p.write_text("clips:                 # comment A\n  count: 20  # how many\n\n"
+                 "telegram:   # bot\n  enabled: true\n\npublishing:\n  posts_per_day: 10   # mine\n", encoding="utf-8")
+    cfg = load_config(p).with_overrides({"telegram.pin_required": True, "deployment.mode": "worker", "clips.count": 18})
+    save_config(cfg, p)
+    text = p.read_text(encoding="utf-8")
+    assert "# comment A" in text and "# how many" in text and "# mine" in text
+    again = load_config(p)
+    assert again.clips.count == 18 and again.telegram.pin_required and again.deployment.mode == "worker"
+    assert again.publishing.posts_per_day == 10
+    lines = text.splitlines()
+    assert lines.index("  pin_required: true") < lines.index("publishing:")  # inside its own section

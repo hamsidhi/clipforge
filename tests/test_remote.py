@@ -420,3 +420,19 @@ def test_remote_session_limits(env):
         uid = local.post("/api/uploads", json={"filename": "a.mp4", "size": 10}).json()["upload_id"]
         assert local.put(f"/api/uploads/{uid}?offset=0", content=b"x" * 11).status_code == 400  # over the declared size
         assert local.put(f"/api/uploads/{uid}?offset=0", content=b"x" * 10).json()["received"] == 10
+
+
+def test_telegram_security_settings_are_laptop_only(env):
+    """Phase 15: bot token, pairing codes, unpairing and the PIN can't be changed from a phone, even logged in."""
+    app, _ = env
+    with TestClient(app) as local:
+        local.post("/api/auth/setup", json={"password": "correct horse battery"})
+        r = _remote(app)
+        r.post("/api/auth/login", json={"password": "correct horse battery"})
+        h = {"X-CSRF-Token": r.cookies["cf_csrf"]}
+        for path, body in (("/api/telegram/token", {"token": "1:x"}), ("/api/telegram/pair", {"role": "owner"}),
+                           ("/api/telegram/unpair", {}), ("/api/telegram/pin", {"pin": "1234"}),
+                           ("/api/server/workers", {"name": "evil"})):
+            assert r.post(path, json=body, headers=h).status_code == 403, path
+        assert r.get("/api/telegram").status_code == 200  # reading the (masked) state is fine
+        assert "token" not in str(r.get("/api/telegram").json().get("devices", ""))

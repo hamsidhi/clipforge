@@ -304,6 +304,26 @@ def acquire_poller(lease_seconds: int = 120, owner: str = NODE_ID) -> bool:
     return True
 
 
+def advance_offset(new: int) -> bool:
+    """Set the getUpdates offset to `new` only if that moves it forward (atomic). False = this update was already
+    taken by someone else (an older poller must never move the offset back and re-handle updates)."""
+    from sqlalchemy import text
+
+    with db.engine().connect() as conn:
+        conn.exec_driver_sql("BEGIN IMMEDIATE")
+        row = conn.execute(text("SELECT value FROM tgkv WHERE key='offset'")).fetchone()
+        cur = int(json.loads(row[0])) if row and row[0] not in (None, "", "null") else 0
+        if new <= cur:
+            conn.exec_driver_sql("ROLLBACK")
+            return False
+        if row:
+            conn.execute(text("UPDATE tgkv SET value=:v WHERE key='offset'"), {"v": json.dumps(new)})
+        else:
+            conn.execute(text("INSERT INTO tgkv (key, value) VALUES ('offset', :v)"), {"v": json.dumps(new)})
+        conn.exec_driver_sql("COMMIT")
+    return True
+
+
 def release_poller(owner: str = NODE_ID) -> None:
     cur = kv_get("poller")
     if cur and cur.get("owner") == owner:

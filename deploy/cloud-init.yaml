@@ -1,7 +1,8 @@
 #cloud-config
 # Paste into Oracle Cloud → Create instance → Show advanced options → Management → "Paste cloud-init script".
 # Replace the auth key below with a fresh ONE-OFF, short-expiry key (Tailscale admin → Settings → Keys).
-# After the first boot the key is useless (one-off) — still, delete this text from your notes.
+# Instance metadata (incl. this script) stays readable from inside the VM, so use a ONE-OFF key that expires in a day:
+# once the VM joined your tailnet it's worthless. The SSH method in deploy/README.md step 4 avoids this entirely.
 runcmd:
   - [bash, -c, "curl -fsSL https://raw.githubusercontent.com/hamsidhi/clipforge/main/deploy/install.sh -o /root/install.sh"]
   - [bash, -c, "TS_AUTHKEY='tskey-auth-REPLACE-ME' bash /root/install.sh > /var/log/clipforge-install.log 2>&1"]

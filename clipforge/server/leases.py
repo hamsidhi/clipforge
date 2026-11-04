@@ -22,6 +22,8 @@ from clipforge.api import db
 from clipforge.config import load_config
 
 ONLINE_SLACK = 30  # seconds beyond 2 heartbeats before a worker counts as offline
+MAX_ATTEMPTS = 3   # a task whose worker vanished this often goes to the server (or fails, for hold tasks)
+COMMIT_TIMEOUT = 600  # a 'committing' task older than this was interrupted (server restart) → queued again
 
 
 class StaleLease(Exception):
@@ -224,6 +226,29 @@ def heartbeat(worker_id: str, task_id: int, fence: int, progress: float = 0, eta
     return "ok"
 
 
+def begin_commit(worker_id: str, task_id: int, fence: int) -> None:
+    """leased → committing, atomically with the fence check. While committing (hashing + moving big files) the
+    reaper can't re-queue the task, so no other worker can claim it in the middle of a commit."""
+    with db.session() as s:
+        res = s.execute(db.StageTask.__table__.update()
+                        .where(db.StageTask.id == task_id, db.StageTask.worker_id == worker_id,
+                               db.StageTask.fence == fence, db.StageTask.status == "leased")
+                        .values(status="committing", updated_at=now()))
+        s.commit()
+        if res.rowcount != 1:
+            raise StaleLease(f"task {task_id}: not your lease any more (fence {fence})")
+
+
+def abort_commit(task_id: int, fence: int) -> None:
+    """The upload was incomplete / damaged: back to leased (fresh lease) so the worker can upload again."""
+    lease = load_config().deployment.lease_seconds
+    with db.session() as s:
+        s.execute(db.StageTask.__table__.update()
+                  .where(db.StageTask.id == task_id, db.StageTask.fence == fence, db.StageTask.status == "committing")
+                  .values(status="leased", lease_until=now() + dt.timedelta(seconds=lease), updated_at=now()))
+        s.commit()
+
+
 def complete(worker_id: str, task_id: int, fence: int, result: dict | None = None) -> bool:
     """True = accepted now; False = this exact completion was already accepted (idempotent retry)."""
     with db.session() as s:
@@ -231,10 +256,11 @@ def complete(worker_id: str, task_id: int, fence: int, result: dict | None = Non
         if t and t.status == "done" and t.worker_id == worker_id and t.fence == fence:
             return False
         t = _check(s, task_id, worker_id, fence)
-        if t.status != "leased":
+        if t.status not in ("leased", "committing"):
             raise StaleLease(f"task {task_id} is {t.status}")
         res = s.execute(db.StageTask.__table__.update()
-                        .where(db.StageTask.id == task_id, db.StageTask.fence == fence, db.StageTask.status == "leased")
+                        .where(db.StageTask.id == task_id, db.StageTask.fence == fence,
+                               db.StageTask.status.in_(("leased", "committing")))  # type: ignore[attr-defined]
                         .values(status="done", progress=1.0, updated_at=now(),
                                 payload_json=json.dumps({**t.payload, "result": result or {}}, default=str)))
         s.commit()
@@ -265,9 +291,20 @@ def fail(worker_id: str, task_id: int, fence: int, error: str, retryable: bool =
 def cancel_job(job_id: int) -> int:
     with db.session() as s:
         rows = s.exec(select(db.StageTask).where(db.StageTask.job_id == job_id,
-                                                 db.StageTask.status.in_(("queued", "leased")))).all()  # type: ignore[attr-defined]
+                                                 db.StageTask.status.in_(("queued", "leased", "committing")))).all()  # type: ignore[attr-defined]
         for t in rows:
             t.status, t.updated_at = "cancelled", now()
+            s.add(t)
+        s.commit()
+        return len(rows)
+
+
+def reset_after_restart() -> int:
+    """Server start: nothing can be mid-commit any more — interrupted commits go back to the queue."""
+    with db.session() as s:
+        rows = s.exec(select(db.StageTask).where(db.StageTask.status == "committing")).all()
+        for t in rows:
+            t.status, t.worker_id, t.lease_until = "queued", "", None
             s.add(t)
         s.commit()
         return len(rows)
@@ -287,15 +324,31 @@ def reap(at: dt.datetime | None = None) -> dict[str, list[int]]:
     """Expired leases → queued again. Queued past their fallback time (and not `hold`) → 'fallback' (the server does
     the stage itself). Returns {"requeued": [task ids], "fallback": [job ids]}."""
     t0 = at or now()
-    out: dict[str, list[int]] = {"requeued": [], "fallback": []}
+    out: dict[str, list[int]] = {"requeued": [], "fallback": [], "failed": []}
     with db.session() as s:
         for t in s.exec(select(db.StageTask).where(db.StageTask.status == "leased")).all():
             if t.lease_until and _aware(t.lease_until) < t0:  # type: ignore[operator]
-                t.status, t.worker_id, t.lease_until = "queued", "", None
+                t.worker_id, t.lease_until = "", None
+                if t.attempts >= MAX_ATTEMPTS:  # it killed the worker every time: stop handing it out
+                    if t.hold:
+                        t.status, t.error = "failed", f"a worker stopped answering {t.attempts} times on this {t.stage}"
+                        out["failed"].append(t.id)  # type: ignore[arg-type]
+                    else:
+                        t.status, t.message = "fallback", f"{t.attempts} workers stopped answering — the server does it"
+                        out["fallback"].append(t.job_id)
+                    s.add(t)
+                    continue
+                t.status = "queued"
                 t.message = "worker stopped answering — waiting for a worker again"
                 grace = load_config().deployment.worker_grace_minutes
                 if not t.hold:
                     t.local_fallback_at = t0 + dt.timedelta(minutes=grace)
+                s.add(t)
+                out["requeued"].append(t.id)  # type: ignore[arg-type]
+        for t in s.exec(select(db.StageTask).where(db.StageTask.status == "committing")).all():
+            if t.updated_at and (t0 - _aware(t.updated_at)).total_seconds() > COMMIT_TIMEOUT:  # type: ignore[operator]
+                t.status, t.worker_id, t.lease_until = "queued", "", None  # the server died mid-commit
+                t.message = "results weren't received completely — waiting for a worker again"
                 s.add(t)
                 out["requeued"].append(t.id)  # type: ignore[arg-type]
         for t in s.exec(select(db.StageTask).where(db.StageTask.status == "queued", db.StageTask.hold == False)).all():  # noqa: E712
@@ -310,7 +363,7 @@ def reap(at: dt.datetime | None = None) -> dict[str, list[int]]:
 def active(job_id: int) -> db.StageTask | None:
     with db.session() as s:
         return s.exec(select(db.StageTask).where(db.StageTask.job_id == job_id,
-                                                 db.StageTask.status.in_(("queued", "leased")))
+                                                 db.StageTask.status.in_(("queued", "leased", "committing")))
                       .order_by(db.StageTask.id.desc())).first()  # type: ignore[attr-defined]
 
 
