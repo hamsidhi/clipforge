@@ -24,8 +24,15 @@ os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 CREDIT_TEMPLATE = "🎙 Source: {episode} — {source_channel} {url}"
 
 
-def default_settings(cfg: Config | None = None) -> dict[str, Any]:
-    p = (cfg or load_config()).publishing
+def default_settings(cfg: Config | None = None, platform: str = "youtube") -> dict[str, Any]:
+    cfg = cfg or load_config()
+    p = cfg.publishing
+    if platform == "instagram":
+        i = cfg.instagram
+        return {**default_settings(cfg), "slots": list(i.slots), "peak_slots": list(i.peak_slots),
+                "posts_per_day": i.posts_per_day, "min_gap_hours": i.min_gap_hours,
+                "hours_after_youtube": i.hours_after_youtube, "share_to_feed": i.share_to_feed,
+                "cta": "Follow for more clips from the best Indian podcasts 🎙"}
     return {
         "timezone": p.timezone, "slots": list(p.slots), "peak_slots": list(p.peak_slots),
         "posts_per_day": p.posts_per_day, "min_gap_hours": p.min_gap_hours,
@@ -39,11 +46,12 @@ def default_settings(cfg: Config | None = None) -> dict[str, Any]:
         "niche_tag": "#podcast",
         "default_playlist": "",
         "whop_campaign": "", "campaign_rate_per_1k": 0.0, "campaign_fee_pct": 0.0,
+        "hours_after_youtube": 0.0, "share_to_feed": True, "cta": "",
     }
 
 
 def settings_of(ch: db.Channel, cfg: Config | None = None) -> dict[str, Any]:
-    return {**default_settings(cfg), **ch.settings}
+    return {**default_settings(cfg, ch.platform or "youtube"), **ch.settings}
 
 
 def get(channel_id: str) -> db.Channel | None:
@@ -105,7 +113,45 @@ def remove(channel_id: str, cfg: Config | None = None) -> None:
         if ch:
             s.delete(ch)
             s.commit()
-    shutil.rmtree(yt.token_path(channel_id, cfg).parent, ignore_errors=True)
+    if not channel_id.startswith("ig:"):
+        shutil.rmtree(yt.token_path(channel_id, cfg).parent, ignore_errors=True)
+
+
+def register_instagram(info: dict, token_expires_at: str, cfg: Config | None = None) -> db.Channel:
+    """Upsert an Instagram account row (keeps existing settings). id = "ig:<ig user id>"."""
+    cid = f"ig:{info['ig_user_id']}"
+    with db.session() as s:
+        ch = s.get(db.Channel, cid) or db.Channel(id=cid, platform="instagram")
+        ch.platform = "instagram"
+        ch.title, ch.handle = info.get("username", ""), f"@{info.get('username', '')}"
+        ch.thumbnail = info.get("profile_picture_url", "")
+        ch.auth_status, ch.auth_error = "ok", ""
+        ch.extra_json = json.dumps({"ig_user_id": info["ig_user_id"], "username": info.get("username", ""),
+                                    "page_id": info.get("page_id", ""), "page_name": info.get("page_name", ""),
+                                    "followers": info.get("followers", 0), "token_expires_at": token_expires_at,
+                                    "profile_picture_url": info.get("profile_picture_url", "")})
+        s.add(ch)
+        s.commit()
+        s.refresh(ch)
+        return ch
+
+
+def add_manual_instagram(username: str) -> db.Channel:
+    """An Instagram account without a Meta app (assisted: ClipForge prepares a kit, you post)."""
+    import re
+
+    name = username.strip().lstrip("@")
+    if not re.fullmatch(r"[A-Za-z0-9._]{1,30}", name):
+        raise ValueError("That doesn't look like an Instagram username.")
+    cid = f"ig:manual:{name.lower()}"
+    with db.session() as s:
+        ch = s.get(db.Channel, cid) or db.Channel(id=cid, platform="instagram", confirmed=True)
+        ch.title, ch.handle, ch.platform = name, f"@{name}", "instagram"
+        ch.extra_json = json.dumps({"manual": True, "username": name})
+        s.add(ch)
+        s.commit()
+        s.refresh(ch)
+        return ch
 
 
 # ----------------------------------------------------------------------------- OAuth (web)
@@ -213,7 +259,9 @@ def check_auth(channel_id: str, cfg: Config | None = None) -> bool:
 def _public(ch: db.Channel) -> dict:
     d = ch.model_dump()
     d["settings"] = settings_of(ch)
+    d["extra"] = ch.extra
     d.pop("settings_json", None)
+    d.pop("extra_json", None)
     return d
 
 

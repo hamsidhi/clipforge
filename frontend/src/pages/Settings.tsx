@@ -13,6 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import PublishingSettings from '@/components/PublishingSettings'
+import InstagramSettings from '@/components/InstagramSettings'
 
 type Cfg = Record<string, Record<string, unknown>>
 
@@ -232,6 +233,7 @@ export default function Settings() {
         </Card>
 
         <PublishingSettings cfg={cfg} set={set} />
+        <InstagramSettings cfg={cfg} set={set} />
 
         <PresetEditor />
       </div>

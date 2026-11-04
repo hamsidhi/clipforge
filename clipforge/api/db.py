@@ -168,6 +168,11 @@ class VideoPerf(SQLModel, table=True):
     views_72h: Optional[int] = None
     avg_view_pct: Optional[float] = None
     subs_gained: Optional[int] = None
+    platform: str = "youtube"                  # instagram rows use id "ig:<media id>"
+    shares: int = 0
+    saves: int = 0
+    reach: int = 0
+    permalink: str = ""
     updated_at: dt.datetime = Field(default_factory=now)
 
 

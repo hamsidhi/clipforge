@@ -244,6 +244,7 @@ class Secrets(BaseSettings):
     groq_api_key: str | None = None
     meta_app_id: str | None = None          # Instagram (Phase 13): Meta app id + secret
     meta_app_secret: str | None = None
+    meta_login_config_id: str | None = None   # optional "Facebook Login for Business" configuration id
     telegram_bot_token: str | None = None   # Phase 14
     telegram_chat_id: str | None = None     # paired Telegram user id (only this user may talk to the bot)
     clipforge_password_hash: str | None = None  # Phase 14: login password (scrypt hash, never the password)

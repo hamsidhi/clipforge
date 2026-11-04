@@ -20,7 +20,7 @@ const GROUPS = [
       { to: '/batches', label: 'Batches', icon: FolderUp },
       { to: '/dashboard', label: 'Dashboard', icon: LineChart },
       { to: '/tracker', label: 'Tracker', icon: BarChart3 },
-      { to: '/channels', label: 'Channels', icon: Tv },
+      { to: '/channels', label: 'Accounts', icon: Tv },
     ],
   },
   {
@@ -40,7 +40,7 @@ const MOBILE_MAIN = [
 const MOBILE_MORE = [
   { to: '/batches', label: 'Batches', icon: FolderUp },
   { to: '/tracker', label: 'Tracker', icon: BarChart3 },
-  { to: '/channels', label: 'Channels', icon: Tv },
+  { to: '/channels', label: 'Accounts', icon: Tv },
   { to: '/settings', label: 'Settings', icon: SettingsIcon },
   { to: '/system', label: 'System', icon: HeartPulse },
 ]

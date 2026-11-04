@@ -1,6 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
 import { request } from './client'
-import type { AuditStatus, Batch, Channel, ChannelSettings, Dashboard, Health, PublishingStatus, QueueItem, Reminder, SyncResult } from './publishTypes'
+import type {
+  AuditStatus, Batch, Channel, ChannelSettings, Dashboard, Health, IgChoice, IgDashboard, MetaApp, Overview, PublishingStatus,
+  QueueItem, Reminder, SyncResult,
+} from './publishTypes'
 
 const json = (body: unknown) => JSON.stringify(body)
 
@@ -31,7 +34,7 @@ export const pub = {
 
   queue: (channelId?: string, status?: string) =>
     request<QueueItem[]>(`/api/queue?${channelId ? `channel_id=${channelId}&` : ''}${status ? `status=${status}` : ''}`),
-  add: (body: { channel_id: string; job_id?: number; video_id?: string; ranks?: number[] | null }) =>
+  add: (body: { channel_id?: string; channel_ids?: string[]; job_id?: number; video_id?: string; ranks?: number[] | null }) =>
     request<{ added: QueueItem[] }>('/api/queue', { method: 'POST', body: json(body) }),
   patch: (id: number, body: Partial<Pick<QueueItem, 'title' | 'description' | 'tags' | 'slot_local' | 'category_id' | 'ig_caption' | 'privacy' | 'ig_thumb_offset_ms'>>) =>
     request<QueueItem>(`/api/queue/${id}`, { method: 'PATCH', body: json(body) }),
@@ -62,6 +65,24 @@ export const pub = {
   applySlots: (channelId: string, slots: string[]) =>
     request<Channel>(`/api/channels/${channelId}/apply-slots`, { method: 'POST', body: json({ slots }) }),
   reminders: () => request<Reminder[]>('/api/posts/reminders'),
+
+  // Instagram (Phase 13)
+  metaApp: () => request<MetaApp>('/api/instagram/app'),
+  saveMetaApp: (body: { app_id?: string; app_secret?: string; login_config_id?: string }) =>
+    request<MetaApp>('/api/instagram/app', { method: 'POST', body: json(body) }),
+  igOauthStart: () => request<{ url: string }>('/api/instagram/oauth/start', { method: 'POST' }),
+  igPickOptions: (pid: string) => request<IgChoice[]>(`/api/instagram/pick/${pid}`),
+  igPick: (pid: string, ig_user_id: string) =>
+    request<Channel>(`/api/instagram/pick/${pid}`, { method: 'POST', body: json({ ig_user_id }) }),
+  igManual: (username: string) => request<Channel>('/api/instagram/manual', { method: 'POST', body: json({ username }) }),
+  permalink: (id: number, permalink: string) =>
+    request<QueueItem>(`/api/queue/${id}/permalink`, { method: 'POST', body: json({ permalink }) }),
+  igDashboard: (id: string) => request<IgDashboard>(`/api/accounts/${encodeURIComponent(id)}/ig-dashboard`),
+  overview: () => request<Overview>('/api/publishing/overview'),
+}
+
+export function useMetaApp() {
+  return useQuery({ queryKey: ['meta-app'], queryFn: pub.metaApp })
 }
 
 export function useChannels() {
@@ -79,7 +100,7 @@ export function usePublishing() {
 export function useQueue(channelId?: string) {
   return useQuery({
     queryKey: ['queue', channelId],
-    queryFn: () => pub.queue(channelId),
+    queryFn: () => pub.queue(channelId === 'all' ? undefined : channelId),
     enabled: !!channelId,
     refetchInterval: (q) =>
       (q.state.data ?? []).some((i) => i.meta_status === 'pending' || i.status === 'uploading') ? 2500 : false,

@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, ChevronDown, KeyRound, Loader2, Plus, RefreshCw, ShieldCheck, Tv, Unplug } from 'lucide-react'
+import { AlertTriangle, Camera, ChevronDown, KeyRound, Laptop, Loader2, Plus, RefreshCw, ShieldCheck, Tv, Unplug, UserPlus } from 'lucide-react'
 import { toast } from 'sonner'
-import { pub, useChannels, usePublishing, WEEKDAYS } from '@/api/publish'
+import { pub, useChannels, useMetaApp, usePublishing, WEEKDAYS } from '@/api/publish'
 import type { Channel, ChannelSettings } from '@/api/publishTypes'
+import PlatformIcon from '@/components/PlatformIcon'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ChannelAvatar } from '@/components/ChannelPicker'
 import { EmptyState, ErrorBox, PageHeader } from '@/components/common'
 import { Badge } from '@/components/ui/badge'
@@ -29,12 +31,23 @@ async function connect() {
   }
 }
 
+async function connectInstagram() {
+  try {
+    const { url } = await pub.igOauthStart()
+    window.location.href = url
+  } catch (e) {
+    toast.error((e as Error).message)
+  }
+}
+
+const isIg = (ch: Pick<Channel, 'platform'>) => ch.platform === 'instagram'
+
 function ConfirmDialog({ ch, open, onOpenChange }: { ch: Channel; open: boolean; onOpenChange: (o: boolean) => void }) {
   const qc = useQueryClient()
   const m = useMutation({
     mutationFn: () => pub.confirmChannel(ch.id),
     onSuccess: () => {
-      toast.success(`Uploads to ${ch.title} confirmed`)
+      toast.success(isIg(ch) ? `Posting to @${ch.title} confirmed` : `Uploads to ${ch.title} confirmed`)
       qc.invalidateQueries({ queryKey: ['channels'] })
       onOpenChange(false)
     },
@@ -43,8 +56,8 @@ function ConfirmDialog({ ch, open, onOpenChange }: { ch: Channel; open: boolean;
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Upload Shorts to this channel?</DialogTitle>
-          <DialogDescription>Check it's the right one — not your music or personal channel.</DialogDescription>
+          <DialogTitle>{isIg(ch) ? 'Post Reels to this Instagram account?' : 'Upload Shorts to this channel?'}</DialogTitle>
+          <DialogDescription>Check it's the right one — not your personal or another brand's account.</DialogDescription>
         </DialogHeader>
         <div className="flex items-center gap-4 rounded-xl border p-4">
           <ChannelAvatar ch={ch} className="size-14 text-xl" />
@@ -55,7 +68,7 @@ function ConfirmDialog({ ch, open, onOpenChange }: { ch: Channel; open: boolean;
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={() => m.mutate()} disabled={m.isPending}><ShieldCheck /> Yes, this is the right channel</Button>
+          <Button onClick={() => m.mutate()} disabled={m.isPending}><ShieldCheck /> Yes, this is the right {isIg(ch) ? 'account' : 'channel'}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -108,6 +121,19 @@ function SettingsForm({ ch }: { ch: Channel }) {
           </Field>
         </div>
       </div>
+      {isIg(ch) && (
+        <div className="grid gap-5 md:grid-cols-3">
+          <Field label="Hours after YouTube" hint="When a clip also goes to YouTube, post the Reel at least this many hours later (0 = any later slot)">
+            <Input type="number" min={0} step={0.5} value={s.hours_after_youtube} onChange={(e) => set('hours_after_youtube', Number(e.target.value))} />
+          </Field>
+          <Field label="Call to action" hint="Line added to every caption">
+            <Input value={s.cta} onChange={(e) => set('cta', e.target.value)} />
+          </Field>
+          <Field label="Also show in the main feed" hint="share_to_feed — off = Reels tab only">
+            <div className="pt-1"><Switch checked={s.share_to_feed} onCheckedChange={(v) => set('share_to_feed', v)} /></div>
+          </Field>
+        </div>
+      )}
       <div className="grid gap-5 md:grid-cols-3">
         <Field label="Posting days">
           <div className="flex flex-wrap gap-1">
@@ -126,7 +152,7 @@ function SettingsForm({ ch }: { ch: Channel }) {
         <Field label="Start date" hint="Empty = today">
           <Input type="date" value={s.start_date ?? ''} onChange={(e) => set('start_date', e.target.value || null)} />
         </Field>
-        <div className="grid grid-cols-2 gap-3">
+        <div className={cn('grid grid-cols-2 gap-3', isIg(ch) && 'hidden')}>
           <Field label="Title language">
             <Select value={s.title_language} onValueChange={(v) => set('title_language', v as ChannelSettings['title_language'])}>
               <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
@@ -150,9 +176,11 @@ function SettingsForm({ ch }: { ch: Channel }) {
         </div>
       </div>
       <div className="grid gap-5 md:grid-cols-2">
-        <Field label="Description template" hint="Added after the hook summary and credit line">
-          <Textarea rows={3} value={s.description_template} onChange={(e) => set('description_template', e.target.value)} />
-        </Field>
+        {!isIg(ch) && (
+          <Field label="Description template" hint="Added after the hook summary and credit line">
+            <Textarea rows={3} value={s.description_template} onChange={(e) => set('description_template', e.target.value)} />
+          </Field>
+        )}
         <Field label="Credit line" hint="{episode}, {source_channel} and {url} are filled in for each clip">
           <Textarea rows={3} value={s.credit_template} onChange={(e) => set('credit_template', e.target.value)} />
           <div className="flex gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2.5 text-xs text-amber-200">
@@ -184,7 +212,7 @@ function ChannelCard({ ch }: { ch: Channel }) {
   const pause = useMutation({
     mutationFn: (paused: boolean) => pub.patchChannel(ch.id, { paused }),
     onSuccess: (c) => {
-      toast(c.paused ? 'Channel paused — nothing will be uploaded' : 'Channel active again')
+      toast(c.paused ? `${isIg(ch) ? 'Account' : 'Channel'} paused — nothing will be posted` : 'Active again')
       qc.invalidateQueries({ queryKey: ['channels'] })
     },
   })
@@ -211,7 +239,8 @@ function ChannelCard({ ch }: { ch: Channel }) {
         <ChannelAvatar ch={ch} className="size-12 shrink-0 text-lg" />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2 font-medium">
-            {ch.title}
+            <PlatformIcon platform={ch.platform} className="size-4" />
+            {isIg(ch) ? `@${ch.title}` : ch.title}
             {ch.auth_status === 'ok' ? (
               <Badge variant="outline" className="border-transparent bg-success/15 text-success">connected</Badge>
             ) : (
@@ -224,18 +253,34 @@ function ChannelCard({ ch }: { ch: Channel }) {
             {ch.handle || ch.id} · {Object.entries(ch.counts).map(([k, v]) => `${v} ${k}`).join(' · ') || 'nothing queued'}
           </div>
           {ch.auth_status !== 'ok' && <div className="mt-1 text-xs text-destructive">{ch.auth_error}</div>}
+          {isIg(ch) && (
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              {ch.extra.manual ? (
+                <Badge variant="outline">assisted — you post, ClipForge prepares the kit</Badge>
+              ) : (
+                <>
+                  {ch.extra.page_name && <span>Page: {ch.extra.page_name}</span>}
+                  {ch.extra.followers != null && <span>· {ch.extra.followers.toLocaleString('en-IN')} followers</span>}
+                  {ch.token && <span className={ch.token.ok ? '' : 'text-destructive'}>· {ch.token.text}</span>}
+                  <Badge variant="outline" className="gap-1 text-amber-300"><Laptop className="size-3" /> laptop must be on at post times</Badge>
+                </>
+              )}
+            </div>
+          )}
         </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {ch.auth_status !== 'ok' && <Button size="sm" onClick={connect}><RefreshCw /> Reconnect</Button>}
+          {ch.auth_status !== 'ok' && <Button size="sm" onClick={isIg(ch) ? connectInstagram : connect}><RefreshCw /> Reconnect</Button>}
           {!ch.confirmed && <Button size="sm" variant="outline" onClick={() => setConfirmOpen(true)}><ShieldCheck /> Confirm</Button>}
-          <Button size="sm" variant="ghost" onClick={() => check.mutate()} disabled={check.isPending}>Test login</Button>
+          {!ch.extra?.manual && <Button size="sm" variant="ghost" onClick={() => check.mutate()} disabled={check.isPending}>Test login</Button>}
           <div className="flex items-center gap-2 px-2 text-sm">
             <Switch checked={!ch.paused} onCheckedChange={(v) => pause.mutate(!v)} id={`p-${ch.id}`} />
             <Label htmlFor={`p-${ch.id}`}>{ch.paused ? 'Paused' : 'Active'}</Label>
           </div>
           <Button size="sm" variant="ghost" className="text-destructive" aria-label="Disconnect and revoke access"
-            onClick={() => window.confirm(`Disconnect ${ch.title}? ClipForge revokes its access at Google and deletes the saved login. Videos already on YouTube stay there.`) && del.mutate()}>
+            onClick={() => window.confirm(isIg(ch)
+              ? `Disconnect @${ch.title}? ClipForge revokes its access at Meta and deletes the saved login and stats. Reels already posted stay on Instagram.`
+              : `Disconnect ${ch.title}? ClipForge revokes its access at Google and deletes the saved login and stats. Videos already on YouTube stay there.`) && del.mutate()}>
             <Unplug /> Disconnect
           </Button>
         </div>
@@ -287,29 +332,153 @@ function PickDialog({ pid, onDone }: { pid: string; onDone: () => void }) {
   )
 }
 
+function IgPickDialog({ pid, onDone }: { pid: string; onDone: () => void }) {
+  const qc = useQueryClient()
+  const { data: options, error } = useQuery({ queryKey: ['ig-pick', pid], queryFn: () => pub.igPickOptions(pid) })
+  const pick = useMutation({
+    mutationFn: (id: string) => pub.igPick(pid, id),
+    onSuccess: (c) => {
+      toast.success(`Connected @${c.title} — confirm it before the first post`)
+      qc.invalidateQueries({ queryKey: ['channels'] })
+      onDone()
+    },
+    onError: (e) => toast.error(e.message),
+  })
+  return (
+    <Dialog open onOpenChange={(o) => !o && onDone()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Which Instagram account?</DialogTitle>
+          <DialogDescription>Instagram professional accounts linked to the Facebook Pages you manage.</DialogDescription>
+        </DialogHeader>
+        {error ? <ErrorBox error={error} /> : (
+          <div className="space-y-2">
+            {(options ?? []).map((o) => (
+              <button key={o.ig_user_id} onClick={() => pick.mutate(o.ig_user_id)}
+                className="flex w-full items-center gap-3 rounded-lg border p-3 text-left hover:border-primary/50">
+                <ChannelAvatar ch={{ thumbnail: o.profile_picture_url, title: o.username }} className="size-10" />
+                <div>
+                  <div className="font-medium">@{o.username}</div>
+                  <div className="text-xs text-muted-foreground">{o.followers.toLocaleString('en-IN')} followers · Page: {o.page_name}</div>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function ManualIgDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
+  const qc = useQueryClient()
+  const [name, setName] = useState('')
+  const m = useMutation({
+    mutationFn: () => pub.igManual(name),
+    onSuccess: (c) => {
+      toast.success(`Added @${c.title} (assisted)`)
+      qc.invalidateQueries({ queryKey: ['channels'] })
+      onOpenChange(false)
+    },
+    onError: (e) => toast.error(e.message),
+  })
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Add an Instagram account without a Meta app</DialogTitle>
+          <DialogDescription>
+            Assisted mode: ClipForge schedules the Reels and makes an <b>Instagram kit</b> (files in order + captions to copy). You post them
+            in the Instagram app or schedule them in Meta Business Suite (free), then paste each Reel's link to track it.
+          </DialogDescription>
+        </DialogHeader>
+        <Field label="Instagram username"><Input placeholder="@yourname" value={name} onChange={(e) => setName(e.target.value)} /></Field>
+        <DialogFooter><Button onClick={() => m.mutate()} disabled={!name || m.isPending}><UserPlus /> Add</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function InstagramTab({ accounts }: { accounts: Channel[] }) {
+  const { data: app } = useMetaApp()
+  const [manual, setManual] = useState(false)
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button onClick={connectInstagram} disabled={!app?.configured}><Camera /> Add Instagram account</Button>
+        <Button variant="outline" onClick={() => setManual(true)}><UserPlus /> Add without a Meta app (assisted)</Button>
+      </div>
+      {app && !app.configured && (
+        <div className="flex items-start gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm">
+          <KeyRound className="mt-0.5 size-4 shrink-0 text-amber-300" />
+          <div>
+            To let ClipForge post Reels by itself, create a free Meta app and paste its App ID + Secret in{' '}
+            <Link to="/settings#instagram" className="font-medium text-primary underline">Settings → Instagram</Link>. Needs an Instagram
+            <b> professional</b> account linked to a <b>Facebook Page</b>. Or add the account in assisted mode.
+          </div>
+        </div>
+      )}
+      {app && (
+        <Collapsible>
+          <CollapsibleTrigger className="text-xs text-muted-foreground underline">What does ClipForge ask Meta for?</CollapsibleTrigger>
+          <CollapsibleContent className="mt-2 space-y-1 text-xs text-muted-foreground">
+            {app.scopes.map((s) => <div key={s.scope}><code className="text-foreground">{s.scope}</code> — {s.why}</div>)}
+            <div>Instagram has no scheduling in its API: ClipForge uploads ~20 min before each slot and publishes at the slot, so this
+              laptop must be on with ClipForge running at post times. A slot missed by more than 90 min is never posted late.</div>
+          </CollapsibleContent>
+        </Collapsible>
+      )}
+      {!accounts.length ? (
+        <EmptyState icon={Camera} title="No Instagram accounts yet">
+          Add your Instagram professional account to post Reels on a schedule, next to your YouTube Shorts.
+        </EmptyState>
+      ) : <div className="space-y-4">{accounts.map((c) => <ChannelCard key={c.id} ch={c} />)}</div>}
+      <ManualIgDialog open={manual} onOpenChange={setManual} />
+    </div>
+  )
+}
+
 export default function Channels() {
   const { data, isLoading, error } = useChannels()
   const { data: status } = usePublishing()
   const [params, setParams] = useSearchParams()
   const pid = params.get('pick')
+  const igPid = params.get('ig_pick')
+  const [tab, setTab] = useState(params.get('tab') === 'instagram' ? 'instagram' : 'youtube')
   useEffect(() => {
     if (params.get('connected')) {
       toast.success('Channel connected — confirm it before the first upload')
       setParams({}, { replace: true })
     }
     if (params.get('error')) {
-      toast.error(`Google sign-in failed: ${params.get('error')}`)
+      toast.error(`Sign-in failed: ${params.get('error')}`)
       setParams({}, { replace: true })
     }
   }, [params, setParams])
   const noSecret = status && !status.client_secret
+  const yt = (data ?? []).filter((c) => !isIg(c))
+  const igs = (data ?? []).filter(isIg)
+  const remote = !['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname)
   return (
     <>
       <PageHeader
-        title="Channels"
-        description="YouTube channels ClipForge can schedule Shorts for. Logins stay on this computer."
-        actions={<Button onClick={connect} disabled={!!noSecret}><Plus /> Add channel</Button>}
+        title="Accounts"
+        description="YouTube channels and Instagram accounts ClipForge posts to. Logins stay on this computer."
+        actions={tab === 'youtube' ? <Button onClick={connect} disabled={!!noSecret || remote}><Plus /> Add channel</Button> : undefined}
       />
+      {remote && (
+        <div className="mb-5 flex items-start gap-3 rounded-xl border border-sky-500/30 bg-sky-500/10 p-4 text-sm">
+          <Laptop className="mt-0.5 size-4 shrink-0" />
+          <div>Connect accounts on the laptop: Google and Meta send logins back to <code>localhost</code>. Everything else works from here.</div>
+        </div>
+      )}
+      <Tabs value={tab} onValueChange={setTab}>
+        <TabsList className="mb-4">
+          <TabsTrigger value="youtube"><PlatformIcon platform="youtube" /> YouTube ({yt.length})</TabsTrigger>
+          <TabsTrigger value="instagram"><PlatformIcon platform="instagram" /> Instagram ({igs.length})</TabsTrigger>
+        </TabsList>
+        <TabsContent value="instagram">{error ? <ErrorBox error={error} /> : <InstagramTab accounts={igs} />}</TabsContent>
+        <TabsContent value="youtube">
       {noSecret && (
         <div className="mb-5 flex items-start gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm">
           <KeyRound className="mt-0.5 size-4 shrink-0 text-amber-300" />
@@ -330,14 +499,17 @@ export default function Channels() {
           </CollapsibleContent>
         </Collapsible>
       )}
-      {error ? <ErrorBox error={error} /> : isLoading ? <Skeleton className="h-40 rounded-xl" /> : !data?.length ? (
-        <EmptyState icon={Tv} title="No channels yet" action={<Button onClick={connect} disabled={!!noSecret}><Plus /> Add channel</Button>}>
+      {error ? <ErrorBox error={error} /> : isLoading ? <Skeleton className="h-40 rounded-xl" /> : !yt.length ? (
+        <EmptyState icon={Tv} title="No channels yet" action={<Button onClick={connect} disabled={!!noSecret || remote}><Plus /> Add channel</Button>}>
           Connect the YouTube channel(s) you post Shorts to. You can add several (Brand Accounts too).
         </EmptyState>
       ) : (
-        <div className="space-y-4">{data.map((c) => <ChannelCard key={c.id} ch={c} />)}</div>
+        <div className="space-y-4">{yt.map((c) => <ChannelCard key={c.id} ch={c} />)}</div>
       )}
+        </TabsContent>
+      </Tabs>
       {pid && <PickDialog pid={pid} onDone={() => setParams({}, { replace: true })} />}
+      {igPid && <IgPickDialog pid={igPid} onDone={() => setParams({ tab: 'instagram' }, { replace: true })} />}
       {status?.worker.current && (
         <div className="mt-4 flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" /> {status.worker.current}</div>
       )}

@@ -37,12 +37,19 @@ def prepare(channel_id: str, n: int | None = None, cfg: Config | None = None, no
     from clipforge.publish.timez import as_utc
 
     cfg = cfg or load_config()
-    if cfg.publishing.mode == "api" and not (force and ids):
-        raise q.QueueError("You're in API mode — ClipForge uploads these clips itself. A Studio batch would upload them "
-                           "twice. Switch to assisted mode first (Settings → Publishing).")
     ch = chs.get(channel_id)
     if not ch:
         raise q.QueueError("Unknown channel")
+    instagram = ch.platform == "instagram"
+    if instagram:
+        from clipforge.publish import instagram as ig
+
+        if not (ig.is_manual(ch) or cfg.instagram.mode == "assisted" or not ig.configured()) and not (force and ids):
+            raise q.QueueError("ClipForge posts to this Instagram account itself at each slot. An Instagram kit is for "
+                               "accounts in assisted mode (no Meta app, or Settings → Instagram → mode assisted).")
+    elif cfg.publishing.mode == "api" and not (force and ids):
+        raise q.QueueError("You're in API mode — ClipForge uploads these clips itself. A Studio batch would upload them "
+                           "twice. Switch to assisted mode first (Settings → Publishing).")
     now = as_utc(now or now_utc())
     zone = chs.settings_of(ch, cfg)["timezone"]
     n = min(n or cfg.publishing.batch_max, cfg.publishing.batch_max)
@@ -81,9 +88,9 @@ def prepare(channel_id: str, n: int | None = None, cfg: Config | None = None, no
                         "slot_local": f"{slot:%d %b %Y}", "slot_time": f"{slot:%I:%M %p}",
                         "slot_pretty": fmt_local(it.slot_utc, zone), "ig_caption": it.ig_caption})
     rel = str(folder.relative_to(cfg.workspace)).replace("\\", "/")
-    (folder / "batch.json").write_text(json.dumps({"channel": ch.title, "channel_id": ch.id, "items": entries},
+    (folder / "batch.json").write_text(json.dumps({"channel": ch.title, "channel_id": ch.id, "platform": ch.platform, "items": entries},
                                                   indent=2, ensure_ascii=False), encoding="utf-8")
-    (folder / "batch.html").write_text(render_html(ch.title, ch.thumbnail, entries, zone), encoding="utf-8")
+    (folder / "batch.html").write_text(render_html(ch.title, ch.thumbnail, entries, zone, instagram), encoding="utf-8")
     for it, _ in sources:  # only now mark them as batched (a failure above leaves nothing half-done)
         it.batch, it.reason, it.error = rel, "", ""
         q.save(it)
@@ -101,7 +108,15 @@ def list_batches(cfg: Config | None = None) -> list[dict]:
     return out
 
 
-def render_html(channel: str, avatar: str, entries: list[dict], zone: str) -> str:
+IG_STEPS = """<ol class="steps">
+<li>On your phone, open Instagram as <b>{channel}</b> (check the account name at the top of your profile).</li>
+<li>At each time on the cards (IST): <b>+ → Reel</b> → pick the video with the same number → paste the <b>Caption</b> → Share.
+Or schedule them all at once for free in <a class="btn" href="https://business.facebook.com/latest/content_calendar" target="_blank" rel="noopener">Meta Business Suite</a> (Planner → Create Reel → Schedule).</li>
+<li>Copy each Reel's link (⋯ → Copy link) and paste it into ClipForge (Schedule → the clip → <b>Reel link</b>) so it's tracked.</li>
+</ol>"""
+
+
+def render_html(channel: str, avatar: str, entries: list[dict], zone: str, instagram: bool = False) -> str:
     def esc(s: str) -> str:
         return html.escape(s or "", quote=True)
 
@@ -114,10 +129,9 @@ def render_html(channel: str, avatar: str, entries: list[dict], zone: str) -> st
   <div class="body">
     <div class="when">#{e['n']} · <b>{esc(e['slot_local'])}</b> at <b>{esc(e['slot_time'])}</b> IST</div>
     <div class="file">{esc(e['file'])}</div>
-    {field('Title', e['title'])}
-    {field('Description', e['description'])}
-    {field('Tags', e['tags'])}
-    <details><summary>Instagram kit</summary>{field('Caption', e['ig_caption'])}</details>
+    {field('Caption', e['ig_caption']) if instagram else
+     field('Title', e['title']) + field('Description', e['description']) + field('Tags', e['tags'])
+     + f"<details><summary>Instagram kit</summary>{field('Caption', e['ig_caption'])}</details>"}
   </div>
 </div>""")
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -135,9 +149,10 @@ a.btn,button{{background:#ffe600;color:#000;border:0;border-radius:8px;padding:7
 .done{{display:block;margin-top:8px;font-size:13px}} summary{{cursor:pointer;color:#aaa;font-size:13px;margin-top:6px}}
 @media (max-width:600px){{.card{{flex-direction:column}} .left{{width:100%}} .left img{{width:120px}}}}
 </style></head><body>
-<div class="head">{f'<img src="{esc(avatar)}" alt="">' if avatar else ''}<div><h1>Upload batch — {esc(channel)}</h1>
-<div style="color:#aaa;font-size:13px">{len(entries)} Shorts · times in {esc(zone)}</div></div></div>
-<ol class="steps">
+<div class="head">{f'<img src="{esc(avatar)}" alt="">' if avatar else ''}<div><h1>{'Instagram kit' if instagram else 'Upload batch'} — {esc(channel)}</h1>
+<div style="color:#aaa;font-size:13px">{len(entries)} {'Reels' if instagram else 'Shorts'} · times in {esc(zone)}</div></div></div>
+{IG_STEPS.format(channel=esc(channel)) if instagram else ''}
+<ol class="steps" {'style="display:none"' if instagram else ''}>
 <li>Open <a class="btn" href="https://studio.youtube.com" target="_blank" rel="noopener">YouTube Studio</a> — check it's the <b>{esc(channel)}</b> channel (top-right avatar).</li>
 <li><b>Create → Upload videos</b> and select <b>all .mp4 files in this folder</b> at once.</li>
 <li>For each video (file names start with the number below): paste <b>Title</b>, <b>Description</b> and <b>Tags</b> (Show more → Tags) with the Copy buttons.</li>

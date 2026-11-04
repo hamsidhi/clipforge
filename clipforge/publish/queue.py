@@ -58,6 +58,19 @@ def save(item: db.QueueItem) -> db.QueueItem:
         return item
 
 
+def claim_for_container(item_id: int) -> bool:
+    """Instagram: atomically queued → uploading (only if no container/media yet and nobody changed it)."""
+    from sqlalchemy import update
+
+    with db.session() as s:
+        res = s.exec(update(db.QueueItem)  # type: ignore[call-overload]
+                     .where(db.QueueItem.id == item_id, db.QueueItem.status == "queued",
+                            db.QueueItem.ig_container_id == "", db.QueueItem.ig_media_id == "")
+                     .values(status="uploading", attempts=db.QueueItem.attempts + 1, updated_at=db.now()))
+        s.commit()
+        return res.rowcount == 1
+
+
 def claim_for_upload(item_id: int, slot_utc: dt.datetime) -> bool:
     """Atomically move queued → uploading, only if nobody changed the item (status, slot, link, batch) meanwhile."""
     from sqlalchemy import update
@@ -121,7 +134,8 @@ def add_clips(channel_id: str, video_id: str, ranks: list[int] | None, cfg: Conf
             continue  # duplicate guard
         out.append(save(db.QueueItem(channel_id=channel_id, video_id=video_id, rank=c.rank, clip_key=key,
                                      episode_title=info.title, topic=c.topic, score=c.score, duration=c.duration,
-                                     title=c.title, category_id=str(chs.settings_of(ch, cfg).get("category_id", "27")))))
+                                     title=c.title, category_id=str(chs.settings_of(ch, cfg).get("category_id", "27")),
+                                     platform=ch.platform or "youtube")))
     return out
 
 
@@ -158,23 +172,34 @@ def generate_metadata(item_id: int, cfg: Config | None = None, llm=None) -> db.Q
     it.title, it.description = meta["title"], meta["description"]
     it.tags_json, it.variants_json = json.dumps(meta["tags"], ensure_ascii=False), json.dumps(meta["variants"], ensure_ascii=False)
     it.ig_caption, it.category_id = meta["ig_caption"], meta["category_id"]
+    if it.platform == "instagram":
+        it.meta_status = "ready" if it.ig_caption else "failed"
+        it.error = "" if it.ig_caption else "Couldn't write a caption — write one."
+        if not it.title:
+            it.title = meta["title"] or c.title
+        return save(it)
     it.meta_status = "ready" if meta["title"] else "failed"
     it.error = "" if meta["title"] else "Couldn't produce a unique title — write one."
     return save(it)
 
 
 def problems(it: db.QueueItem) -> list[str]:
+    if it.platform == "instagram":
+        from clipforge.publish import ig_meta
+
+        return ig_meta.problems(it.ig_caption)
     return metadata_opt.validate(it.title, it.description, it.tags, existing_titles(it.channel_id, it.id))
 
 
 # ----------------------------------------------------------------------------- scheduling
 def daily_capacity_fn(cfg: Config, exclude_channel: str | None = None):
     """API mode: all channels share one upload quota, so at most `insert_calls_per_day` posts per day overall."""
-    if cfg.publishing.mode != "api":
+    ch = chs.get(exclude_channel) if exclude_channel else None
+    if cfg.publishing.mode != "api" or (ch and ch.platform == "instagram"):
         return None
     counts: dict[dt.date, int] = {}
     for it in items(statuses=PLANNED):
-        if it.slot_utc and it.channel_id != exclude_channel:
+        if it.slot_utc and it.channel_id != exclude_channel and it.platform == "youtube":
             d = utc_to_local(it.slot_utc, cfg.publishing.timezone).date()
             counts[d] = counts.get(d, 0) + 1
     return lambda day: max(0, cfg.publishing.insert_calls_per_day - counts.get(day, 0))
@@ -204,9 +229,33 @@ def autoschedule(channel_id: str, item_ids: list[int] | None = None, cfg: Config
     out = []
     for item_id, slot in picks:
         it = by_id[item_id]
-        it.slot_utc, it.status, it.error = slot, "queued", ""
+        it.slot_utc, it.status, it.error, it.reason = slot, "queued", "", ""
         out.append(save(it))
+    if ch.platform == "instagram":
+        out = [_after_youtube(it, plan, cfg) for it in out]
     return out
+
+
+def _after_youtube(it: db.QueueItem, plan: slots.Plan, cfg: Config) -> db.QueueItem:
+    """'Post to Instagram X hours after YouTube': if the same clip is planned on a YouTube channel, the Reel goes
+    to the first free slot at least `hours_after_youtube` after it (0 = any slot, but never before YouTube's)."""
+    ch = chs.get(it.channel_id)
+    hours = float(chs.settings_of(ch, cfg).get("hours_after_youtube", 0) if ch else 0)
+    with db.session() as s:
+        twins = s.exec(select(db.QueueItem).where(db.QueueItem.clip_key == it.clip_key,
+                                                  db.QueueItem.platform == "youtube")).all()
+    yt_slots = [as_utc(t.slot_utc) for t in twins if t.slot_utc]
+    if not yt_slots or not it.slot_utc:
+        return it
+    earliest = min(yt_slots) + dt.timedelta(hours=hours)
+    if as_utc(it.slot_utc) >= earliest:
+        return it
+    taken = [as_utc(o.slot_utc) for o in items(it.channel_id, PLANNED) if o.slot_utc and o.id != it.id]
+    for t, _peak in slots.free_slots(plan, taken, earliest - slots.LEAD, 60):
+        if t >= earliest:
+            it.slot_utc = t
+            return save(it)
+    return it
 
 
 def move(item_id: int, slot_utc: dt.datetime, now: dt.datetime | None = None) -> db.QueueItem:

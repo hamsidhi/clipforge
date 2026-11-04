@@ -81,6 +81,9 @@ def create_app() -> FastAPI:
     from clipforge.api.publish_routes import router as publish_router
 
     app.include_router(publish_router)
+    from clipforge.api.ig_routes import router as ig_router
+
+    app.include_router(ig_router)
 
     if (FRONTEND_DIST / "assets").exists():
         app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")

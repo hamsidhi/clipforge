@@ -4,8 +4,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { BarChart3, Download, Loader2, RefreshCw, Target, TrendingUp } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/api/client'
-import { pub, WEEKDAYS } from '@/api/publish'
-import type { Dashboard, Group, YppTier } from '@/api/publishTypes'
+import { pub, useChannels, WEEKDAYS } from '@/api/publish'
+import type { Dashboard, Group, IgDashboard, YppTier } from '@/api/publishTypes'
+import PlatformIcon from '@/components/PlatformIcon'
 import ChannelPicker from '@/components/ChannelPicker'
 import HealthPanel from '@/components/HealthPanel'
 import { EmptyState, ErrorBox, PageHeader } from '@/components/common'
@@ -101,13 +102,109 @@ function Heatmap({ d }: { d: Dashboard['heatmap'] }) {
   )
 }
 
+function Overview() {
+  const { data } = useQuery({ queryKey: ['overview'], queryFn: pub.overview, refetchInterval: 60000 })
+  if (!data || !data.instagram.accounts) return null
+  return (
+    <div className="mb-6 grid gap-4 md:grid-cols-2">
+      {(['youtube', 'instagram'] as const).map((p) => (
+        <Card key={p} className="py-4">
+          <CardContent className="flex flex-wrap items-center gap-x-6 gap-y-2 px-5 text-sm">
+            <span className="flex items-center gap-2 font-medium"><PlatformIcon platform={p} className="size-4" /> {p === 'youtube' ? 'YouTube' : 'Instagram'}</span>
+            <span><b className="tabular-nums">{fmt(data[p].followers)}</b> {p === 'youtube' ? 'subscribers' : 'followers'}</span>
+            <span><b className="tabular-nums">{fmt(data[p].posts)}</b> posts</span>
+            <span><b className="tabular-nums">{fmt(data[p].views)}</b> views</span>
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  )
+}
+
+function IgView({ d, onApply, applying }: { d: IgDashboard; onApply: (s: string[]) => void; applying: boolean }) {
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <Stat label="Followers" value={fmt(d.followers)} sub={d.followers_daily.length > 1 ? `${d.followers - d.followers_daily[0].followers >= 0 ? '+' : ''}${fmt(d.followers - d.followers_daily[0].followers)} since ${d.followers_daily[0].day}` : undefined} />
+        <Stat label="Reels posted" value={fmt(d.reels)} sub={`${d.reels_7d} in the last 7 days`} />
+        <Stat label="Views" value={fmt(d.totals.views)} sub={`reach ${fmt(d.totals.reach)}`} />
+        <Stat label="Engagement" value={fmt(d.totals.likes + d.totals.comments + d.totals.shares + d.totals.saves)}
+          sub={`${fmt(d.totals.likes)} likes · ${fmt(d.totals.shares)} shares · ${fmt(d.totals.saves)} saves`} />
+      </div>
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Card>
+          <CardHeader><CardTitle className="flex items-center gap-2"><TrendingUp className="size-4" /> Best Reel times</CardTitle></CardHeader>
+          <CardContent className="space-y-4">
+            <Heatmap d={d.heatmap} />
+            <div className="rounded-lg border p-3 text-sm">
+              <div>{d.recommendation.message}</div>
+              {d.recommendation.slots.length > 0 && (
+                <Button size="sm" className="mt-2" onClick={() => onApply(d.recommendation.slots)} disabled={applying}>
+                  Apply recommended slots ({d.recommendation.slots.join(', ')})
+                </Button>
+              )}
+              <p className="mt-2 text-xs text-muted-foreground">Needs at least 20 Reels with 24-hour views. Slots never change without your click.</p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader><CardTitle>Top Reels</CardTitle></CardHeader>
+          <CardContent>
+            {!d.top.length ? <p className="text-sm text-muted-foreground">Insights appear after the first published Reels are synced (every 12 h).</p> : (
+              <ol className="space-y-1.5 text-sm">
+                {d.top.map((t, i) => (
+                  <li key={i} className="flex justify-between gap-3">
+                    <a className="truncate hover:underline" href={t.permalink || undefined} target="_blank" rel="noreferrer">{i + 1}. {t.title}</a>
+                    <span className="shrink-0 tabular-nums text-muted-foreground">{fmt(t.views)}</span>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+      <Card>
+        <CardHeader><CardTitle>What's working</CardTitle></CardHeader>
+        <CardContent className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
+          <GroupList title="Topics" rows={d.working.by_topic} />
+          <GroupList title="Episodes" rows={d.working.by_episode} />
+          <GroupList title="Clip length" rows={d.working.by_length} />
+          <GroupList title="Title style" rows={d.working.by_title} />
+          {!d.working.shorts && <p className="text-sm text-muted-foreground">Appears after your first synced Reels.</p>}
+        </CardContent>
+      </Card>
+      {d.reminders.length > 0 && (
+        <Card>
+          <CardHeader><CardTitle>Reels posted but not submitted to a campaign</CardTitle></CardHeader>
+          <CardContent className="space-y-2 text-sm">
+            {d.reminders.map((r) => (
+              <div key={r.queue_id} className="flex flex-wrap items-center justify-between gap-2">
+                <a className="truncate hover:underline" href={r.url || undefined} target="_blank" rel="noreferrer">{r.title}</a>
+                <Button size="sm" variant="outline" asChild>
+                  <Link to={`/tracker?queue=${r.queue_id}&platform=instagram&title=${encodeURIComponent(r.title)}&url=${encodeURIComponent(r.url ?? '')}`}>Log submission</Link>
+                </Button>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  )
+}
+
 export default function PublishDashboard() {
   const qc = useQueryClient()
   const [channelId, setChannelId] = useState<string>()
-  const { data, isLoading, error } = useQuery({ queryKey: ['dash', channelId], queryFn: () => pub.dashboard(channelId!), enabled: !!channelId })
+  const { data: channels = [] } = useChannels()
+  const isIg = channels.find((c) => c.id === channelId)?.platform === 'instagram'
+  const { data, isLoading, error } = useQuery({ queryKey: ['dash', channelId], queryFn: () => pub.dashboard(channelId!), enabled: !!channelId && !isIg })
+  const igd = useQuery({ queryKey: ['ig-dash', channelId], queryFn: () => pub.igDashboard(channelId!), enabled: !!channelId && isIg })
   const posts = useQuery({ queryKey: ['posts'], queryFn: api.posts })
   const sync = useMutation({
-    mutationFn: () => pub.sync(channelId!),
+    mutationFn: async () => {
+      if (isIg) await pub.runScheduler()
+      else await pub.sync(channelId!)
+    },
     onSuccess: () => {
       toast('Syncing stats in the background…')
       setTimeout(() => qc.invalidateQueries({ queryKey: ['dash', channelId] }), 8000)
@@ -119,6 +216,7 @@ export default function PublishDashboard() {
     onSuccess: () => {
       toast.success('New publish times saved')
       qc.invalidateQueries({ queryKey: ['dash', channelId] })
+      qc.invalidateQueries({ queryKey: ['ig-dash', channelId] })
       qc.invalidateQueries({ queryKey: ['channels'] })
     },
   })
@@ -147,7 +245,10 @@ export default function PublishDashboard() {
         }
       />
       <HealthPanel />
-      {!channelId && !isLoading ? (
+      <Overview />
+      {isIg ? (igd.error ? <ErrorBox error={igd.error} /> : !igd.data ? <Skeleton className="h-96 rounded-xl" />
+        : <IgView d={igd.data} onApply={(s) => apply.mutate(s)} applying={apply.isPending} />)
+      : !channelId && !isLoading ? (
         <EmptyState icon={BarChart3} title="No channel yet" action={<Button asChild><Link to="/channels">Connect a channel</Link></Button>} />
       ) : error ? <ErrorBox error={error} /> : !data ? <Skeleton className="h-96 rounded-xl" /> : (
         <div className="space-y-6">
@@ -219,7 +320,7 @@ export default function PublishDashboard() {
                   <div key={r.queue_id} className="flex flex-wrap items-center justify-between gap-2">
                     <a className="truncate hover:underline" href={r.youtube_url} target="_blank" rel="noreferrer">{r.title}</a>
                     <Button size="sm" variant="outline" asChild>
-                      <Link to={`/tracker?queue=${r.queue_id}&title=${encodeURIComponent(r.title)}&url=${encodeURIComponent(r.youtube_url)}`}>Log submission</Link>
+                      <Link to={`/tracker?queue=${r.queue_id}&platform=youtube&title=${encodeURIComponent(r.title)}&url=${encodeURIComponent(r.youtube_url)}`}>Log submission</Link>
                     </Button>
                   </div>
                 ))}

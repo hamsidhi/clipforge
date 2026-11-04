@@ -128,6 +128,40 @@ def main(source_id: str = "sdMHVIcPGwg") -> None:
         batch.prepare("UCdemoFiguring", 5, cfg)
     except Exception as exc:
         print("batch:", exc)
+    # Instagram: a "connected" account (fake tokens, fake client) with scheduled + published Reels
+    from clipforge.publish import channels as chs
+    from clipforge.publish import instagram as ig
+
+    ig_ch = chs.register_instagram({"ig_user_id": "17841400000000001", "username": "figuring.clips", "page_id": "1001",
+                                    "page_name": "Figuring Clips", "followers": 1840, "profile_picture_url": ""},
+                                   (now + dt.timedelta(days=52)).strftime("%Y-%m-%dT%H:%M:%SZ"), cfg)
+    chs.update(ig_ch.id, confirmed=True)
+    ig.save_tokens("17841400000000001", {"user_token": "demo", "user_token_expires_at": (now + dt.timedelta(days=52)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"), "page_id": "1001", "page_name": "Figuring Clips", "page_token": "demo"}, cfg)
+    for it in q.add_clips(ig_ch.id, source_id, None, cfg):
+        q.generate_metadata(it.id, cfg)
+    q.autoschedule(ig_ch.id, cfg=cfg)
+    rng2 = random.Random(3)
+    with db.session() as s:
+        for i in range(12):
+            hour = rng2.choice([13, 19, 21])
+            pub = (now - dt.timedelta(days=14 - i)).replace(hour=hour - 5, minute=30 if hour != 21 else 0)
+            qi = db.QueueItem(channel_id=ig_ch.id, platform="instagram", video_id="hist", rank=200 + i, clip_key=f"ighist{i}",
+                              episode_title="FO516 Liquor", topic=rng2.choice(["taxes", "startup", "money mindset"]),
+                              score=7, duration=rng2.choice([22, 30, 41]), slot_utc=pub, status="published",
+                              ig_media_id=f"18{i:03d}", permalink=f"https://www.instagram.com/reel/Demo{i}/",
+                              title=f"Reel #{i + 1}", ig_caption="demo", published_at=pub, meta_status="ready")
+            s.add(qi)
+            s.flush()
+            views = int({13: 3000, 19: 7000, 21: 9500}[hour] * rng2.uniform(0.6, 1.5))
+            s.add(db.VideoPerf(youtube_video_id=f"ig:18{i:03d}", channel_id=ig_ch.id, platform="instagram", queue_id=qi.id,
+                               title=["78% of your bottle is tax?", "Why liquor licences cost crores", "Brands vs bootleggers"][i % 3],
+                               published_at=pub, duration=qi.duration, views=views, likes=views // 25, comments=views // 300,
+                               shares=views // 120, saves=views // 90, reach=int(views * 0.8), views_24h=int(views * 0.6),
+                               permalink=qi.permalink))
+        for d in range(30):
+            s.add(db.ChannelDaily(channel_id=ig_ch.id, day=(now - dt.timedelta(days=30 - d)).date(), subscribers=1400 + d * 15))
+        s.commit()
     # a fake (non-working) saved login so the Health panel shows the normal state; never a real token
     tok = yt.token_path("UCdemoFiguring", cfg)
     tok.parent.mkdir(parents=True, exist_ok=True)

@@ -12,7 +12,7 @@ const base = process.argv[2] ?? 'http://127.0.0.1:8000'
 const job = process.argv[3] ?? '1'
 const clip = process.argv[4] ?? `${job}-1`
 const set = process.argv[5] ?? 'main'
-const out = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'docs', 'screenshots', ...(set === 'phase12' ? ['phase12'] : []))
+const out = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'docs', 'screenshots', ...(set === 'main' ? [] : [set]))
 
 const PHASE12 = [
   ['01-channels', '/channels'],
@@ -22,6 +22,20 @@ const PHASE12 = [
   ['05-tracker', '/tracker'],
   ['06-settings-publishing', '/settings#publishing'],
   ['07-gallery-add-to-schedule', `/jobs/${job}/clips`],
+]
+// [name, url, account picked in the account selector (localStorage)]
+const PHASE13 = [
+  ['01-accounts-instagram', '/channels?tab=instagram'],
+  ['02-schedule-all-accounts', '/schedule', 'all'],
+  ['03-schedule-instagram', '/schedule', 'ig:17841400000000001'],
+  ['04-dashboard-instagram', '/dashboard', 'ig:17841400000000001'],
+  ['05-settings-instagram', '/settings#instagram'],
+  ['06-gallery-add-to-accounts', `/jobs/${job}/clips`],
+]
+const PHASE14 = [
+  ['01-jobs', '/'], ['02-new-job', '/new'], ['03-gallery', `/jobs/${job}/clips`], ['04-clip-editor', `/clips/${clip}/edit`],
+  ['05-schedule', '/schedule', 'all'], ['06-dashboard', '/dashboard'], ['07-accounts', '/channels'], ['08-tracker', '/tracker'],
+  ['09-settings', '/settings'], ['10-settings-remote', '/settings#remote'], ['11-login', '/login'], ['12-more', '/more'],
 ]
 const MAIN = [
   ['01-dashboard', '/'],
@@ -34,9 +48,11 @@ const MAIN = [
   ['08-settings', '/settings'],
   ['09-system-check', '/system'],
 ]
-const pages = set === 'phase12' ? PHASE12 : MAIN
+const pages = { phase12: PHASE12, phase13: PHASE13, phase14: PHASE14 }[set] ?? MAIN
 const mobile = set === 'phase12' ? ['01-channels', '02-schedule-week', '04-dashboard', '03-batches']
+  : set === 'phase13' ? PHASE13.map((p) => p[0]) : set === 'phase14' ? PHASE14.map((p) => p[0])
   : ['01-dashboard', '04-gallery', '05-clip-editor', '02-new-job']
+const desktopOnly = set === 'phase14' ? [] : null  // phase14 = phone screenshots
 
 let browser
 for (const channel of ['msedge', 'chrome']) {
@@ -50,9 +66,11 @@ if (!browser) throw new Error('No Edge/Chrome found for screenshots')
 let errors = 0
 for (const [label, vp] of [['desktop', { width: 1440, height: 900 }], ['mobile', { width: 390, height: 844 }]]) {
   const ctx = await browser.newContext({ viewport: vp, deviceScaleFactor: label === 'mobile' ? 2 : 1, colorScheme: 'dark' })
-  for (const [name, url] of pages) {
+  if (label === 'desktop' && desktopOnly) continue
+  for (const [name, url, account] of pages) {
     if (label === 'mobile' && !mobile.includes(name)) continue
     const page = await ctx.newPage()
+    if (account) await page.addInitScript((a) => localStorage.setItem('cf-channel', a), account)
     const msgs = []
     page.on('console', (m) => m.type() === 'error' && msgs.push(m.text()))
     page.on('pageerror', (e) => msgs.push(String(e)))
@@ -61,6 +79,10 @@ for (const [label, vp] of [['desktop', { width: 1440, height: 900 }], ['mobile',
     if (url.includes('#')) await page.evaluate((id) => document.getElementById(id)?.scrollIntoView(), url.split('#')[1])
     const file = path.join(out, `${name}${label === 'mobile' ? '-mobile' : ''}.png`)
     await page.screenshot({ path: file, fullPage: label === 'desktop' })
+    if (label === 'mobile') {  // no horizontal scrolling on phones
+      const wide = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
+      if (wide > 1) msgs.push(`horizontal scroll: page is ${wide}px wider than the screen`)
+    }
     // SSE connections closed by navigation are not app errors
     const real = msgs.filter((m) => !/ERR_ABORTED|ERR_CONNECTION/.test(m))
     errors += real.length

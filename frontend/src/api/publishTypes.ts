@@ -29,6 +29,9 @@ export interface ChannelSettings {
   whop_campaign: string
   campaign_rate_per_1k: number
   campaign_fee_pct: number
+  hours_after_youtube: number
+  share_to_feed: boolean
+  cta: string
 }
 
 export interface Channel {
@@ -45,7 +48,11 @@ export interface Channel {
   last_sync_at: string | null
   token_present: boolean
   platform: Platform
-  extra: { username?: string; page_name?: string; followers?: number; token_expires_at?: string; ig_user_id?: string; profile_picture_url?: string }
+  token?: { ok: boolean; text: string }
+  extra: {
+    username?: string; page_name?: string; followers?: number; token_expires_at?: string; ig_user_id?: string
+    profile_picture_url?: string; manual?: boolean
+  }
 }
 
 export interface TitleVariant {
@@ -207,5 +214,47 @@ export interface Reminder {
   title: string
   channel_id: string
   youtube_url: string
+  url?: string
+  platform?: Platform
   published_at: string | null
+}
+
+export interface MetaApp {
+  app_id: string
+  app_secret: string | null
+  login_config_id: string
+  configured: boolean
+  mode: 'api' | 'assisted'
+  graph_version: string
+  redirect_uri: string
+  scopes: { scope: string; why: string }[]
+}
+
+export interface IgChoice {
+  ig_user_id: string
+  username: string
+  profile_picture_url: string
+  followers: number
+  page_id: string
+  page_name: string
+}
+
+export interface IgDashboard {
+  account: { id: string; title: string; extra: Channel['extra']; last_sync_at: string | null }
+  followers: number
+  followers_daily: { day: string; followers: number }[]
+  reels: number
+  reels_7d: number
+  totals: { views: number; reach: number; likes: number; comments: number; shares: number; saves: number }
+  top: { title: string; views: number; likes: number; shares: number; saves: number; permalink: string }[]
+  heatmap: Dashboard['heatmap']
+  recommendation: Dashboard['recommendation']
+  working: Dashboard['working']
+  reminders: Reminder[]
+}
+
+export interface Overview {
+  youtube: { accounts: number; followers: number; posts: number; views: number }
+  instagram: { accounts: number; followers: number; posts: number; views: number }
+  upcoming: { id: number; platform: Platform; title: string; slot_local: string }[]
 }

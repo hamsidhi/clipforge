@@ -38,6 +38,9 @@ export default function QueueItemDialog({ item, onClose }: { item: QueueItem | n
   const [ig, setIg] = useState('')
   const [linkId, setLinkId] = useState('')
   const [privacy, setPrivacy] = useState<Privacy>('scheduled')
+  const [cover, setCover] = useState<number | null>(null)
+  const [permalink, setPermalink] = useState('')
+  const videoRef = useRef<HTMLVideoElement>(null)
   const linkRef = useRef<HTMLInputElement>(null)
   const { data: channels = [] } = useChannels()
   const channel = channels.find((c) => c.id === item?.channel_id)
@@ -49,6 +52,8 @@ export default function QueueItemDialog({ item, onClose }: { item: QueueItem | n
     setTags(item.tags.join(', '))
     setSlot(item.slot_local ?? '')
     setIg(item.ig_caption)
+    setCover(item.ig_thumb_offset_ms ?? null)
+    setPermalink('')
   }, [item])
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ['queue'] })
@@ -60,7 +65,8 @@ export default function QueueItemDialog({ item, onClose }: { item: QueueItem | n
   const save = useMutation({
     mutationFn: () => {
       const body: Parameters<typeof pub.patch>[1] = {
-        title, description, ig_caption: ig, tags: tags.split(',').map((t) => t.trim()).filter(Boolean), privacy,
+        title, description, ig_caption: ig, tags: tags.split(',').map((t) => t.trim()).filter(Boolean),
+        ...(yt ? { privacy } : cover != null ? { ig_thumb_offset_ms: cover } : {}),
       }
       if (slot && slot !== item!.slot_local) body.slot_local = slot
       return pub.patch(item!.id, body)
@@ -73,19 +79,22 @@ export default function QueueItemDialog({ item, onClose }: { item: QueueItem | n
     onError: (e) => toast.error(e.message),
   })
   const act = useMutation({
-    mutationFn: async (a: 'regen' | 'unschedule' | 'delete' | 'link') => {
+    mutationFn: async (a: 'regen' | 'unschedule' | 'delete' | 'link' | 'permalink') => {
       if (a === 'regen') return pub.regenerate(item!.id)
       if (a === 'unschedule') return pub.unschedule(item!.id)
       if (a === 'link') return pub.link(item!.id, linkId)
+      if (a === 'permalink') return pub.permalink(item!.id, permalink)
       return pub.remove(item!.id)
     },
     onSuccess: (_, a) => {
-      toast.success(a === 'regen' ? 'Writing new metadata…' : a === 'delete' ? 'Removed from queue' : a === 'link' ? 'Linked' : 'Unscheduled')
+      toast.success(a === 'regen' ? 'Writing new metadata…' : a === 'delete' ? 'Removed from queue' : a === 'link' || a === 'permalink' ? 'Linked' : 'Unscheduled')
       refresh()
       onClose()
     },
     onError: (e) => toast.error(e.message),
   })
+  const igTags = (ig.match(/#[^\s#]+/g) ?? [])
+  const igBad = igTags.length > 5 || igTags.some((t) => t !== t.toLowerCase()) || ig.length > 2200
   const tagChars = tags.split(',').map((t) => t.trim()).filter(Boolean).reduce((s, t) => s + t.length + (t.includes(' ') ? 2 : 0) + 1, -1)
   return (
     <Dialog open={!!item} onOpenChange={(o) => !o && onClose()}>
@@ -123,9 +132,9 @@ export default function QueueItemDialog({ item, onClose }: { item: QueueItem | n
             ) : (
               <div className="space-y-4">
                 <div className="space-y-1.5">
-                  <div className="flex justify-between"><Label>Title</Label><Counter n={title.length} max={100} hint={70} /></div>
+                  <div className="flex justify-between"><Label>{yt ? 'Title' : 'Title (only shown in ClipForge)'}</Label><Counter n={title.length} max={100} hint={70} /></div>
                   <Input value={title} disabled={locked} onChange={(e) => setTitle(e.target.value)} />
-                  {item.variants.length > 1 && (
+                  {yt && item.variants.length > 1 && (
                     <div className="flex flex-wrap gap-1.5 pt-1">
                       {item.variants.map((v) => (
                         <button key={v.title} type="button" disabled={locked || v.duplicate} onClick={() => setTitle(v.title)}
@@ -138,14 +147,47 @@ export default function QueueItemDialog({ item, onClose }: { item: QueueItem | n
                     </div>
                   )}
                 </div>
-                <div className="space-y-1.5">
-                  <div className="flex justify-between"><Label>Description</Label><Counter n={description.length} max={5000} /></div>
-                  <Textarea rows={7} value={description} disabled={locked} onChange={(e) => setDescription(e.target.value)} />
-                </div>
-                <div className="space-y-1.5">
-                  <div className="flex justify-between"><Label>Tags (comma-separated)</Label><Counter n={Math.max(0, tagChars)} max={500} /></div>
-                  <Textarea rows={2} value={tags} disabled={locked} onChange={(e) => setTags(e.target.value)} />
-                </div>
+                {yt ? (
+                  <>
+                    <div className="space-y-1.5">
+                      <div className="flex justify-between"><Label>Description</Label><Counter n={description.length} max={5000} /></div>
+                      <Textarea rows={7} value={description} disabled={locked} onChange={(e) => setDescription(e.target.value)} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <div className="flex justify-between"><Label>Tags (comma-separated)</Label><Counter n={Math.max(0, tagChars)} max={500} /></div>
+                      <Textarea rows={2} value={tags} disabled={locked} onChange={(e) => setTags(e.target.value)} />
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="space-y-1.5">
+                      <div className="flex justify-between gap-2">
+                        <Label>Caption</Label>
+                        <span className="flex gap-3"><Counter n={igTags.length} max={5} /><span className="text-xs text-muted-foreground">hashtags</span><Counter n={ig.length} max={2200} /></span>
+                      </div>
+                      <Textarea rows={8} value={ig} disabled={locked} onChange={(e) => setIg(e.target.value)} />
+                      {igBad && <p className="text-xs text-amber-300">Max 5 hashtags, all lowercase, 2,200 characters — extras are removed when you save.</p>}
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Cover frame</Label>
+                      <div className="flex flex-wrap items-center gap-3">
+                        <video ref={videoRef} src={`/api/queue/${item.id}/video`} muted playsInline preload="metadata"
+                          className="h-40 rounded-md bg-black" style={{ aspectRatio: '9/16' }}
+                          onLoadedMetadata={(e) => { if (cover != null) e.currentTarget.currentTime = cover / 1000 }} />
+                        <div className="min-w-48 flex-1 space-y-2">
+                          <input type="range" min={0} max={Math.max(0, Math.floor(item.duration * 1000) - 100)} step={100} value={cover ?? 0}
+                            disabled={locked} aria-label="Cover frame position" className="w-full accent-primary"
+                            onChange={(e) => {
+                              const ms = Number(e.target.value)
+                              setCover(ms)
+                              if (videoRef.current) videoRef.current.currentTime = ms / 1000
+                            }} />
+                          <div className="text-xs text-muted-foreground">{cover == null ? 'First frame (default)' : `Frame at ${(cover / 1000).toFixed(1)} s`}</div>
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                )}
                 <div className="grid gap-4 sm:grid-cols-2">
                   <div className="space-y-1.5">
                     <Label>Publish time (IST)</Label>
@@ -161,11 +203,30 @@ export default function QueueItemDialog({ item, onClose }: { item: QueueItem | n
                       <p className="text-xs text-muted-foreground">{PRIVACY.find((p) => p.value === privacy)?.help}</p>
                     </div>
                   )}
-                  <div className="space-y-1.5 sm:col-span-2">
-                    <Label>Instagram caption</Label>
-                    <div className="flex gap-2"><Input value={ig} onChange={(e) => setIg(e.target.value)} /><CopyButton text={ig} label="" /></div>
-                  </div>
+                  {yt && (
+                    <div className="space-y-1.5 sm:col-span-2">
+                      <Label>Instagram caption (for the Instagram kit)</Label>
+                      <div className="flex gap-2"><Input value={ig} onChange={(e) => setIg(e.target.value)} /><CopyButton text={ig} label="" /></div>
+                    </div>
+                  )}
                 </div>
+              </div>
+            )}
+            {!yt && item.permalink && (
+              <a href={item.permalink} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-sm text-primary">
+                <ExternalLink className="size-3.5" /> {item.permalink}
+              </a>
+            )}
+            {!yt && (
+              <p className="text-xs text-muted-foreground">
+                Posted through the official Instagram API — see the <a className="underline" href="https://help.instagram.com/581066165581870" target="_blank" rel="noreferrer">Instagram Terms of Use</a>.
+                Instagram has no scheduling: ClipForge uploads the Reel shortly before the slot and publishes at the slot, so this laptop must be on then.
+              </p>
+            )}
+            {!yt && !item.ig_media_id && !item.permalink && ['queued', 'needs_manual', 'missed', 'failed'].includes(item.status) && (
+              <div className="flex gap-2">
+                <Input placeholder="Posted it yourself? Paste the Reel link (instagram.com/reel/…)" value={permalink} onChange={(e) => setPermalink(e.target.value)} />
+                <Button variant="outline" disabled={!permalink || act.isPending} onClick={() => act.mutate('permalink')}><Link2 /> Reel link</Button>
               </div>
             )}
             {item.youtube_url && (

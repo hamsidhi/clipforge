@@ -200,7 +200,13 @@ def _channel_out(ch: db.Channel) -> dict:
     for it in q.items(ch.id):
         counts[it.status] = counts.get(it.status, 0) + 1
     d["counts"] = counts
-    d["token_present"] = yt.token_path(ch.id).exists()
+    if ch.platform == "instagram":
+        from clipforge.publish import instagram as ig
+
+        d["token_present"] = ig.is_manual(ch) or ig.token_path(ig.ig_id_of(ch)).exists()
+        d["token"] = ig.token_health(ch)
+    else:
+        d["token_present"] = yt.token_path(ch.id).exists()
     return d
 
 
@@ -299,7 +305,22 @@ def confirm_channel(channel_id: str) -> dict:
 
 @router.post("/channels/{channel_id}/check-auth")
 def check_auth(channel_id: str) -> dict:
-    _ch_or_404(channel_id)
+    ch = _ch_or_404(channel_id)
+    if ch.platform == "instagram":
+        from clipforge.publish import instagram as ig
+
+        if ig.is_manual(ch):
+            return {"ok": True, "channel": _channel_out(ch)}
+        try:
+            ig.client().account(ig.ig_id_of(ch), ig.page_token(ch))
+            ok = True
+            if ch.auth_status != "ok":
+                chs.update(channel_id, auth_status="ok", auth_error="")
+        except ig.IGError as exc:
+            ok = False
+            if exc.auth:
+                chs.mark_reauth(channel_id, str(exc))
+        return {"ok": ok, "channel": _channel_out(chs.get(channel_id))}  # type: ignore[arg-type]
     ok = chs.check_auth(channel_id)
     return {"ok": ok, "channel": _channel_out(chs.get(channel_id))}  # type: ignore[arg-type]
 
@@ -335,7 +356,8 @@ def delete_channel(channel_id: str) -> dict:
 
 # ============================================================================ queue
 class QueueAdd(BaseModel):
-    channel_id: str
+    channel_id: Optional[str] = None
+    channel_ids: Optional[list[str]] = None  # several accounts at once (YouTube + Instagram)
     job_id: Optional[int] = None
     video_id: Optional[str] = None
     ranks: Optional[list[int]] = None  # None = all approved clips
@@ -356,10 +378,17 @@ def queue_add(body: QueueAdd) -> dict:
         video_id = job.video_id
     if not video_id:
         raise HTTPException(400, "Give a job_id or video_id")
-    _ch_or_404(body.channel_id)
-    added = _wrap(q.add_clips, body.channel_id, video_id, body.ranks)
+    targets = list(dict.fromkeys([*(body.channel_ids or []), *([body.channel_id] if body.channel_id else [])]))
+    if not targets:
+        raise HTTPException(400, "Pick at least one account")
+    for cid in targets:
+        _ch_or_404(cid)
+    added: list[db.QueueItem] = []
+    for cid in targets:
+        added += _wrap(q.add_clips, cid, video_id, body.ranks)
     _queue_metadata([it.id for it in added])  # type: ignore[misc]
-    return {"added": [_item_out(it) for it in added], "skipped_duplicates": (len(body.ranks) - len(added)) if body.ranks else None}
+    return {"added": [_item_out(it) for it in added],
+            "skipped_duplicates": (len(body.ranks) * len(targets) - len(added)) if body.ranks else None}
 
 
 @router.get("/queue")
@@ -712,9 +741,9 @@ def reminders(channel_id: Optional[str] = None) -> list[dict]:
     out = []
     for it in q.items(channel_id, ("published",)):
         if it.id not in submitted:
-            out.append({"queue_id": it.id, "title": it.title, "channel_id": it.channel_id,
-                        "youtube_url": f"https://youtube.com/shorts/{it.youtube_video_id}",
-                        "published_at": it.published_at})
+            url = it.permalink if it.platform == "instagram" else f"https://youtube.com/shorts/{it.youtube_video_id}"
+            out.append({"queue_id": it.id, "title": it.title, "channel_id": it.channel_id, "platform": it.platform,
+                        "youtube_url": url, "url": url, "published_at": it.published_at})
     return out
 
 

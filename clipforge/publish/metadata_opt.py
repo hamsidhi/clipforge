@@ -172,7 +172,13 @@ def generate(clip: ClipCandidate, info: VideoInfo, words: list[Word], settings: 
     credit = credit_line(settings.get("credit_template", ""), info)
     tags = tags_within_limit([*(reply.tags if reply else []), clip.topic, *[h.lstrip("#") for h in hashtags],
                               "podcast", "hindi podcast", "shorts"])
-    ig = f"{summary}\n\n{credit}\n\n{' '.join(hashtags)}".strip()
+    from clipforge.publish import ig_meta
+
+    # Instagram: hook + value + CTA + credit + ≤5 lowercase hashtags (#reels instead of #shorts)
+    ig_tags = [h for h in hashtags if h.lower() != "#shorts"]
+    ig_tags = ["#reels", *ig_tags][: ig_meta.MAX_HASHTAGS]
+    hook = clip.hook.strip() if clip.hook and clip.hook.strip().lower() not in summary.lower() else ""
+    ig = ig_meta.build(hook, summary, credit, ig_tags, settings.get("cta") or ig_meta.CTA)
     return {
         "title": best, "description": build_description(summary, credit, settings.get("description_template", ""), hashtags),
         "tags": tags, "variants": variants[:5], "ig_caption": ig, "category_id": str(settings.get("category_id", "27")),

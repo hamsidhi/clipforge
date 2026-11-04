@@ -85,7 +85,7 @@ export default function Tracker() {
   useEffect(() => {
     if (params.get('queue')) {
       // from the Dashboard's "published but not submitted" list
-      setForm({ ...empty, platform: 'youtube', queue_id: Number(params.get('queue')), clip_title: params.get('title') ?? '',
+      setForm({ ...empty, platform: params.get('platform') === 'instagram' ? 'instagram' : 'youtube', queue_id: Number(params.get('queue')), clip_title: params.get('title') ?? '',
         url: params.get('url') ?? '', submission_status: 'submitted' })
       setOpen(true)
       setParams({}, { replace: true })
