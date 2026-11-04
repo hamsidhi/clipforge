@@ -124,7 +124,7 @@ class Ctx:
 
     # ---- sending
     def send(self, text: str, buttons: list[list[dict]] | None = None, *, html: bool = True,
-             reply_markup: dict | None = None, quiet: bool = False) -> int | None:
+             reply_markup: dict | None = None, quiet: bool = False, reply_to: int | None = None) -> int | None:
         chunks = split_text(text)
         mid = None
         for i, chunk in enumerate(chunks):
@@ -132,7 +132,9 @@ class Ctx:
             markup = reply_markup or ({"inline_keyboard": buttons} if buttons and last else None)
             res = self.api.call("sendMessage", chat_id=self.chat_id, text=chunk, parse_mode="HTML" if html else None,
                                 disable_web_page_preview=True, reply_markup=markup if last else None,
-                                disable_notification=quiet or None)
+                                disable_notification=quiet or None,
+                                reply_parameters={"message_id": reply_to, "allow_sending_without_reply": True}
+                                if reply_to and i == 0 else None)
             mid = res.get("message_id")
             if mid:
                 self.sent.append(mid)

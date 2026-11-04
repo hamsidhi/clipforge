@@ -30,6 +30,9 @@ Telegram Bot API **outbound** (long polling). Nothing on your computer is opened
 | `/words 3` · `/word 3 "galti" "galat"` · `/word 3 #12 galat` | numbered caption words · fix a word (every match / by number) | |
 | `/render 3` · `/render changed` · `/render 12 approved` | re-render; the new version is sent here with **↩ Undo** | |
 | `/text 3` | copy-ready title, YouTube description, Instagram caption, ≤ 5 lowercase hashtags (long-press a block to copy) | |
+| `/meta 12-3` · `/meta 12` | the same publishing text for one clip, or every approved clip of job 12; writes missing metadata first (owner) | |
+| (automatic) | every clip video and clip card is followed by a reply with its publishing text (YouTube title, description, Instagram caption, hashtags, tags) — one tap on a block copies it | |
+| (automatic) | longer than 4096 characters → split between sections; no metadata yet → "Metadata not ready — /meta 12-3 to generate" | |
 | `/schedule` | the next 7 days as a calendar (IST) | |
 | `/schedule 12 youtube\|instagram\|both` | approved clips of job 12 → next free slots | |
 | 📅 on a card | one clip → platform(s) → account(s) → next free slot or a time you type (`today 21:00`, `tomorrow 9pm`, `5 Nov 18:30`) | |

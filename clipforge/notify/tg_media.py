@@ -79,9 +79,15 @@ def telegram_fit(src: Path, limit: int, duration: float) -> Path:
 
 
 def deliver(api, chat_id: int, clip: Path, mode: str, caption: str, buttons=None, *, clip_id: str = "",
-            duration: float = 0, link_fn=None) -> str:
+            duration: float = 0, link_fn=None, sent: list | None = None) -> str:
     """Send a clip as preview (streamable video) or full quality (document). Returns how it went:
-    'sent' | 'reencoded' | 'link' | 'none'."""
+    'sent' | 'reencoded' | 'link' | 'none'. The message id of the clip message is appended to `sent`."""
+    sent = sent if sent is not None else []
+
+    def keep(res):
+        if isinstance(res, dict) and res.get("message_id"):
+            sent.append(res["message_id"])
+
     limit = api.send_limit
     if mode == "preview":
         from clipforge.stages.preview import ensure_preview
@@ -92,32 +98,32 @@ def deliver(api, chat_id: int, clip: Path, mode: str, caption: str, buttons=None
             log.warning(f"[telegram] preview failed for {clip.name}: {exc}")
             path = clip
         if path.stat().st_size <= limit:
-            _send_file(api, chat_id, path, "sendVideo", "video", caption, buttons, supports_streaming=True,
-                       width=540, height=960, duration=int(duration) or None)
+            keep(_send_file(api, chat_id, path, "sendVideo", "video", caption, buttons, supports_streaming=True,
+                       width=540, height=960, duration=int(duration) or None))
             return "sent"
     else:
         if clip.stat().st_size <= limit:
-            _send_file(api, chat_id, clip, "sendDocument", "document", caption, buttons, disable_content_type_detection=True)
+            keep(_send_file(api, chat_id, clip, "sendDocument", "document", caption, buttons, disable_content_type_detection=True))
             return "sent"
         try:
             fit = telegram_fit(clip, limit, duration or _duration(clip))
-            _send_file(api, chat_id, fit, "sendDocument", "document",
+            keep(_send_file(api, chat_id, fit, "sendDocument", "document",
                        caption + f"\n<i>Re-encoded to fit Telegram's {limit // (1024 * 1024)} MB limit "
                                  f"(the original is {clip.stat().st_size / 1048576:.0f} MB).</i>", buttons,
-                       disable_content_type_detection=True)
+                       disable_content_type_detection=True))
             return "reencoded"
         except Exception as exc:
             log.warning(f"[telegram] Telegram-fit copy of {clip.name} failed: {exc}")
     url = link_fn(f"/api/clips/{clip_id}/video?download=1") if link_fn and clip_id else None
     if url:
-        api.call("sendMessage", chat_id=chat_id, parse_mode="HTML", disable_web_page_preview=True,
+        keep(api.call("sendMessage", chat_id=chat_id, parse_mode="HTML", disable_web_page_preview=True,
                  text=f"{caption}\n📎 Too big for Telegram — download it here (opens only on your Tailscale network):\n{url}",
-                 reply_markup={"inline_keyboard": buttons} if buttons else None)
+                 reply_markup={"inline_keyboard": buttons} if buttons else None))
         return "link"
-    api.call("sendMessage", chat_id=chat_id, parse_mode="HTML",
+    keep(api.call("sendMessage", chat_id=chat_id, parse_mode="HTML",
              text=f"{caption}\n📎 Too big for Telegram ({clip.stat().st_size / 1048576:.0f} MB). Set up remote access "
                   "(Tailscale) or a local Bot API server to get it here — see docs/TELEGRAM.md.",
-             reply_markup={"inline_keyboard": buttons} if buttons else None)
+             reply_markup={"inline_keyboard": buttons} if buttons else None))
     return "none"
 
 

@@ -315,12 +315,12 @@ def test_file_size_fallback_chain(tg, monkeypatch):
     job, ws = seed_job(tmp)
     send(b, fake, f"/clip {job.id}-1")
     press(b, fake, "▶ Preview")
-    assert fake.calls[-2][0] == "sendVideo" and fake.calls[-2][1]["supports_streaming"] == "true"
+    assert fake.of("sendVideo")[-1]["supports_streaming"] == "true" and "YouTube title" in fake.last_text()
     uploads = fake.uploads
     press(b, fake, "▶ Preview")  # same file again: by file_id, no upload
     assert fake.uploads == uploads and fake.of("sendVideo")[-1]["video"].startswith("vid")
     press(b, fake, "⬇ Full quality")
-    assert fake.calls[-2][0] == "sendDocument"
+    assert fake.of("sendDocument") and "YouTube title" in fake.last_text()
     # too big for the cloud API → Telegram-fit copy
     big = ws.find_clip(2)
     api = b.api()
@@ -335,10 +335,10 @@ def test_file_size_fallback_chain(tg, monkeypatch):
     monkeypatch.setattr(commands, "app_url", lambda path: f"https://laptop.tail1234.ts.net{path}")
     send(b, fake, f"/clip {job.id}-3")
     press(b, fake, "⬇ Full quality")
-    assert "ts.net/api/clips/" in fake.last_text() and "Tailscale" in fake.last_text()
+    assert "ts.net/api/clips/" in fake.texts()[-2] and "Tailscale" in fake.texts()[-2]
     monkeypatch.setattr(commands, "app_url", lambda path: None)
     press(b, fake, "⬇ Full quality")
-    assert "Too big for Telegram" in fake.last_text() and "docs/TELEGRAM.md" in fake.last_text()
+    assert "Too big for Telegram" in fake.texts()[-2] and "docs/TELEGRAM.md" in fake.texts()[-2]
 
 
 def test_big_upload_explains_limit_and_small_one_starts_wizard(tg):
@@ -394,9 +394,9 @@ def test_edit_rerender_resend_undo(tg):
     (work / "previous.mp4").write_bytes(b"\x01" * 1500)
     (work / "previous.json").write_text(json.dumps({"candidate": before | {"title": "Clip 1 title"}}))
     telegram.on_render(job.id, [1], True)
-    assert fake.calls[-1][0] == "sendVideo" and "New version" in fake.calls[-1][1]["caption"]
+    assert "New version" in fake.of("sendVideo")[-1]["caption"] and "YouTube title" in fake.last_text()
     press(b, fake, "↩ Undo")
-    assert clip_svc.get_clip(cid)["title"] == "Clip 1 title" and "Restored" in fake.texts()[-1]
+    assert clip_svc.get_clip(cid)["title"] == "Clip 1 title" and "Restored" in fake.texts()[-2]
 
 
 # ============================================================================ times, poller, offset, modes, mini app
@@ -558,3 +558,56 @@ def test_running_bot_stops_polling_when_the_laptop_becomes_a_worker(tg):
     b.stop.set()
     t.join(2)
     assert b.polling is False and st.poller_owner() is None and len(fake.of("getUpdates")) == calls
+
+
+# ============================================================================ copy-ready metadata after every clip
+def test_metadata_follows_each_clip_as_reply(tg):
+    b, fake, tmp = tg
+    job, _ = seed_job(tmp, n_clips=2)
+    fake.clear()
+    send(b, fake, f"/send {job.id} 1 preview")
+    calls = [(m, p) for m, p in fake.calls if m in ("sendVideo", "sendMessage")]
+    assert [m for m, _ in calls] == ["sendVideo", "sendMessage"]
+    meta = calls[1][1]
+    assert meta["parse_mode"] == "HTML" and meta["reply_parameters"]["message_id"] > 0
+    t = meta["text"]
+    for label in ("YouTube title", "YouTube description", "Instagram caption", "Hashtags"):
+        assert f"<b>{label}</b>\n<code>" in t
+    assert "<code>#money #biz</code>" in t and "Tags" not in t  # lowercase, no queue tags yet
+    assert str(tmp) not in t and TOKEN not in t and ".mp4" not in t
+    fake.clear()
+    send(b, fake, f"/clip {job.id}-2")  # cards get it too
+    assert "<b>YouTube title</b>" in fake.last_text() and fake.of("sendMessage")[-1]["reply_parameters"]
+
+
+def test_metadata_splits_at_section_boundaries(tg):
+    from clipforge.notify import tg_clips
+
+    b, fake, tmp = tg
+    job, ws = seed_job(tmp, n_clips=1)
+    rows = json.loads(ws.metadata_json.read_text(encoding="utf-8"))
+    rows[0]["yt_description"] = "d" * 3000
+    rows[0]["ig_caption"] = "c" * 3000
+    ws.metadata_json.write_text(json.dumps(rows), encoding="utf-8")
+    msgs = tg_clips.meta_messages(f"{job.id}-1")
+    assert len(msgs) >= 2 and all(len(m) <= 4096 for m in msgs)
+    assert all(m.count("<code>") == m.count("</code>") for m in msgs)  # never cut inside a block
+    assert "YouTube description" in msgs[0] and "Instagram caption" in msgs[1]
+
+
+def test_metadata_not_ready_then_meta_generates(tg):
+    b, fake, tmp = tg
+    job, ws = seed_job(tmp, n_clips=1)
+    ws.metadata_json.unlink()
+    fake.clear()
+    send(b, fake, f"/send {job.id} 1 preview")
+    assert fake.last_text() == f"📋 Metadata not ready — /meta {job.id}-1 to generate"
+    fake.clear()
+    send(b, fake, f"/meta {job.id}-1")  # runs the normal metadata step (mock LLM)
+    assert ws.metadata_json.exists() and "<b>YouTube title</b>" in fake.last_text()
+    from clipforge.services import clips as clip_svc
+
+    clip_svc.set_approved(job.id, [1], True)
+    fake.clear()
+    send(b, fake, f"/meta {job.id}")  # all approved clips of the job
+    assert "<b>Instagram caption</b>" in fake.last_text() and not fake.of("sendVideo")

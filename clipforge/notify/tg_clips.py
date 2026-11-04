@@ -70,7 +70,8 @@ def card_buttons(ctx: Ctx, c: dict) -> list[list[dict]]:
 
 
 def send_card(ctx: Ctx, c: dict) -> None:
-    ctx.send(card_text(c), card_buttons(ctx, c))
+    mid = ctx.send(card_text(c), card_buttons(ctx, c))
+    send_meta(ctx, c["id"], mid)
 
 
 def _clip(clip_id: str) -> dict:
@@ -163,8 +164,11 @@ def send_clip(ctx: Ctx, clip_id: str, mode: str, caption: str | None = None, but
     c = _clip(clip_id)
     _, _, f = clip_file(clip_id)
     cap = caption or f"#{c['rank']} · {esc(c['title'])} · ⭐ {c['score']:.1f}"
-    return tg_media.deliver(ctx.api, ctx.chat_id, f, mode, cap, buttons, clip_id=clip_id, duration=c["duration"],
-                            link_fn=app_url)
+    sent: list[int] = []
+    how = tg_media.deliver(ctx.api, ctx.chat_id, f, mode, cap, buttons, clip_id=clip_id, duration=c["duration"],
+                           link_fn=app_url, sent=sent)
+    send_meta(ctx, clip_id, sent[-1] if sent else None)
+    return how
 
 
 @callback("clip.preview", role="viewer")
@@ -486,26 +490,115 @@ def _undo(ctx: Ctx, p: dict) -> None:
               [[ctx.btn("↩ Undo the undo", "clip.undo", c=p["c"])]])
 
 
-def metadata_text(clip_id: str) -> str:
+# ============================================================================ copy-ready metadata (sent after every clip)
+SECTION_MAX = 3800  # one section always fits one message (4096) with its label
+
+
+def _queue_tags(video_id: str, rank: int) -> list[str]:
+    """YouTube tags written for this clip by the publishing metadata step (newest queue item), if any."""
+    from sqlmodel import select
+
+    with db.session() as s:
+        items = s.exec(select(db.QueueItem).where(db.QueueItem.video_id == video_id, db.QueueItem.rank == rank,
+                                                  db.QueueItem.platform == "youtube").order_by(db.QueueItem.id.desc())).all()
+    return next((i.tags for i in items if i.tags), [])
+
+
+def meta_sections(clip_id: str) -> list[str] | None:
+    """One HTML section per copyable field (tap a <code> block to copy it), or None when metadata.json has no row yet."""
     job, rank = job_svc.parse_clip_id(clip_id)
-    ws = job_svc.ws_for(job)
-    m = job_svc.metas(ws).get(rank)
+    m = job_svc.metas(job_svc.ws_for(job)).get(rank)
     if not m:
-        return "No titles/captions yet — they're written after rendering."
+        return None
     from clipforge.publish import ig_meta
 
-    tags = [t.lower().lstrip("#") for t in m.hashtags][:5]
-    cap = ig_meta.clean_caption(m.ig_caption)
-    pre = lambda s: f"<pre>{esc(s)}</pre>"  # noqa: E731  (long-press a block to copy it)
-    return (f"📋 <b>#{rank} — copy-ready text</b>\n<b>Title</b>{pre(m.yt_title)}<b>YouTube description</b>{pre(m.yt_description)}"
-            f"<b>Instagram caption</b>{pre(cap)}<b>Hashtags</b>{pre(' '.join('#' + t for t in tags))}")
+    def sec(label: str, text: str) -> str:
+        return f"<b>{label}</b>\n<code>{esc(text.strip()[:SECTION_MAX])}</code>"
+
+    tags = list(dict.fromkeys("#" + t.lower().lstrip("#") for t in m.hashtags if t.strip("#")))[:5]
+    out = [f"📋 <b>{clip_id}</b> · tap a block to copy",
+           sec("YouTube title", m.yt_title), sec("YouTube description", m.yt_description),
+           sec("Instagram caption", ig_meta.clean_caption(m.ig_caption)), sec("Hashtags", " ".join(tags))]
+    yt_tags = _queue_tags(job.video_id, rank)
+    if yt_tags:
+        out.append(sec("Tags", ", ".join(yt_tags)))
+    return out
+
+
+def not_ready_text(clip_id: str) -> str:
+    return f"📋 Metadata not ready — /meta {clip_id} to generate"
+
+
+def meta_messages(clip_id: str) -> list[str]:
+    """The metadata text for one clip, split at section boundaries so each message stays ≤ 4096 characters."""
+    from clipforge.notify.tg_api import TEXT_LIMIT
+
+    secs = meta_sections(clip_id)
+    if secs is None:
+        return [not_ready_text(clip_id)]
+    out, cur = [], ""
+    for s in secs:
+        if cur and len(cur) + 2 + len(s) > TEXT_LIMIT:
+            out.append(cur)
+            cur = s
+        else:
+            cur = f"{cur}\n\n{s}" if cur else s
+    out.append(cur)
+    return out
+
+
+def send_meta(ctx: Ctx, clip_id: str, reply_to: int | None = None) -> None:
+    try:
+        msgs = meta_messages(clip_id)
+    except Exception as exc:  # the clip itself was delivered; the text is a bonus
+        from clipforge.utils.log import log
+
+        log.warning(f"[telegram] metadata for {clip_id} failed: {exc}")
+        return
+    for t in msgs:
+        ctx.send(t, reply_to=reply_to, quiet=True)
+
+
+def _ensure_meta(ctx: Ctx, job, ranks: list[int]) -> None:
+    """Write missing metadata with the normal metadata step (cached per clip; the LLM runs only for clips without it)."""
+    ws = job_svc.ws_for(job)
+    have = job_svc.metas(ws)
+    if all(r in have for r in ranks):
+        return
+    if not ctx.owner:
+        raise ValueError("Metadata isn't written yet — ask the owner to run /meta.")
+    from clipforge import pipeline
+    from clipforge.api.jobs import job_config
+
+    ctx.send("✍️ Writing titles and captions…", quiet=True)
+    pipeline.metadata(ws, job_config(job.settings))
 
 
 @callback("clip.meta", role="viewer")
 def _meta(ctx: Ctx, p: dict) -> None:
-    ctx.send(metadata_text(p["c"]))
+    send_meta(ctx, p["c"])
 
 
 @command("text", role="viewer", group="Clips", help="copy-ready title, description, caption, hashtags", usage="/text 3")
 def _text(ctx: Ctx, args: str) -> None:
-    ctx.send(metadata_text(clip_ref(ctx, args or "")))
+    send_meta(ctx, clip_ref(ctx, args or ""))
+
+
+@command("meta", role="viewer", group="Clips", help="publishing text of a clip, or of every approved clip of a job",
+         usage="/meta 12-3   ·   /meta 12")
+def _meta_cmd(ctx: Ctx, args: str) -> None:
+    tok = (args.split() or [""])[0].lstrip("#")
+    if re.fullmatch(r"\d+-\d+", tok):
+        cid = clip_ref(ctx, tok)
+        job, rank = job_svc.parse_clip_id(cid)
+        _ensure_meta(ctx, job, [rank])
+        send_meta(ctx, cid)
+        return
+    job_id = job_arg(ctx, tok or None)
+    chosen = [c for c in clip_svc.list_clips(job_id, "approved") if c["rendered"]]
+    if not chosen:
+        ctx.send(f"No approved, rendered clips in job {job_id}. Use <code>/meta {job_id}-3</code> for one clip.")
+        return
+    _ensure_meta(ctx, db.get_job(job_id), [c["rank"] for c in chosen])
+    for c in chosen[:MAX_SEND]:
+        send_meta(ctx, c["id"])
