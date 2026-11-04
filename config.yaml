@@ -39,7 +39,7 @@ llm:
 
 select:
   prefilter: true      # skip transcript windows that are clearly intro / sponsor read / outro / almost no speech
-  rerank: false         # final pass: the LLM re-scores the best candidates with ±context, then the usual pick
+  rerank: true         # final pass: the LLM re-scores the best candidates with ±context, then the usual pick
   rerank_pool: 40      # how many top candidates the re-rank pass looks at
   rerank_context_sec: 20.0  # seconds of context shown before/after each candidate
 

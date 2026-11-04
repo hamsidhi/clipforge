@@ -77,7 +77,7 @@ class LLMConfig(_Section):
 
 class SelectConfig(_Section):
     prefilter: bool = True  # skip transcript windows that are clearly intro / sponsor read / outro / almost no speech
-    rerank: bool = False    # final pass: the LLM re-scores the best candidates with surrounding context
+    rerank: bool = True     # final pass: the LLM re-scores the best candidates with surrounding context
     rerank_pool: int = Field(40, ge=5, le=100)  # how many top candidates the re-rank pass looks at
     rerank_context_sec: float = Field(20, ge=0, le=60)  # context shown before/after each candidate
 
