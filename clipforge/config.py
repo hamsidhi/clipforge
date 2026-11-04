@@ -62,7 +62,7 @@ class TranscriptConfig(_Section):
 class LLMConfig(_Section):
     provider: Literal["ollama", "gemini", "groq", "mock"] = "ollama"
     model: str = "auto"
-    temperature: float = 0.3
+    temperature: float = 0.2
     window_min: float = 8
     overlap_min: float = 1
     max_retries: int = 3
@@ -71,6 +71,8 @@ class LLMConfig(_Section):
     timeout_sec: int = 600
     max_tokens: int = 2048  # cap per LLM reply (6 candidates ≈ 900 tokens)
     keep_alive: str = "30m"  # Ollama: unload the model this long after the last request (server: "2m" frees RAM for Whisper)
+    num_thread: int = Field(0, ge=0)  # Ollama CPU threads; 0 = physical cores
+    seed: int | None = 42  # Ollama sampling seed: same prompt -> same answer (None = random)
 
 
 class ScoringWeights(_Section):

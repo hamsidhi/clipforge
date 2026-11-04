@@ -14,7 +14,8 @@ def get_provider(cfg: LLMConfig, provider: str | None = None, model: str | None 
     if name == "ollama":
         from clipforge.llm.ollama_provider import OllamaProvider
 
-        return OllamaProvider(model, cfg.temperature, cfg.timeout_sec, cfg.ollama_url, cfg.max_tokens, cfg.keep_alive)
+        return OllamaProvider(model, cfg.temperature, cfg.timeout_sec, cfg.ollama_url, cfg.max_tokens, cfg.keep_alive,
+                              cfg.num_thread, cfg.seed)
     if name == "gemini":
         from clipforge.llm.gemini_provider import GeminiProvider
 
