@@ -448,6 +448,22 @@ def on_job_status(job_id: int, status: str, error: str = "") -> None:
         log.warning(f"[telegram] job notification failed: {exc}")
 
 
+def on_transcript_warning(job_id: int, warnings: list[str]) -> None:
+    """The pasted / YouTube transcript may not belong to the video: the job keeps going; one tap switches to Whisper."""
+    try:
+        b = bot()
+        if not b.enabled():
+            return
+        lines = "\n".join(f"• {esc(w)}" for w in warnings[:4])
+        for c in st.chats():
+            ctx = Ctx(b, c.chat_id, c.user_id, c.role)
+            ctx.send(f"⚠️ <b>Job {job_id}</b>: the transcript may not fit this video\n{lines}\n"
+                     "The job keeps going with it.",
+                     [[ctx.btn("🎙 Use Whisper instead", "job.whisper", j=job_id)]] if ctx.owner else None)
+    except Exception as exc:
+        log.warning(f"[telegram] transcript warning failed: {exc}")
+
+
 def on_render(job_id: int, ranks: list[int] | None, ok: bool, error: str = "") -> None:
     """Called after a re-render task: send new versions to the chats that asked for them."""
     try:

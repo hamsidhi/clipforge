@@ -16,6 +16,12 @@ whisper:
   vad: true
   beam_size: auto      # auto -> 5 on GPU, 1 on CPU
 
+transcript:
+  source: auto         # auto (pasted > YouTube captions > Whisper) | pasted | youtube | whisper
+  youtube_languages: [hi, en]  # caption languages tried first (then any)
+  clip_pad_sec: 1.5    # pasted / caption transcripts: Whisper runs only on each chosen clip ± this
+  max_duration_gap: 0.1  # warn when a pasted transcript ends this far (fraction) from the video's end
+
 llm:
   provider: ollama     # ollama | gemini | groq | mock
   model: auto          # auto -> best installed Ollama model / provider default

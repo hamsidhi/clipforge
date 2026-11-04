@@ -29,10 +29,12 @@ CHUNK = 8 * 1024 * 1024
 # what each stage produces — always offered to the server (if it differs from the server's copy), even when the stage
 # was already cached on this laptop: a re-claimed task whose first `complete` got lost must still deliver its results
 STAGE_OUTPUTS = {
-    "download": ["source.mp4", "audio.wav", "info.json", "thumbnail.jpg"],
-    "transcribe": ["transcript.json"],
-    "select": ["candidates.json", "llm_candidates.json", "energy.json", "select_cache/"],
-    "render": ["clips/", "metadata.json", "metadata.csv", "gallery.html", "transcript.json", "scenes.json"],
+    "download": ["source.mp4", "audio.wav", "info.json", "thumbnail.jpg", "captions_youtube.json"],
+    "transcribe": ["transcript.json", "transcript_report.json"],
+    "select": ["candidates.json", "llm_candidates.json", "energy.json", "select_cache/", "transcript.json",
+               "transcript_report.json", "clip_whisper/"],
+    "render": ["clips/", "metadata.json", "metadata.csv", "gallery.html", "transcript.json", "scenes.json",
+               "transcript_report.json", "clip_whisper/"],
 }
 STAGE_STATE = {"download": ["download"], "transcribe": ["transcribe"], "select": ["analyze", "select"], "render": []}
 

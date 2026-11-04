@@ -310,6 +310,12 @@ URL/file ─▶ yt-dlp ─▶ ffmpeg (16 kHz wav) ─▶ faster-whisper (word ti
         ─▶ one ffmpeg filtergraph: per-shot crop/split/blur → concat → captions → loudnorm → H.264
 ```
 
+**Skip the full Whisper run.** Paste a transcript with timestamps in New Job → "Transcript (optional)" (YouTube
+"Show transcript" copy, SRT, VTT or `[hh:mm:ss]` lines), send it to the Telegram bot after the link, or use
+`clipforge run <url> --transcript ep.txt`. Without one, YouTube captions are used when the video has them
+(`transcript.source: auto | pasted | youtube | whisper`). Whisper then only re-times the chosen clips (±1.5 s); the
+job page shows which transcript was used and the time saved — about 45 of 54 minutes for a 2 h episode on CPU.
+
 For design decisions and the reasons behind them, see [DECISIONS.md](DECISIONS.md) and [CLAUDE.md](CLAUDE.md).
 
 ## 7. Troubleshooting

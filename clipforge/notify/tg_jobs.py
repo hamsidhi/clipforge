@@ -74,9 +74,11 @@ def _wizard_text(w: dict) -> str:
     sec = w.get("section")
     section = f"{fmt_dur(sec[0])}–{fmt_dur(sec[1])}" if sec else "full video"
     src = esc(w.get("title") or w.get("url") or "")
+    tx = f"pasted ({w['tx_lines']} lines)" if w.get("transcript") else "auto (YouTube captions, else Whisper)"
     return (f"🎬 <b>New job</b>\n{src}\n\n"
             f"Clips: <b>{pick('clips')}</b> · Part: <b>{section}</b>\n"
-            f"LLM: <b>{pick('provider')}</b> · Layout: <b>{pick('layout')}</b> · Captions: <b>{pick('script')}</b>\n\n"
+            f"LLM: <b>{pick('provider')}</b> · Layout: <b>{pick('layout')}</b> · Captions: <b>{pick('script')}</b>\n"
+            f"Transcript: <b>{tx}</b>\n\n"
             "Tap to change, then Start.")
 
 
@@ -113,6 +115,116 @@ def start_wizard(ctx: Ctx, url: str | None = None, upload_id: str | None = None,
     mid = ctx.send(_wizard_text(w), _wizard_buttons(ctx, wid, w))
     w["msg"] = mid
     st.kv_set(f"wiz:{wid}", w, dt.timedelta(days=1))
+    ask_transcript(ctx, wid)
+
+
+# ============================================================================ optional transcript (skips full-video Whisper)
+TX_MAX_FILE = 5 * 1024 * 1024
+
+
+def ask_transcript(ctx: Ctx, wid: str) -> None:
+    st.set_conversation(ctx.chat_id, "wiz_transcript", {"w": wid})
+    ctx.send("📝 Got a transcript with timestamps (YouTube \"Show transcript\", .srt, .vtt)? Send it as a file or paste "
+             "the text (several messages are fine) — it saves the full Whisper run. Or tap Skip.",
+             [[ctx.btn("⏭ Skip", "wiz.tx_skip", w=wid)]], quiet=True)
+
+
+def _tx_add(wid: str, text: str) -> dict:
+    from clipforge.stages import transcript_input as ti
+
+    _, w = _wiz({"w": wid})
+    buf = ((w.get("tx_buf") or "") + "\n" + text).strip("\n")
+    if len(buf) > ti.MAX_INPUT_CHARS:
+        raise ValueError("That transcript is too long.")
+    w["tx_buf"] = buf
+    st.kv_set(f"wiz:{wid}", w, dt.timedelta(days=1))
+    return w
+
+
+def _tx_use(ctx: Ctx, wid: str) -> None:
+    """Parse what was sent; errors (with line numbers) keep the conversation open for a corrected version."""
+    from clipforge.stages import transcript_input as ti
+
+    _, w = _wiz({"w": wid})
+    try:
+        p = ti.parse_or_raise(w.get("tx_buf") or "")
+    except ti.TranscriptParseError as exc:
+        w["tx_buf"] = ""
+        st.kv_set(f"wiz:{wid}", w, dt.timedelta(days=1))
+        st.set_conversation(ctx.chat_id, "wiz_transcript", {"w": wid})
+        errs = "\n".join(f"• {esc(e)}" for e in exc.errors[:6])
+        ctx.send(f"❌ I couldn't read that transcript:\n{errs}\nSend a corrected one, or tap Skip.",
+                 [[ctx.btn("⏭ Skip", "wiz.tx_skip", w=wid)]])
+        return
+    st.clear_conversation(ctx.chat_id)
+    w.update(transcript=w.pop("tx_buf"), tx_lines=len(p.lines))
+    st.kv_set(f"wiz:{wid}", w, dt.timedelta(days=1))
+    ctx.edit(_wizard_text(w), _wizard_buttons(ctx, wid, w), message_id=w.get("msg"))
+    ctx.send(f"✅ Transcript added: {len(p.lines)} lines ({p.fmt}, up to {fmt_dur(p.lines[-1].start)}). "
+             "Whisper will only run on the chosen clips. Tap Start above.")
+
+
+@step("wiz_transcript")
+def _wiz_transcript_step(ctx: Ctx, text: str, p: dict) -> None:
+    from clipforge.stages import transcript_input as ti
+
+    wid = p["w"]
+    if URL_RE.fullmatch(text.strip()):  # a new link instead of a transcript
+        start_wizard(ctx, url=text.strip())
+        return
+    w = _tx_add(wid, text)
+    st.set_conversation(ctx.chat_id, "wiz_transcript", {"w": wid})
+    lines = ti.parse_text(w["tx_buf"]).lines
+    upto = f", up to {fmt_dur(lines[-1].start)}" if lines else ""
+    ctx.send(f"📝 Got {len(lines)} timed lines so far{upto}. Send more, or:",
+             [[ctx.btn("✅ Use it", "wiz.tx_done", w=wid), ctx.btn("⏭ Skip", "wiz.tx_skip", w=wid)]], quiet=True)
+
+
+@callback("wiz.tx_done")
+def _wiz_tx_done(ctx: Ctx, p: dict) -> None:
+    ctx.require_owner()
+    _tx_use(ctx, p["w"])
+
+
+@callback("wiz.tx_skip")
+def _wiz_tx_skip(ctx: Ctx, p: dict) -> None:
+    conv = st.get_conversation(ctx.chat_id)
+    if conv and conv[0] == "wiz_transcript":
+        st.clear_conversation(ctx.chat_id)
+    try:
+        wid, w = _wiz(p)
+        w.pop("tx_buf", None)
+        st.kv_set(f"wiz:{wid}", w, dt.timedelta(days=1))
+    except ValueError:
+        pass
+    ctx.edit("⏭ No transcript — YouTube captions or Whisper will be used. Tap Start above.")
+
+
+def handle_transcript_file(ctx: Ctx, msg: dict) -> bool:
+    """A .txt/.srt/.vtt sent while the wizard waits for a transcript."""
+    doc = msg.get("document") or {}
+    name = str(doc.get("file_name") or "")
+    if not name.lower().endswith((".txt", ".srt", ".vtt")):
+        return False
+    conv = st.get_conversation(ctx.chat_id)
+    if not conv or conv[0] != "wiz_transcript":
+        ctx.send("📝 To use a transcript, send the YouTube link (or video) first, then the transcript file.")
+        return True
+    ctx.require_owner()
+    if int(doc.get("file_size") or 0) > TX_MAX_FILE:
+        ctx.send("That file is too big for a transcript (max 5 MB).")
+        return True
+    import tempfile
+
+    info = ctx.api.call("getFile", file_id=doc["file_id"])
+    with tempfile.TemporaryDirectory() as d:
+        dest = Path(d) / "transcript.txt"
+        ctx.api.download(info["file_path"], dest)
+        text = dest.read_bytes()[:TX_MAX_FILE].decode("utf-8-sig", "replace")
+    wid = conv[1]["w"]
+    _tx_add(wid, text)
+    _tx_use(ctx, wid)
+    return True
 
 
 def _wiz(payload: dict) -> tuple[str, dict]:
@@ -182,7 +294,11 @@ def _wiz_start(ctx: Ctx, p: dict) -> None:
         settings["caption_script"] = w["script"]
     if w.get("section"):
         settings["section"] = tuple(w["section"])
-    body = job_svc.JobCreate(url=w.get("url"), upload_id=w.get("upload_id"), settings=job_svc.JobSettings(**settings))
+    conv = st.get_conversation(ctx.chat_id)
+    if conv and conv[0] == "wiz_transcript":
+        st.clear_conversation(ctx.chat_id)
+    body = job_svc.JobCreate(url=w.get("url"), upload_id=w.get("upload_id"), settings=job_svc.JobSettings(**settings),
+                             transcript=w.get("transcript"))
     job = job_svc.create_job(body, remote=True)
     set_current_job(ctx.chat_id, job["id"])
     track(job["id"], ctx.chat_id, ctx.message_id or w.get("msg"))
@@ -192,6 +308,8 @@ def _wiz_start(ctx: Ctx, p: dict) -> None:
 
 # ============================================================================ files sent to the bot
 def handle_file(ctx: Ctx, msg: dict) -> bool:
+    if handle_transcript_file(ctx, msg):
+        return True
     f = msg.get("video") or msg.get("audio") or msg.get("voice") or msg.get("video_note")
     doc = msg.get("document")
     if not f and doc and str(doc.get("mime_type", "")).startswith(("video/", "audio/")):
@@ -245,7 +363,24 @@ def progress_text(job: db.Job | None) -> str:
     pct = job.progress or 0
     eta = f" · ~{fmt_dur(job.eta_sec)} left" if job.eta_sec else ""
     return (f"{head}\n▶ {STAGE_LABEL.get(stage, stage)} {bar(pct)} {round(pct * 100)}%{eta}\n{marks}\n"
-            f"📍 {esc(where)}")
+            f"📍 {esc(where)}{transcript_line(job)}")
+
+
+def transcript_line(job: db.Job) -> str:
+    """'📝 Transcript: pasted · ~52 min saved' once the transcribe stage ran."""
+    rep = job_svc.transcript_status(job)
+    if not rep:
+        return ""
+    saved = f" · ~{round(rep['saved_sec'] / 60)} min saved" if rep.get("saved_sec", 0) >= 60 else ""
+    warn = " · ⚠️ check it" if rep.get("warnings") and rep.get("source") != "whisper" else ""
+    return f"\n📝 Transcript: {esc(rep.get('label', rep.get('source', '')))}{saved}{warn}"
+
+
+@callback("job.whisper")
+def _job_whisper(ctx: Ctx, p: dict) -> None:
+    ctx.require_owner()
+    job_svc.use_whisper(int(p["j"]))
+    ctx.edit(f"🎙 Job {p['j']}: transcribing with Whisper instead — the job starts again from the transcript.")
 
 
 def final_text(job: db.Job) -> tuple[str, str]:

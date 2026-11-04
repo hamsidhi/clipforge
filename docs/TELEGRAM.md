@@ -147,6 +147,7 @@ To go back: delete `api_base_url`, call `close` on the local server, wait 10 min
 | `POST /api/jobs/{job_id}/cancel` | Job page | `/cancel 12`, ⏹ button | |
 | `POST /api/jobs/{job_id}/retry` | Job page | `/retry 12`, 🔁 button | |
 | `POST /api/jobs/{job_id}/rerun/{stage}` | — / `clipforge select --force` etc. | `/rerun 12 select`, ♻ button | |
+| `POST /api/jobs/{job_id}/transcript/whisper` | — / `clipforge run … --transcript-source whisper` | 🎙 Use Whisper instead (after a transcript warning) | |
 | `GET /api/jobs/{job_id}/events` | live progress (SSE) | live progress message | |
 | `GET /api/jobs/{job_id}/thumbnail` | Dashboard | album | |
 | `GET /api/jobs/{job_id}/clips` | Clips page | `/clips 12` | |

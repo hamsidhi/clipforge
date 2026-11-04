@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { Clock, FileVideo, Link2, Loader2, MonitorPlay, Sparkles, Upload, X } from 'lucide-react'
+import { Clock, FileText, FileVideo, Link2, Loader2, MonitorPlay, Sparkles, Upload, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { api, uploadFile } from '@/api/client'
 import { formatDuration } from '@/api/hooks'
@@ -15,6 +15,7 @@ import { Label } from '@/components/ui/label'
 import { Progress } from '@/components/ui/progress'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Slider } from '@/components/ui/slider'
+import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
 
@@ -52,6 +53,8 @@ export default function NewJob() {
   const [model, setModel] = useState('auto')
   const [secStart, setSecStart] = useState('')
   const [secEnd, setSecEnd] = useState('')
+  const [transcript, setTranscript] = useState('')
+  const txRef = useRef<HTMLInputElement>(null)
 
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings })
   const ollama = useQuery({ queryKey: ['ollama-models'], queryFn: api.ollamaModels, staleTime: 30_000 })
@@ -117,9 +120,9 @@ export default function NewJob() {
       if (file) {
         setUploadPct(0)
         const upload_id = await uploadFile(file, setUploadPct)
-        return api.createJob({ upload_id, settings: s })
+        return api.createJob({ upload_id, settings: s, transcript: transcript || undefined })
       }
-      return api.createJob({ url: url.trim(), settings: s })
+      return api.createJob({ url: url.trim(), settings: s, transcript: transcript || undefined })
     },
     onSuccess: (job) => {
       toast.success('Job started')
@@ -225,6 +228,51 @@ export default function NewJob() {
                       <span className="font-medium text-foreground">Drop a video file</span> <span className="text-muted-foreground">or click to browse</span>
                     </div>
                     <div className="text-xs text-muted-foreground">mp4, mkv, mov, webm — large files are fine</div>
+                  </>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Transcript (optional)</CardTitle>
+              <CardDescription>
+                Paste a transcript with timestamps (YouTube “Show transcript”, SRT, VTT or [hh:mm:ss] lines) to skip
+                the full Whisper run — Whisper then only re-times the chosen clips. Without one, YouTube captions are
+                used when the video has them.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <Textarea
+                className="h-40 font-mono text-xs"
+                placeholder={'0:00\nAaj hum baat karenge…\n0:07\nPaisa kaise banta hai…'}
+                value={transcript}
+                onChange={(e) => setTranscript(e.target.value)}
+              />
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  ref={txRef}
+                  type="file"
+                  accept=".srt,.vtt,.txt,text/plain"
+                  className="hidden"
+                  onChange={async (e) => {
+                    const f = e.target.files?.[0]
+                    if (f) setTranscript(await f.text())
+                    e.target.value = ''
+                  }}
+                />
+                <Button type="button" variant="outline" size="sm" onClick={() => txRef.current?.click()}>
+                  <FileText className="size-4" /> Upload .srt/.vtt/.txt
+                </Button>
+                {transcript && (
+                  <>
+                    <span className="text-xs text-muted-foreground">
+                      {transcript.split('\n').filter((l) => /\d:\d\d/.test(l)).length} timed lines
+                    </span>
+                    <Button type="button" variant="ghost" size="sm" onClick={() => setTranscript('')}>
+                      <X className="size-4" /> Clear
+                    </Button>
                   </>
                 )}
               </div>

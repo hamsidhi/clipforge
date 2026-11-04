@@ -70,6 +70,9 @@ def run(
     language: Optional[str] = typer.Option(None, "--language", help="hi | en | auto"),
     section: Optional[str] = typer.Option(None, "--section", help="Only process part of the video, e.g. 10:00-25:00"),
     force: bool = typer.Option(False, "--force", help="Ignore caches for selection + render"),
+    transcript: Optional[Path] = typer.Option(None, "--transcript",
+                                              help="Transcript with timestamps (.txt YouTube copy / .srt / .vtt): skips full-video Whisper"),
+    transcript_source: Optional[str] = typer.Option(None, "--transcript-source", help="auto | pasted | youtube | whisper"),
 ) -> None:
     """Full pipeline: download → transcribe → analyze → select → reframe → captions → render → metadata."""
     from clipforge import pipeline
@@ -77,10 +80,22 @@ def run(
     cfg = _cfg({
         "clips.count": clips, "clips.min_sec": min_sec, "clips.max_sec": max_sec, "llm.provider": provider,
         "llm.model": model, "captions.script": caption_script, "reframe.layout": layout,
-        "whisper.model": whisper_model, "whisper.language": language,
+        "whisper.model": whisper_model, "whisper.language": language, "transcript.source": transcript_source,
     })
     if provider and not model:
         cfg = cfg.with_overrides({"llm.model": "auto"} if provider != load_config().llm.provider else {})
+    if transcript:
+        from clipforge.stages import transcript_input as ti
+        from clipforge.workspace import Workspace, video_id_for
+
+        sec = _parse_section(section)
+        try:
+            p = ti.save_input(Workspace(cfg.workspace, video_id_for(source, sec)),
+                              transcript.read_text(encoding="utf-8-sig"), sec)
+        except (OSError, ti.TranscriptParseError) as exc:
+            _fail(exc)
+            return
+        console.print(f"Transcript: {len(p.lines)} lines ({p.fmt}) — Whisper runs only on the chosen clips")
     try:
         ws = pipeline.run_all(source, cfg, CliReporter(), section=_parse_section(section), force=force)
     except Exception as exc:

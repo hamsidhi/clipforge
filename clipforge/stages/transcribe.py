@@ -39,7 +39,8 @@ def load_wav(path: Path) -> np.ndarray:
 CHECKPOINT_EVERY = 120  # seconds of wall-clock time between partial saves
 
 
-def run(ws: Workspace, cfg: WhisperConfig, reporter: ProgressReporter, duration: float) -> Transcript:
+def load_model(cfg: WhisperConfig, reporter: ProgressReporter):
+    """(model, model_name, device) — CUDA falls back to CPU int8 when its install is broken."""
     from faster_whisper import WhisperModel
 
     model_name, device, compute_type = whisper_defaults(cfg.model, cfg.compute_type)
@@ -55,6 +56,11 @@ def run(ws: Workspace, cfg: WhisperConfig, reporter: ProgressReporter, duration:
             model = WhisperModel(model_name, device="cpu", compute_type="int8", cpu_threads=_threads())
         else:
             raise RuntimeError(f"Could not load Whisper model '{model_name}': {exc}") from exc
+    return model, model_name, device
+
+
+def run(ws: Workspace, cfg: WhisperConfig, reporter: ProgressReporter, duration: float) -> Transcript:
+    model, model_name, device = load_model(cfg, reporter)
 
     language = None if cfg.language in ("auto", "", None) else cfg.language
     audio = load_wav(ws.audio)

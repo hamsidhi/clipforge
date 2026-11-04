@@ -546,3 +546,14 @@ old server from publishing when it comes back is on you (stop it; the fence is s
 - Follow-up: `save_config` used to rewrite the whole file (losing comments) when a key was missing from it. It now
   inserts missing keys at the end of their section (or appends the section), so an older config.yaml keeps its
   comments and your own values. Restarting `clipforge ui` after pulling is still required for new code.
+
+## Transcript input + clip-only Whisper (2026-11-05)
+- Full-video Whisper is the slowest stage (~0.45× real time on CPU: ~54 min for 2 h). A pasted transcript or YouTube
+  captions replace it (`transcript.source: auto` = pasted > captions with word offsets (json3 auto) > captions without
+  > Whisper). Lines without word timing get their words spread evenly — fine for the LLM and for snapping.
+- After refine, faster-whisper runs only on each chosen clip ± `clip_pad_sec` (ffmpeg cut of audio.wav), the exact
+  words are spliced into transcript.json (`exact_ranges`), boundaries are snapped again (only onto exact words) and
+  captions use them. Cached per range in `clip_whisper/`, so re-renders and trims inside a range never re-run it.
+- The transcribe fingerprint only changes when a pasted transcript or a non-auto source is set, so jobs that Whisper
+  already transcribed keep their cache. Sanity checks (end time >10% off the duration, wrong script) only warn; the
+  job keeps going and "Use Whisper instead" (web / Telegram) switches the job's source and re-runs from transcribe.

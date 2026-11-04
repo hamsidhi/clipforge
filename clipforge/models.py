@@ -61,6 +61,9 @@ class Transcript(BaseModel):
     duration: float
     segments: list[Segment]
     romanized: bool = False
+    source: str = "whisper"  # whisper | pasted | youtube
+    word_timing: Literal["exact", "estimated"] = "exact"  # estimated = words spread evenly over each line
+    exact_ranges: list[tuple[float, float]] = []  # estimated transcripts: ranges re-timed by clip-level Whisper
 
     def all_words(self) -> list[Word]:
         return [w for s in self.segments for w in s.words]

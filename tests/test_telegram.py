@@ -349,7 +349,7 @@ def test_big_upload_explains_limit_and_small_one_starts_wizard(tg):
     assert "20 MB" in fake.last_text()
     fake.files["videos/F2.mp4"] = b"\x00" * 5000
     send(b, fake, "", video={"file_id": "F2", "file_unique_id": "u2", "file_size": 5000, "file_name": "talk.mp4"})
-    assert "New job" in fake.last_text() and "talk.mp4" in fake.last_text()
+    assert "New job" in fake.texts()[-2] and "talk.mp4" in fake.texts()[-2]
     press(b, fake, "Start with my defaults")
     assert _submitted and _submitted[-1][0] == "pipeline"
     job = job_svc.list_jobs()[0]
@@ -474,7 +474,7 @@ def test_e2e_link_wizard_progress_clips_approve_schedule_queue(tg, monkeypatch):
         s.commit()
     # 1. paste a link → options wizard → change clips to 15 → start
     send(b, fake, "look https://youtu.be/vidA?si=xyz")
-    assert "New job" in fake.last_text()
+    assert "New job" in fake.texts()[-2] and "Skip" in fake.last_text()
     press(b, fake, "15")
     assert "Clips: <b>15</b>" in fake.last_text()
     press(b, fake, "▶ Start")
@@ -611,3 +611,59 @@ def test_metadata_not_ready_then_meta_generates(tg):
     fake.clear()
     send(b, fake, f"/meta {job.id}")  # all approved clips of the job
     assert "<b>Instagram caption</b>" in fake.last_text() and not fake.of("sendVideo")
+
+
+# ============================================================================ transcript after the link (skips full Whisper)
+def test_link_then_pasted_transcript_then_start(tg):
+    from clipforge.api import db
+    from clipforge.notify import tg_store as st
+
+    b, fake, tmp = tg
+    send(b, fake, "/new https://youtu.be/vidT")
+    assert "Skip" in fake.last_text() and st.get_conversation(OWNER)[0] == "wiz_transcript"
+    send(b, fake, "0:00\naaj hum baat karenge\n0:05 paisa kaise banta hai")  # two messages, like a long paste
+    send(b, fake, "1:02 aakhri line")
+    assert "Got 3 timed lines" in fake.last_text()
+    press(b, fake, "✅ Use it")
+    assert "Transcript added: 3 lines" in fake.last_text() and st.get_conversation(OWNER) is None
+    assert any("Transcript: <b>pasted (3 lines)</b>" in t for t in fake.texts())
+    press(b, fake, "▶ Start with my defaults")
+    _, job_id, _ = _submitted[-1]
+    job = db.get_job(job_id)
+    saved = json.loads((tmp / "ws" / job.video_id / "transcript_input.json").read_text(encoding="utf-8"))
+    assert "paisa kaise banta hai" in saved["text"]
+
+
+def test_transcript_errors_show_line_numbers_and_srt_file_works(tg):
+    from clipforge.notify import tg_store as st
+
+    b, fake, tmp = tg
+    send(b, fake, "https://youtu.be/vidS")
+    send(b, fake, "0:10 a\n0:20 b\n0:05 c")
+    press(b, fake, "✅ Use it")
+    assert "line 3" in fake.last_text() and st.get_conversation(OWNER)[0] == "wiz_transcript"
+    fake.files["docs/T1.srt"] = b"1\n00:00:01,000 --> 00:00:03,000\nhello\n\n2\n00:00:04,000 --> 00:00:06,000\nworld\n"
+    fake.files["videos/T1.mp4"] = fake.files["docs/T1.srt"]  # the fake's getFile answers videos/<id>.mp4
+    send(b, fake, "", document={"file_id": "T1", "file_name": "ep.srt", "file_size": 80, "mime_type": "application/x-subrip"})
+    assert "Transcript added: 2 lines (srt" in fake.last_text()
+    send(b, fake, "https://youtu.be/vidS2", )
+    press(b, fake, "⏭ Skip")
+    assert st.get_conversation(OWNER) is None and "No transcript" in fake.last_text()
+
+
+def test_transcript_warning_offers_whisper(tg, monkeypatch):
+    from clipforge.api import db
+    from clipforge.notify import telegram
+
+    b, fake, tmp = tg
+    job, ws = seed_job(tmp)
+    ws.write_json(ws.dir / "transcript_report.json", {"source": "pasted", "label": "pasted", "warnings": ["The transcript ends at 4:00 but the video is 10:00 long"], "saved_sec": 3000})
+    fake.clear()
+    telegram.on_transcript_warning(job.id, ["The transcript ends at 4:00 but the video is 10:00 long"])
+    assert "may not fit" in fake.last_text() and "4:00" in fake.last_text()
+    press(b, fake, "🎙 Use Whisper instead")
+    assert json.loads(db.get_job(job.id).settings_json)["transcript_source"] == "whisper"
+    assert _submitted[-1][:2] == ("pipeline", job.id) and "Whisper instead" in fake.last_text()
+    from clipforge.notify import tg_jobs
+
+    assert "Transcript: pasted · ~50 min saved · ⚠️" in tg_jobs.transcript_line(db.get_job(job.id))

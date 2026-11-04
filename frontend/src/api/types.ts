@@ -12,6 +12,7 @@ export interface JobSettings {
   whisper_model?: string
   language?: string
   section?: [number, number]
+  transcript_source?: 'auto' | 'pasted' | 'youtube' | 'whisper'
 }
 
 export type Layout = 'auto' | 'track' | 'split' | 'blur'
@@ -36,6 +37,7 @@ export interface Job {
   n_rendered: number
   busy: boolean
   thumbnail_url: string | null
+  transcript?: TranscriptStatus | null
   created_at: string
   updated_at: string
   finished_at: string | null
@@ -199,3 +201,13 @@ export type JobEvent =
   | { type: 'clips'; count: number; seq: number }
   | { type: 'render_done'; ranks: number[] | null; seq: number }
   | { type: 'render_failed'; error: string; ranks: number[] | null; seq: number }
+
+export interface TranscriptStatus {
+  source: 'pasted' | 'youtube' | 'whisper'
+  label: string
+  word_timing: 'exact' | 'estimated'
+  warnings: string[]
+  saved_sec?: number
+  full_whisper_est_sec?: number
+  clip_whisper_sec?: number
+}

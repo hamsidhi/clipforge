@@ -28,7 +28,7 @@ from clipforge.utils.log import CancelledError, log
 SETTING_KEYS = {
     "clips": "clips.count", "min_sec": "clips.min_sec", "max_sec": "clips.max_sec",
     "caption_script": "captions.script", "caption_preset": "captions.preset", "layout": "reframe.layout",
-    "provider": "llm.provider", "model": "llm.model", "whisper_model": "whisper.model", "language": "whisper.language",
+    "provider": "llm.provider", "model": "llm.model", "whisper_model": "whisper.model", "language": "whisper.language", "transcript_source": "transcript.source",
 }
 
 
@@ -77,6 +77,22 @@ class ApiReporter:
             self.log(f"{name}: {status}{' — ' + message if message else ''}")
         if name == "download" and status in ("done", "skipped"):
             self._fill_job_info()
+        if name == "transcribe" and status == "done":
+            self._transcript_warnings()
+
+    def _transcript_warnings(self) -> None:
+        """A pasted/YouTube transcript that may not fit the video → Telegram asks whether to use Whisper instead."""
+        job = db.get_job(self.job_id)
+        if not job or not job.video_id:
+            return
+        from clipforge.stages import transcript_input as ti
+
+        rep = ti.read_report(self.cfg.workspace / job.video_id) or {}
+        if rep.get("warnings") and rep.get("source") != "whisper":
+            self.m.publish(self.job_id, {"type": "transcript_warning", "warnings": rep["warnings"]})
+            from clipforge.notify import telegram
+
+            threading.Thread(target=telegram.on_transcript_warning, args=(self.job_id, rep["warnings"]), daemon=True).start()
 
     def _fill_job_info(self) -> None:
         """Show title/duration on the dashboard right after the download, not only after transcription."""

@@ -82,6 +82,11 @@ def rerun_stage(job_id: int, stage: str) -> dict:
     return job_svc.rerun_stage(job_id, stage)
 
 
+@router.post("/jobs/{job_id}/transcript/whisper", summary="Pasted/YouTube transcript looked wrong: use Whisper instead")
+def use_whisper(job_id: int) -> dict:
+    return job_svc.use_whisper(job_id)
+
+
 @router.get("/jobs/{job_id}/events", summary="Server-Sent Events: stage, progress, ETA, logs")
 async def job_events(job_id: int, request: Request) -> StreamingResponse:
     job = _job_or_404(job_id)

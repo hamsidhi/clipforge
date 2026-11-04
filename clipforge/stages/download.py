@@ -70,6 +70,7 @@ def _download_youtube(url: str, ws: Workspace, reporter: ProgressReporter, secti
     if cookies and cookies.exists():
         opts["cookiefile"] = str(cookies)  # optional, server only — see AUTOMATION_GUIDE Part I (account risk)
     info = _extract_with_backoff(yt_dlp, opts, url, scfg.download_max_attempts, reporter)
+    _fetch_captions(yt_dlp, info, ws, section, opts.get("cookiefile"))
     # yt-dlp may have produced source.mp4 or source.mkv/webm depending on streams
     if not ws.source.exists():
         produced = sorted(ws.dir.glob("source.*"))
@@ -79,6 +80,23 @@ def _download_youtube(url: str, ws: Workspace, reporter: ProgressReporter, secti
         run_ffmpeg(["-i", str(produced[0]), "-c", "copy", "-movflags", "+faststart", str(ws.source)])
         produced[0].unlink(missing_ok=True)
     return info
+
+
+def _fetch_captions(yt_dlp, info: dict, ws: Workspace, section: tuple[float, float] | None, cookiefile: str | None) -> None:
+    """YouTube captions (manual + auto-generated, json3) for transcript.source auto/youtube — saves a full Whisper run."""
+    from clipforge.config import load_config
+    from clipforge.stages import transcript_input as ti
+
+    tcfg = load_config().transcript
+    if tcfg.source == "whisper":
+        return
+    try:
+        with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, **({"cookiefile": cookiefile} if cookiefile else {})}) as ydl:
+            n = ti.fetch_youtube(info, ws, tcfg.youtube_languages, section, lambda u: ydl.urlopen(u).read())
+        if n:
+            log.info(f"Saved {n} YouTube caption track(s)")
+    except Exception as exc:  # captions are an optimisation: Whisper still works without them
+        log.warning(f"Couldn't fetch YouTube captions ({exc}); Whisper will transcribe instead.")
 
 
 def _extract_with_backoff(yt_dlp, opts: dict, url: str, attempts: int, reporter: ProgressReporter,

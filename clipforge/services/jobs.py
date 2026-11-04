@@ -107,6 +107,7 @@ def job_out(job: db.Job) -> dict:
     else:
         d["n_rendered"] = 0
     d["runs_on"] = where_running(job.id)  # type: ignore[arg-type]
+    d["transcript"] = transcript_status(job)
     return d
 
 
@@ -172,12 +173,14 @@ class JobSettings(BaseModel):
     whisper_model: Optional[str] = None
     language: Optional[str] = None
     section: Optional[tuple[float, float]] = None
+    transcript_source: Optional[Literal["auto", "pasted", "youtube", "whisper"]] = None
 
 
 class JobCreate(BaseModel):
     url: Optional[str] = None
     upload_id: Optional[str] = None
     settings: JobSettings = JobSettings()
+    transcript: Optional[str] = None  # pasted transcript with timestamps (YouTube copy, SRT, VTT, [hh:mm:ss] text)
 
 
 def create_job(body: JobCreate, remote: bool = False) -> dict:
@@ -208,14 +211,48 @@ def create_job(body: JobCreate, remote: bool = False) -> dict:
         raise BadRequest("Provide a YouTube URL or upload a file.")
     _check_disk_for_new_job()
     section = tuple(settings["section"]) if settings.get("section") else None
+    pasted = None
+    if body.transcript and body.transcript.strip():
+        from clipforge.stages import transcript_input as ti
+
+        try:
+            pasted = ti.parse_or_raise(body.transcript)
+        except ti.TranscriptParseError as exc:
+            raise BadRequest(str(exc))
     with db.session() as s:
         job = db.Job(source=source, title=title, settings_json=json.dumps(settings),
                      video_id=video_id_for(source, section))  # type: ignore[arg-type]
         s.add(job)
         s.commit()
         s.refresh(job)
+    if pasted is not None:
+        from clipforge.stages import transcript_input as ti
+
+        ti.save_input(Workspace(cfg().workspace, job.video_id), body.transcript or "", section)  # type: ignore[arg-type]
     manager.submit("pipeline", job.id)  # type: ignore[arg-type]
     return job_out(job)
+
+
+def transcript_status(job: db.Job) -> dict | None:
+    """{source, label, word_timing, warnings, saved_sec, …} once the transcribe stage ran."""
+    if not job.video_id:
+        return None
+    from clipforge.stages import transcript_input as ti
+
+    return ti.read_report(cfg().workspace / job.video_id)
+
+
+def use_whisper(job_id: int) -> dict:
+    """The transcript looked wrong: transcribe this job with Whisper after all (and redo everything after it)."""
+    job = job_or_404(job_id)
+    if job.settings.get("transcript_source") == "whisper":
+        raise Conflict("This job already uses Whisper.")
+    db.update_job(job_id, settings_json=json.dumps({**job.settings, "transcript_source": "whisper"}))
+    if manager.busy(job_id):  # it kept going with the transcript: stop it, the new run starts after it
+        manager.cancel(job_id)
+    # the transcribe fingerprint includes the source → transcribe runs again, and select after it
+    manager.submit("pipeline", job_id, {"force_select": True})
+    return job_out(db.get_job(job_id) or job)
 
 
 def _check_disk_for_new_job() -> None:

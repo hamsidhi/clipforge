@@ -71,12 +71,13 @@ const json = (body: unknown) => JSON.stringify(body)
 export const api = {
   jobs: () => request<Job[]>('/api/jobs'),
   job: (id: number) => request<Job>(`/api/jobs/${id}`),
-  createJob: (body: { url?: string; upload_id?: string; settings: JobSettings }) =>
+  createJob: (body: { url?: string; upload_id?: string; settings: JobSettings; transcript?: string }) =>
     request<Job>('/api/jobs', { method: 'POST', body: json(body) }),
   deleteJob: (id: number, deleteFiles = false) =>
     request<{ ok: boolean }>(`/api/jobs/${id}?delete_files=${deleteFiles}`, { method: 'DELETE' }),
   cancelJob: (id: number) => request<{ ok: boolean }>(`/api/jobs/${id}/cancel`, { method: 'POST' }),
   retryJob: (id: number) => request<Job>(`/api/jobs/${id}/retry`, { method: 'POST' }),
+  useWhisper: (id: number) => request<Job>(`/api/jobs/${id}/transcript/whisper`, { method: 'POST' }),
   clips: (jobId: number) => request<Clip[]>(`/api/jobs/${jobId}/clips`),
   renderAll: (jobId: number, body: { ranks?: number[] | null; force?: boolean; only_approved?: boolean; only_stale?: boolean } = {}) =>
     request<{ ok: boolean }>(`/api/jobs/${jobId}/render-all`, { method: 'POST', body: json(body) }),

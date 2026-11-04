@@ -52,6 +52,13 @@ class WhisperConfig(_Section):
     beam_size: int | Literal["auto"] = "auto"  # auto -> 5 on GPU, 1 (greedy, ~2x faster) on CPU
 
 
+class TranscriptConfig(_Section):
+    source: Literal["auto", "pasted", "youtube", "whisper"] = "auto"  # auto: pasted > YouTube captions > Whisper
+    youtube_languages: list[str] = ["hi", "en"]  # caption languages to try first (then any)
+    clip_pad_sec: float = 1.5  # estimated timing: Whisper runs only on each chosen clip ± this
+    max_duration_gap: float = 0.10  # warn when a pasted transcript's end is this far (fraction) from the video's
+
+
 class LLMConfig(_Section):
     provider: Literal["ollama", "gemini", "groq", "mock"] = "ollama"
     model: str = "auto"
@@ -266,6 +273,7 @@ class ServerConfig(_Section):
 class Config(_Section):
     clips: ClipsConfig = ClipsConfig()
     whisper: WhisperConfig = WhisperConfig()
+    transcript: TranscriptConfig = TranscriptConfig()
     llm: LLMConfig = LLMConfig()
     scoring_weights: ScoringWeights = ScoringWeights()
     reframe: ReframeConfig = ReframeConfig()

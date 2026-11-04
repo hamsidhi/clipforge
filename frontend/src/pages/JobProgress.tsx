@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, Grid3x3, Loader2, RotateCcw, Square, Terminal } from 'lucide-react'
+import { ChevronDown, FileText, Grid3x3, Loader2, Mic, RotateCcw, Square, Terminal, TriangleAlert } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/api/client'
 import { formatDuration, useClips, useJob, useJobEvents } from '@/api/hooks'
@@ -38,6 +38,15 @@ export default function JobProgress() {
     mutationFn: () => api.retryJob(jobId),
     onSuccess: () => {
       toast.success('Restarted — finished stages are reused')
+      qc.invalidateQueries({ queryKey: ['job', jobId] })
+    },
+    onError: (e) => toast.error(e.message),
+  })
+
+  const whisper = useMutation({
+    mutationFn: () => api.useWhisper(jobId),
+    onSuccess: () => {
+      toast.success('Transcribing with Whisper instead')
       qc.invalidateQueries({ queryKey: ['job', jobId] })
     },
     onError: (e) => toast.error(e.message),
@@ -95,6 +104,35 @@ export default function JobProgress() {
               <ProgressStepper stages={stages} failed={job.status === 'failed'} />
             </CardContent>
           </Card>
+          {job.transcript && (
+            <Card className="py-3">
+              <CardContent className="space-y-2 px-4 text-sm">
+                <div className="flex items-center gap-2">
+                  <FileText className="size-4 text-muted-foreground" />
+                  <span>
+                    Transcript: <b>{job.transcript.source === 'youtube' ? 'YouTube captions' : job.transcript.source === 'pasted' ? 'pasted' : 'Whisper'}</b>
+                  </span>
+                  {(job.transcript.saved_sec ?? 0) >= 60 && (
+                    <span className="text-xs text-muted-foreground">
+                      · ~{Math.round((job.transcript.saved_sec ?? 0) / 60)} min saved
+                    </span>
+                  )}
+                </div>
+                {job.transcript.source !== 'whisper' && job.transcript.warnings.length > 0 && (
+                  <div className="space-y-2 rounded-md border border-yellow-500/40 bg-yellow-500/10 p-3 text-xs">
+                    {job.transcript.warnings.map((w) => (
+                      <div key={w} className="flex gap-2">
+                        <TriangleAlert className="size-4 shrink-0 text-yellow-500" /> {w}
+                      </div>
+                    ))}
+                    <Button size="sm" variant="outline" onClick={() => whisper.mutate()} disabled={whisper.isPending}>
+                      <Mic /> Use Whisper instead
+                    </Button>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
           <Collapsible open={logOpen} onOpenChange={setLogOpen}>
             <Card className="gap-0 py-0">
               <CollapsibleTrigger asChild>

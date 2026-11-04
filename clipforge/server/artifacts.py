@@ -22,12 +22,14 @@ from clipforge.workspace import Workspace, safe_replace
 ALLOWED = re.compile(
     r"^(?:source\.mp4|audio\.wav|info\.json|thumbnail\.jpg|transcript\.json|scenes\.json|energy\.json|"
     r"llm_candidates\.json|candidates\.json|metadata\.json|metadata\.csv|gallery\.html|"
+    r"transcript_input\.json|captions_youtube\.json|transcript_report\.json|clip_whisper/[\w.-]{1,120}\.json|"
     r"select_cache/[\w.-]{1,120}\.json|clips/\d{2}_[\w.-]{1,160}\.mp4|clips/_work/\d{2}/[\w.-]{1,80})\Z")
 MAX_FILE = 20 * 1024 ** 3  # 20 GB — a 3 h 1080p source is ~4 GB
 PULL_SETS = {  # what each stage needs from the server
     "download": [],
-    "transcribe": ["info.json", "audio.wav"],
-    "select": ["info.json", "transcript.json", "energy.json", "candidates.json", "llm_candidates.json", "select_cache/"],
+    "transcribe": ["info.json", "audio.wav", "transcript_input.json", "captions_youtube.json"],
+    "select": ["info.json", "transcript.json", "energy.json", "candidates.json", "llm_candidates.json", "select_cache/",
+               "audio.wav", "transcript_report.json", "clip_whisper/"],
     "render": ["*"],
     "import": [],
 }

@@ -109,6 +109,11 @@ def fp_download(ws: Workspace, section: tuple[float, float] | None) -> str:
 
 
 def fp_transcribe(ws: Workspace, cfg: Config) -> str:
+    from clipforge.stages.transcript_input import input_signature
+
+    extra = input_signature(ws, cfg.transcript.source)  # "" for auto without a pasted transcript: old caches stay valid
+    if extra:
+        return fingerprint(cfg.whisper.model_dump(), _size(ws.audio), extra)
     return fingerprint(cfg.whisper.model_dump(), _size(ws.audio))
 
 
@@ -159,10 +164,28 @@ def run_transcribe(ws: Workspace, cfg: Config, reporter: ProgressReporter) -> No
     if transcribe_done(ws, cfg):
         reporter.stage("transcribe", "skipped")
         return
+    from clipforge.stages import transcript_input as ti
+
     reporter.stage("transcribe", "running")
-    transcribe.run(ws, cfg.whisper, reporter, load_info(ws).duration)
+    duration = load_info(ws).duration
+    t, report = ti.choose(ws, cfg.transcript.source, duration, cfg.whisper.language, cfg.transcript.max_duration_gap)
+    report["full_whisper_est_sec"] = round(ti.full_whisper_estimate(duration), 1)
+    if t is not None:
+        ws.write_model(ws.transcript, t)
+        report.update(whisper_sec=0, clip_whisper_sec=0, saved_sec=report["full_whisper_est_sec"])
+        reporter.log(f"Transcript: {report['label']} ({len(t.segments)} lines, word timing {t.word_timing}) — "
+                     f"Whisper skipped, ~{report['saved_sec'] / 60:.0f} min saved")
+    else:
+        import time
+
+        t0 = time.monotonic()
+        transcribe.run(ws, cfg.whisper, reporter, duration)
+        report.update(whisper_sec=round(time.monotonic() - t0, 1), clip_whisper_sec=0, saved_sec=0)
+    for w in report["warnings"]:
+        reporter.log(f"⚠ {w}", "warning")
+    ti.write_report(ws, report)
     ws.mark_done("transcribe", fp_transcribe(ws, cfg))
-    reporter.stage("transcribe", "done")
+    reporter.stage("transcribe", "done", f"Transcript: {report['label']}")
 
 
 def run_analyze(ws: Workspace, reporter: ProgressReporter) -> None:
@@ -247,6 +270,11 @@ def select(ws: Workspace, cfg: Config, reporter: ProgressReporter | None = None,
     if not cands:
         raise RuntimeError("No usable clips were found. Check the transcript, try another LLM provider, "
                            "or lower clips.min_sec in config.yaml.")
+    if transcript.word_timing == "estimated":  # Whisper only on the chosen clips, then snap again on exact words
+        from clipforge.stages import clip_whisper
+
+        clip_whisper.ensure_exact(ws, cfg, transcript, [(c.start, c.end) for c in cands], reporter)
+        cands = clip_whisper.resnap(cands, transcript, cfg, info.duration)
     _drop_stale_renders(ws, cands)
     save_candidates(ws, cands)
     if failed:
@@ -293,6 +321,10 @@ def render(ws: Workspace, cfg: Config, reporter: ProgressReporter | None = None,
     cands = [c for c in load_candidates(ws) if c.enabled and (only is None or c.rank in only)]
     if not cands:
         raise RuntimeError("No clips to render (candidates.json is empty, or --only matched nothing).")
+    if transcript.word_timing == "estimated":  # hand-trimmed clips may reach outside the re-timed ranges (cached)
+        from clipforge.stages import clip_whisper
+
+        clip_whisper.ensure_exact(ws, cfg, transcript, [(c.start, c.end) for c in cands], reporter)
 
     # Roman Hinglish only for the words we actually show
     needs_roman = [c for c in cands if captions.resolve_style(cfg.captions, c.caption_style).script == "roman"]
