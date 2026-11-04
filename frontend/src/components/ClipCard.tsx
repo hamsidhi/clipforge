@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Check, Download, Loader2, Pencil, Send, X } from 'lucide-react'
 import { toast } from 'sonner'
-import { api } from '@/api/client'
+import { api, videoSrc } from '@/api/client'
 import type { Clip } from '@/api/types'
 import { ScoreBadge } from '@/components/common'
 import { Button } from '@/components/ui/button'
@@ -14,6 +14,8 @@ export default function ClipCard({ clip, compact = false }: { clip: Clip; compac
   const qc = useQueryClient()
   const videoRef = useRef<HTMLVideoElement>(null)
   const [hover, setHover] = useState(false)
+  const [dx, setDx] = useState(0)
+  const start = useRef<{ x: number; y: number; id: number } | null>(null)
   const approve = useMutation({
     mutationFn: (approved: boolean | null) => api.patchClip(clip.id, { approved }),
     onMutate: async (approved) => {
@@ -33,7 +35,35 @@ export default function ClipCard({ clip, compact = false }: { clip: Clip; compac
       )}
     >
       <div
-        className="relative aspect-[9/16] bg-black"
+        className="relative aspect-[9/16] touch-pan-y bg-black transition-transform"
+        style={dx ? { transform: `translateX(${dx}px) rotate(${dx / 30}deg)`, transition: 'none' } : undefined}
+        onPointerDown={(e) => {
+          if (e.pointerType === 'touch' && !compact) start.current = { x: e.clientX, y: e.clientY, id: e.pointerId }
+        }}
+        onPointerMove={(e) => {
+          const s = start.current
+          if (!s || s.id !== e.pointerId) return
+          const ddx = e.clientX - s.x
+          if (Math.abs(ddx) > Math.abs(e.clientY - s.y)) setDx(Math.max(-140, Math.min(140, ddx)))
+        }}
+        onPointerUp={() => {
+          // swipe right = approve, left = reject (phone gallery)
+          if (dx > 80) approve.mutate(clip.approved === true ? null : true)
+          else if (dx < -80) approve.mutate(clip.approved === false ? null : false)
+          else if (start.current && Math.abs(dx) < 8 && videoRef.current) {  // tap = play / pause
+            const v = videoRef.current
+            if (v.paused) {
+              setHover(true)
+              v.play().catch(() => {})
+            } else v.pause()
+          }
+          start.current = null
+          setDx(0)
+        }}
+        onPointerCancel={() => {
+          start.current = null
+          setDx(0)
+        }}
         onMouseEnter={() => {
           setHover(true)
           videoRef.current?.play().catch(() => {})
@@ -51,7 +81,7 @@ export default function ClipCard({ clip, compact = false }: { clip: Clip; compac
             {clip.thumbnail_url && !hover && <img src={clip.thumbnail_url} alt="" className="absolute inset-0 size-full object-cover" />}
             <video
               ref={videoRef}
-              src={clip.video_url}
+              src={videoSrc(clip.video_url) ?? undefined}
               muted
               loop
               playsInline
@@ -72,6 +102,12 @@ export default function ClipCard({ clip, compact = false }: { clip: Clip; compac
           <ScoreBadge score={clip.score} />
         </div>
         <span className="absolute top-2 right-2 rounded-md bg-black/70 px-1.5 py-0.5 text-xs tabular-nums">{Math.round(clip.duration)}s</span>
+        {dx !== 0 && (
+          <span className={cn('absolute inset-x-0 top-1/2 mx-auto w-fit -translate-y-1/2 rounded-lg px-3 py-1.5 text-sm font-semibold',
+            dx > 0 ? 'bg-success text-black' : 'bg-destructive text-white', Math.abs(dx) < 80 && 'opacity-60')}>
+            {dx > 0 ? 'Approve' : 'Reject'}
+          </span>
+        )}
         {clip.stale && clip.rendered && (
           <span className="absolute bottom-2 left-2 rounded-md bg-primary px-1.5 py-0.5 text-[10px] font-semibold text-primary-foreground">edited · re-render</span>
         )}
@@ -88,7 +124,7 @@ export default function ClipCard({ clip, compact = false }: { clip: Clip; compac
                 <Button
                   size="icon"
                   variant={clip.approved === true ? 'default' : 'outline'}
-                  className={cn('size-8', clip.approved === true && 'bg-success text-black hover:bg-success/90')}
+                  className={cn('size-10 md:size-8', clip.approved === true && 'bg-success text-black hover:bg-success/90')}
                   onClick={() => approve.mutate(clip.approved === true ? null : true)}
                   aria-label="Approve"
                 >
@@ -102,7 +138,7 @@ export default function ClipCard({ clip, compact = false }: { clip: Clip; compac
                 <Button
                   size="icon"
                   variant={clip.approved === false ? 'destructive' : 'outline'}
-                  className="size-8"
+                  className="size-10 md:size-8"
                   onClick={() => approve.mutate(clip.approved === false ? null : false)}
                   aria-label="Reject"
                 >

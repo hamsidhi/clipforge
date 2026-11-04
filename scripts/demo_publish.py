@@ -33,7 +33,7 @@ def main(source_id: str = "sdMHVIcPGwg") -> None:
     # borrow the episode (hard links: no extra disk space)
     dst = DEMO / "ws" / source_id
     for f in src.rglob("*"):
-        if f.is_file() and f.suffix not in (".wav",) and "select_cache" not in f.parts:
+        if f.is_file() and "select_cache" not in f.parts:
             t = dst / f.relative_to(src)
             t.parent.mkdir(parents=True, exist_ok=True)
             try:

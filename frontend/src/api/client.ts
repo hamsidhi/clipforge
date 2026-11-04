@@ -10,15 +10,47 @@ export class ApiError extends Error {
   }
 }
 
+function csrfToken(): string {
+  const m = document.cookie.match(/(?:^|;\s*)cf_csrf=([^;]+)/)
+  return m ? decodeURIComponent(m[1]) : ''
+}
+
+/** True when the page isn't opened on the laptop itself (phone via Tailscale, LAN, …). */
+export const isRemote = () => !['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname)
+
+/** Phones / data saver: play the 540×960 preview instead of the full 1080×1920 clip. */
+export function dataSaver(): boolean {
+  try {
+    const v = localStorage.getItem('cf-data-saver')
+    return v == null ? isRemote() : v === '1'
+  } catch {
+    return isRemote()
+  }
+}
+
+export function videoSrc(url: string | null | undefined): string | null {
+  if (!url) return null
+  return dataSaver() ? `${url}${url.includes('?') ? '&' : '?'}preview=1` : url
+}
+
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response
+  const method = (init?.method ?? 'GET').toUpperCase()
+  const headers: Record<string, string> = { ...(init?.headers as Record<string, string> | undefined) }
+  if (init?.body && !(init.body instanceof Blob)) headers['Content-Type'] = 'application/json'
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+    const t = csrfToken()
+    if (t) headers['X-CSRF-Token'] = t
+  }
   try {
-    res = await fetch(path, {
-      ...init,
-      headers: init?.body && !(init.body instanceof Blob) ? { 'Content-Type': 'application/json', ...init?.headers } : init?.headers,
-    })
+    res = await fetch(path, { ...init, headers, credentials: 'same-origin' })
   } catch {
-    throw new ApiError(0, 'Cannot reach the ClipForge server. Is `clipforge ui` still running?')
+    throw new ApiError(0, isRemote() ? 'Cannot reach your laptop. Is it on, online, and is Tailscale connected on both devices?'
+      : 'Cannot reach the ClipForge server. Is `clipforge ui` still running?')
+  }
+  if (res.status === 401 && !path.startsWith('/api/auth/') && window.location.pathname !== '/login') {
+    window.location.assign(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`)
+    throw new ApiError(401, 'Please log in.')
   }
   if (!res.ok) {
     let msg = `${res.status} ${res.statusText}`
@@ -90,24 +122,58 @@ export const api = {
 
 /** Chunked upload of a (possibly multi-GB) local video. */
 export async function uploadFile(file: File, onProgress: (fraction: number) => void): Promise<string> {
-  const { upload_id } = await request<{ upload_id: string }>('/api/uploads', {
-    method: 'POST',
-    body: json({ filename: file.name, size: file.size }),
-  })
-  const CHUNK = 16 * 1024 * 1024
-  for (let offset = 0; offset < file.size; offset += CHUNK) {
-    const blob = file.slice(offset, offset + CHUNK)
-    let tries = 0
-    for (;;) {
-      try {
-        await request(`/api/uploads/${upload_id}?offset=${offset}`, { method: 'PUT', body: blob })
-        break
-      } catch (e) {
-        if (++tries >= 3) throw e
+  // resumable: the upload id is remembered per file, so a dropped connection (mobile data, a tunnel) or a reload
+  // continues from the bytes the laptop already has
+  const key = `cf-upload:${file.name}:${file.size}:${file.lastModified}`
+  let upload_id = ''
+  let offset = 0
+  try {
+    const saved = localStorage.getItem(key)
+    if (saved) {
+      const st = await request<{ received: number; size: number; complete: boolean }>(`/api/uploads/${saved}`)
+      if (st.size === file.size && !st.complete) {
+        upload_id = saved
+        offset = st.received
       }
     }
-    onProgress(Math.min(1, (offset + blob.size) / file.size))
+  } catch {
+    /* start fresh */
+  }
+  if (!upload_id) {
+    upload_id = (await request<{ upload_id: string }>('/api/uploads', {
+      method: 'POST',
+      body: json({ filename: file.name, size: file.size }),
+    })).upload_id
+    try {
+      localStorage.setItem(key, upload_id)
+    } catch {
+      /* private mode */
+    }
+  }
+  const CHUNK = (isRemote() ? 4 : 16) * 1024 * 1024
+  let tries = 0
+  while (offset < file.size) {
+    const blob = file.slice(offset, offset + CHUNK)
+    try {
+      const r = await request<{ received: number }>(`/api/uploads/${upload_id}?offset=${offset}`, { method: 'PUT', body: blob })
+      offset = r.received
+      tries = 0
+      onProgress(Math.min(1, offset / file.size))
+    } catch (e) {
+      if (++tries >= 8) throw e
+      await new Promise((r) => setTimeout(r, Math.min(30000, 1000 * 2 ** tries)))
+      try {  // ask the laptop how much arrived, continue from there
+        offset = (await request<{ received: number }>(`/api/uploads/${upload_id}`)).received
+      } catch {
+        /* still offline: retry the same chunk */
+      }
+    }
   }
   await request(`/api/uploads/${upload_id}/complete`, { method: 'POST' })
+  try {
+    localStorage.removeItem(key)
+  } catch {
+    /* ignore */
+  }
   return upload_id
 }

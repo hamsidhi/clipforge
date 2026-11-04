@@ -128,6 +128,20 @@ export default function WaveformTrimmer({ jobId, start, end, sourceDuration, scr
     return () => el.removeEventListener('timeupdate', tick)
   }, [end])
 
+  // ±0.5 s nudges for fingers (snap to the nearest word boundary; step further if the snap doesn't move)
+  const nudge = (edge: 'start' | 'end', delta: number) => {
+    const cur = edge === 'start' ? start : end
+    let next = cur
+    for (const k of [1, 2, 3, 4]) {
+      next = snap(Math.max(win.a, Math.min(win.b, cur + delta * k)), edge)
+      if (Math.abs(next - cur) > 0.05) break
+    }
+    const s = edge === 'start' ? next : start
+    const e = edge === 'end' ? next : end
+    if (e - s < 5) return
+    cb.current(Math.round(s * 1000) / 1000, Math.round(e * 1000) / 1000)
+  }
+
   const toggle = async () => {
     const el = audioRef.current
     if (!el) return
@@ -154,7 +168,19 @@ export default function WaveformTrimmer({ jobId, start, end, sourceDuration, scr
         <div className="text-xs text-muted-foreground tabular-nums">
           {formatTime(start)} → {formatTime(end)} · <span className="font-medium text-foreground">{(end - start).toFixed(1)}s</span>
         </div>
-        <div className="ml-auto text-xs text-muted-foreground">Drag the yellow box or its edges · snaps to words</div>
+        <div className="ml-auto hidden text-xs text-muted-foreground sm:block">Drag the yellow box or its edges · snaps to words</div>
+      </div>
+      <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap" aria-label="Fine trim">
+        <div className="flex items-center gap-1">
+          <span className="w-10 text-xs text-muted-foreground">Start</span>
+          <Button size="sm" variant="outline" className="h-10 flex-1 sm:h-8 sm:flex-none" onClick={() => nudge('start', -0.5)}>−0.5 s</Button>
+          <Button size="sm" variant="outline" className="h-10 flex-1 sm:h-8 sm:flex-none" onClick={() => nudge('start', 0.5)}>+0.5 s</Button>
+        </div>
+        <div className="flex items-center gap-1">
+          <span className="w-10 text-xs text-muted-foreground">End</span>
+          <Button size="sm" variant="outline" className="h-10 flex-1 sm:h-8 sm:flex-none" onClick={() => nudge('end', -0.5)}>−0.5 s</Button>
+          <Button size="sm" variant="outline" className="h-10 flex-1 sm:h-8 sm:flex-none" onClick={() => nudge('end', 0.5)}>+0.5 s</Button>
+        </div>
       </div>
       <div ref={scrollRef} className="scrollbar-thin overflow-x-auto rounded-xl border bg-muted/30">
         <div className="relative px-0 pt-2 pb-1" style={{ width: len * PX_PER_SEC }}>

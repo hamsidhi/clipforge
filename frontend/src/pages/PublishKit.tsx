@@ -1,7 +1,7 @@
 import { Link, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowLeft, BarChart3, Camera, Download, MonitorPlay, Pencil } from 'lucide-react'
-import { api } from '@/api/client'
+import { api, videoSrc } from '@/api/client'
 import { CopyButton, ErrorBox } from '@/components/common'
 import PhoneFramePlayer from '@/components/PhoneFramePlayer'
 import { Button } from '@/components/ui/button'
@@ -37,7 +37,7 @@ export default function PublishKit() {
       </div>
       <div className="grid gap-6 lg:grid-cols-[300px_1fr]">
         <div className="space-y-3">
-          <PhoneFramePlayer src={clip.video_url} poster={clip.thumbnail_url} className="max-w-[300px]" placeholder="Not rendered yet" />
+          <PhoneFramePlayer src={videoSrc(clip.video_url)} poster={clip.thumbnail_url} className="max-w-[300px]" placeholder="Not rendered yet" />
           <div className="mx-auto grid max-w-[300px] gap-2">
             {clip.video_url && (
               <Button asChild>

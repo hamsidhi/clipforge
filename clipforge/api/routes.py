@@ -332,6 +332,8 @@ def source_waveform(job_id: int, start: float = 0, end: float = 60, per_sec: int
     start, end = max(0.0, start), min(info.duration, end)
     if end - start > 900:
         raise HTTPException(400, "Max 15 minutes per request")
+    if not ws.audio.exists():
+        raise HTTPException(404, "The episode's audio file is gone (deleted to save space?) — Retry the job to rebuild it.")
     return {"start": start, "end": end, "per_sec": per_sec, "peaks": waveform_peaks(ws, start, end, per_sec)}
 
 

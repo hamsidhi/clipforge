@@ -35,7 +35,8 @@ const PHASE13 = [
 const PHASE14 = [
   ['01-jobs', '/'], ['02-new-job', '/new'], ['03-gallery', `/jobs/${job}/clips`], ['04-clip-editor', `/clips/${clip}/edit`],
   ['05-schedule', '/schedule', 'all'], ['06-dashboard', '/dashboard'], ['07-accounts', '/channels'], ['08-tracker', '/tracker'],
-  ['09-settings', '/settings'], ['10-settings-remote', '/settings#remote'], ['11-login', '/login'], ['12-more', '/more'],
+  ['09-settings', '/settings'], ['10-settings-remote', '/settings#remote'], ['11-login', '/login', null, 'remote'], ['12-more', '/more'],
+  ['13-share-target', '/share?text=Watch%20this%20https%3A%2F%2Fyoutu.be%2FsdMHVIcPGwg'],
 ]
 const MAIN = [
   ['01-dashboard', '/'],
@@ -67,10 +68,11 @@ let errors = 0
 for (const [label, vp] of [['desktop', { width: 1440, height: 900 }], ['mobile', { width: 390, height: 844 }]]) {
   const ctx = await browser.newContext({ viewport: vp, deviceScaleFactor: label === 'mobile' ? 2 : 1, colorScheme: 'dark' })
   if (label === 'desktop' && desktopOnly) continue
-  for (const [name, url, account] of pages) {
+  for (const [name, url, account, remote] of pages) {
     if (label === 'mobile' && !mobile.includes(name)) continue
     const page = await ctx.newPage()
     if (account) await page.addInitScript((a) => localStorage.setItem('cf-channel', a), account)
+    if (remote) await page.setExtraHTTPHeaders({ 'X-Forwarded-For': '100.64.0.2' })  // as if from the phone via Tailscale
     const msgs = []
     page.on('console', (m) => m.type() === 'error' && msgs.push(m.text()))
     page.on('pageerror', (e) => msgs.push(String(e)))
@@ -89,6 +91,20 @@ for (const [label, vp] of [['desktop', { width: 1440, height: 900 }], ['mobile',
     console.log(`${real.length ? '✖' : '✔'} ${label} ${name}${real.length ? ' — ' + real.join(' | ') : ''}`)
     await page.close()
   }
+  await ctx.close()
+}
+if (set === 'phase14') {  // PWA installability basics: manifest + service worker registered
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } })
+  const page = await ctx.newPage()
+  await page.goto(base + '/', { waitUntil: 'networkidle' })
+  const pwa = await page.evaluate(async () => {
+    const link = document.querySelector('link[rel=manifest]')
+    const m = link ? await (await fetch(link.href)).json() : null
+    const reg = await Promise.race([navigator.serviceWorker.ready, new Promise((r) => setTimeout(() => r(null), 8000))])
+    return { manifest: !!m && m.display === 'standalone' && m.icons.length >= 2, share: !!m?.share_target, sw: !!reg, controller: !!reg?.active }
+  })
+  console.log('PWA:', JSON.stringify(pwa))
+  if (!pwa.manifest || !pwa.sw || !pwa.share) errors++
   await ctx.close()
 }
 await browser.close()

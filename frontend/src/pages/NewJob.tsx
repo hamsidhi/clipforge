@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Clock, FileVideo, Link2, Loader2, MonitorPlay, Sparkles, Upload, X } from 'lucide-react'
 import { toast } from 'sonner'
@@ -34,7 +34,8 @@ function parseTime(s: string): number | null {
 
 export default function NewJob() {
   const nav = useNavigate()
-  const [url, setUrl] = useState('')
+  const [shared] = useSearchParams()
+  const [url, setUrl] = useState(() => shared.get('url') ?? '')
   const [file, setFile] = useState<File | null>(null)
   const [fileDuration, setFileDuration] = useState<number | null>(null)
   const [dragging, setDragging] = useState(false)
@@ -135,7 +136,7 @@ export default function NewJob() {
   return (
     <>
       <PageHeader title="New clip job" description="Paste a YouTube link or drop a video. Everything runs on this computer." />
-      <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
         <div className="space-y-6">
           <Card>
             <CardHeader>

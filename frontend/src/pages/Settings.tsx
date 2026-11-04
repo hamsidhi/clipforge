@@ -14,6 +14,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import PublishingSettings from '@/components/PublishingSettings'
 import InstagramSettings from '@/components/InstagramSettings'
+import RemoteSettings from '@/components/RemoteSettings'
 
 type Cfg = Record<string, Record<string, unknown>>
 
@@ -234,6 +235,7 @@ export default function Settings() {
 
         <PublishingSettings cfg={cfg} set={set} />
         <InstagramSettings cfg={cfg} set={set} />
+        <RemoteSettings cfg={cfg} set={set} />
 
         <PresetEditor />
       </div>

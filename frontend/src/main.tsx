@@ -6,6 +6,9 @@ import { Toaster } from 'sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import './index.css'
 import App from './App.tsx'
+import { registerServiceWorker } from '@/lib/pwa'
+
+registerServiceWorker()
 
 const queryClient = new QueryClient({
   defaultOptions: {

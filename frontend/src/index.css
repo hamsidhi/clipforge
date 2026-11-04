@@ -162,3 +162,11 @@
 }
 [data-wave] > div::part(region-handle-left) { left: -6px !important; }
 [data-wave] > div::part(region-handle-right) { right: -6px !important; }
+
+/* phones: bigger trim handles (wavesurfer regions expose CSS parts) */
+@media (pointer: coarse) {
+  [data-wave] ::part(region-handle) {
+    width: 18px !important;
+    background: oklch(0.91 0.19 103 / 0.55);
+  }
+}

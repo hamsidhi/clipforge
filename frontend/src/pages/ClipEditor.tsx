@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Check, ChevronLeft, ChevronRight, Loader2, RefreshCw, Save, Send, Undo2, X } from 'lucide-react'
 import { toast } from 'sonner'
-import { api } from '@/api/client'
+import { api, videoSrc } from '@/api/client'
 import { useClips, useJobEvents } from '@/api/hooks'
 import type { CaptionStyle, ClipDetail, CropOverride as Override, Layout } from '@/api/types'
 import CaptionStylePicker from '@/components/CaptionStylePicker'
@@ -241,7 +241,7 @@ function ClipEditor({ clipId }: { clipId: string }) {
         <div className="space-y-4">
           <PhoneFramePlayer
             ref={videoRef}
-            src={clip.video_url}
+            src={videoSrc(clip.video_url)}
             poster={clip.thumbnail_url}
             safeZone={safeZone}
             className="max-w-[340px]"

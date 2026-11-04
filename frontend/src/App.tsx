@@ -13,11 +13,19 @@ import Channels from '@/pages/Channels'
 import Schedule from '@/pages/Schedule'
 import Batches from '@/pages/Batches'
 import PublishDashboard from '@/pages/PublishDashboard'
+import Login from '@/pages/Login'
+import Share from '@/pages/Share'
+import More from '@/pages/More'
+import LatestGallery from '@/pages/LatestGallery'
 
 export default function App() {
   return (
     <Routes>
+      <Route path="login" element={<Login />} />
+      <Route path="share" element={<Share />} />
       <Route element={<Layout />}>
+        <Route path="more" element={<More />} />
+        <Route path="gallery" element={<LatestGallery />} />
         <Route index element={<Dashboard />} />
         <Route path="new" element={<NewJob />} />
         <Route path="jobs/:jobId" element={<JobProgress />} />
