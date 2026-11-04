@@ -123,7 +123,7 @@ def fp_analyze(ws: Workspace) -> str:
 
 def fp_select(ws: Workspace, cfg: Config) -> str:
     # configured (not resolved) model: pulling a new Ollama model must not invalidate a finished selection
-    prompt_text = (PROMPTS_DIR / "clip_selection.md").read_text(encoding="utf-8")
+    prompt_text = [(PROMPTS_DIR / n).read_text(encoding="utf-8") for n in ("clip_selection.md", "clip_titles.md")]
     return fingerprint(cfg.llm.model_dump(exclude={"timeout_sec", "ollama_url", "keep_alive"}), cfg.clips.model_dump(),
                        cfg.scoring_weights.model_dump(), prompt_text, ws.stage_time("transcribe"))
 
@@ -275,6 +275,7 @@ def select(ws: Workspace, cfg: Config, reporter: ProgressReporter | None = None,
 
         clip_whisper.ensure_exact(ws, cfg, transcript, [(c.start, c.end) for c in cands], reporter)
         cands = clip_whisper.resnap(cands, transcript, cfg, info.duration)
+    select_clips.write_titles(ws, cfg, llm, reporter, info, transcript, cands)
     _drop_stale_renders(ws, cands)
     save_candidates(ws, cands)
     if failed:

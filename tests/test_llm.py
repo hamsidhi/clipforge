@@ -45,11 +45,14 @@ def test_retry_exhausted_raises():
 
 
 def test_mock_select_parses_lines():
-    lines = "\n".join(f"[{i * 5}.0-{i * 5 + 4.5}] sentence number {i} here" for i in range(30))
-    res = MockProvider().complete_json(f"TRANSCRIPT:\n{lines}", LLMCandidateList, task="select")
+    from clipforge.stages.select_clips import CompactList
+
+    lines = "\n".join(f"{i + 1}| [{i * 5}.0-{i * 5 + 4.5}] sentence number {i} here" for i in range(30))
+    res = MockProvider().complete_json(f"TRANSCRIPT:\n{lines}", CompactList, task="select")
     assert res.candidates
     for c in res.candidates:
-        assert c.end - c.start >= 15
+        assert 1 <= c.s < c.e <= 30
+        assert (c.e - c.s + 1) * 5 >= 15
 
 
 def test_romanize_word():

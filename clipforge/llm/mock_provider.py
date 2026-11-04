@@ -1,7 +1,9 @@
 """Deterministic fake LLM for tests and offline pipeline checks (no model needed).
 
-- task="select": parses the "[start-end] text" lines in the prompt and proposes clips made of
-  consecutive sentences of ~25-50 s.
+- task="select": parses the numbered "id| [start-end] text" (or "id| text") lines in the prompt and proposes
+  compact candidates ({"s","e","score","hook","standalone","topic"}) of consecutive sentences of ~25-50 s
+  (word count when the lines carry no times).
+- task="titles": a hook/title/why per "CLIP n" block.
 - task="transliterate": romanizes Devanagari words with indic-transliteration (1:1 word count).
 - task="metadata": returns simple hashtags/caption from the title.
 """
@@ -14,7 +16,9 @@ import re
 from clipforge.llm.base import LLMProvider
 from clipforge.utils.text import is_devanagari
 
-LINE_RE = re.compile(r"^\[(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\]\s*(.*)$", re.MULTILINE)
+LINE_RE = re.compile(r"^(\d+)\|\s*(?:\[(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\]\s*)?(.*)$", re.MULTILINE)
+CLIP_RE = re.compile(r'^CLIP (\d+)[^\n]*:\n"""(.*?)"""', re.MULTILINE | re.DOTALL)
+WORDS_PER_SEC = 2.8
 
 
 def romanize_word(word: str) -> str:
@@ -72,29 +76,39 @@ class MockProvider(LLMProvider):
                 "ig_caption": "Ye baat sabko pata honi chahiye 👇\nPoora podcast dekho — link bio mein.\nFollow for more 🔥",
                 "hashtags": ["podcast", "hindipodcast", "business", "motivation", "shorts"],
             })
+        if task == "titles":
+            return json.dumps(self._titles(prompt), ensure_ascii=False)
         return json.dumps(self._select(prompt))
 
     @staticmethod
+    def _titles(prompt: str) -> dict:
+        out = []
+        for n, text in CLIP_RE.findall(prompt):
+            first = " ".join(text.split()[:6])
+            out.append({"id": int(n), "hook": first, "title": f"Moment — {first}"[:60], "why": "mock title"})
+        return {"clips": out}
+
+    @staticmethod
     def _select(prompt: str) -> dict:
-        lines = [(float(a), float(b), t) for a, b, t in LINE_RE.findall(prompt)]
+        lines = []
+        t = 0.0
+        for sid, a, b, text in LINE_RE.findall(prompt):
+            if a:
+                start, end = float(a), float(b)
+            else:  # no times in the prompt: estimate from the word count
+                start, end = t, t + max(1.0, len(text.split()) / WORDS_PER_SEC)
+            t = end
+            lines.append((int(sid), start, end, text))
         cands = []
         i = 0
-        n = 0
-        while i < len(lines) and n < 6:
-            start = lines[i][0]
+        while i < len(lines) and len(cands) < 6:
+            start = lines[i][1]
             j = i
-            while j + 1 < len(lines) and lines[j][1] - start < 35:
+            while j + 1 < len(lines) and lines[j][2] - start < 35:
                 j += 1
-            end = lines[j][1]
-            if end - start >= 15:
-                text = " ".join(t for _, _, t in lines[i : j + 1])
-                first = " ".join(text.split()[:6])
+            if lines[j][2] - start >= 15:
                 k = len(cands)
-                cands.append({
-                    "start": start, "end": end, "hook": first, "title": f"Moment {int(start // 60)}:{int(start % 60):02d} — {first}"[:60],
-                    "topic": f"topic-{int(start // 120)}", "why": "mock selection",
-                    "scores": {"hook": 6 + k % 4, "standalone": 7, "emotion": 5 + k % 3, "value": 6, "controversy": 3},
-                })
-                n += 1
+                cands.append({"s": lines[i][0], "e": lines[j][0], "score": 6 + k % 3, "hook": 6 + k % 4,
+                              "standalone": 7, "topic": f"topic-{int(start // 120)}"})
             i = j + 1
         return {"candidates": cands}

@@ -56,8 +56,9 @@ class LLMProvider(ABC):
         attempt_prompt = prompt
         for attempt in range(1, retries + 1):
             try:
+                extra = {"options": options} if options else {}  # simple/fake providers needn't accept it
                 raw = self.generate(attempt_prompt, system=system, json_mode=True, task=task, json_schema=json_schema,
-                                    options=options)
+                                    **extra)
             except LLMError:
                 raise
             except Exception as exc:  # network etc.

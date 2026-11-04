@@ -1,19 +1,68 @@
-"""Stage 4 — ask the LLM for clip candidates, window by window (fits any model's context)."""
+"""Stage 4 — ask the LLM for clip candidates, window by window (fits any model's context).
+
+The LLM sees numbered sentences (Whisper segments) and answers with a compact JSON per candidate —
+first/last sentence id + three scores + a topic. Ids are mapped back to word times here. Titles and hooks are
+written later (`write_titles`) for the final clips only, with each clip's full text.
+"""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
+from pydantic import BaseModel, Field, field_validator
+
 from clipforge.config import Config, PROMPTS_DIR
 from clipforge.llm.base import LLMError, LLMProvider, strict_schema
 from clipforge.llm.mock_provider import romanize_word
-from clipforge.models import LLMCandidate, LLMCandidateList, RawCandidateList, Segment, Transcript, VideoInfo
+from clipforge.models import ClipCandidate, LLMCandidate, RawCandidateList, Scores, Segment, Transcript, VideoInfo
 from clipforge.utils.ffmpeg import Timer
 from clipforge.utils.log import ProgressReporter, check_cancel, log
+from clipforge.utils.timecode import words_in_range
 from clipforge.workspace import Workspace, fingerprint
 
 SYSTEM = "You are an expert short-form video editor. You always answer with valid JSON only."
+TOKENS_PER_CANDIDATE = 56   # {"s":12,"e":25,"score":8,"hook":8,"standalone":7,"topic":"startup funding"} ≈ 35 tokens
+TITLE_BATCH = 5
+TITLE_TOKENS_PER_CLIP = 110
+
+
+def _score(v) -> float:
+    try:
+        return max(0.0, min(10.0, float(v)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+class CompactCandidate(BaseModel):
+    """One candidate exactly as the selection prompt asks for it."""
+
+    s: int
+    e: int
+    score: float = Field(0, ge=0, le=10)
+    hook: float = Field(0, ge=0, le=10)
+    standalone: float = Field(0, ge=0, le=10)
+    topic: str = ""
+
+    @field_validator("score", "hook", "standalone", mode="before")
+    @classmethod
+    def _clamp(cls, v: float) -> float:
+        return _score(v)
+
+
+class CompactList(BaseModel):
+    candidates: list[CompactCandidate]
+
+
+class TitleOut(BaseModel):
+    id: int
+    hook: str = ""
+    title: str = ""
+    why: str = ""
+
+
+class TitleList(BaseModel):
+    clips: list[TitleOut]
 
 
 def make_windows(duration: float, window_min: float, overlap_min: float) -> list[tuple[float, float]]:
@@ -43,17 +92,49 @@ def segment_text(seg: Segment, latin: bool) -> str:
     return seg.text
 
 
-def window_lines(segments: list[Segment], start: float, end: float, latin: bool) -> str:
-    lines = []
-    for s in segments:
-        if s.end <= start or s.start >= end:
+def window_segments(segments: list[Segment], start: float, end: float) -> list[Segment]:
+    """Segments overlapping [start, end) that contain text; their 1-based position is the sentence id."""
+    return [s for s in segments if not (s.end <= start or s.start >= end) and s.text.strip()]
+
+
+def window_lines(segs: list[Segment], latin: bool) -> str:
+    return "\n".join(f"{i}| [{s.start:.1f}-{s.end:.1f}] {segment_text(s, latin)}" for i, s in enumerate(segs, 1))
+
+
+def seg_start(seg: Segment) -> float:
+    return seg.words[0].start if seg.words else seg.start
+
+
+def seg_end(seg: Segment) -> float:
+    return seg.words[-1].end if seg.words else seg.end
+
+
+def to_candidate(c: CompactCandidate, segs: list[Segment]) -> LLMCandidate | None:
+    """Sentence ids (1-based, inclusive) → word times. None for ids outside the window."""
+    lo, hi = sorted((c.s, c.e))
+    if lo < 1 or hi > len(segs):
+        return None
+    start, end = seg_start(segs[lo - 1]), seg_end(segs[hi - 1])
+    if end <= start:
+        return None
+    # the overall score stands in for emotion/value/controversy so refine's weighted score keeps its 0-10 scale
+    scores = Scores(hook=c.hook, standalone=c.standalone, emotion=c.score, value=c.score, controversy=c.score)
+    return LLMCandidate(start=start, end=end, title="", topic=" ".join(c.topic.lower().split()[:4]), scores=scores)
+
+
+def parse_compact(raw: RawCandidateList) -> tuple[list[CompactCandidate], int]:
+    """Validate items one by one (one bad candidate doesn't throw away the window). Returns (valid, n_bad)."""
+    out = []
+    for item in raw.candidates:
+        try:
+            out.append(CompactCandidate.model_validate(item))
+        except Exception:
             continue
-        lines.append(f"[{s.start:.1f}-{s.end:.1f}] {segment_text(s, latin)}")
-    return "\n".join(lines)
+    return out, len(raw.candidates) - len(out)
 
 
-def load_prompt() -> str:
-    p = PROMPTS_DIR / "clip_selection.md"
+def load_prompt(name: str = "clip_selection.md") -> str:
+    p = PROMPTS_DIR / name
     if not p.exists():
         raise FileNotFoundError(f"Prompt template missing: {p}")
     return p.read_text(encoding="utf-8")
@@ -72,46 +153,102 @@ def build_prompt(template: str, info: VideoInfo, transcript_text: str, cfg: Conf
     )
 
 
+def uses_latin(llm: LLMProvider) -> bool:
+    # Latin script costs far fewer tokens than Devanagari on local models; cloud models get the original.
+    return llm.name in ("ollama", "mock")
+
+
 def run(ws: Workspace, cfg: Config, llm: LLMProvider, reporter: ProgressReporter, info: VideoInfo,
         transcript: Transcript) -> tuple[list[LLMCandidate], int]:
     """Returns (candidates, number of windows that failed and should be retried next run)."""
     template = load_prompt()
-    # Latin script costs far fewer tokens than Devanagari on local models; cloud models get the original.
-    latin = llm.name in ("ollama", "mock")
+    latin = uses_latin(llm)
     windows = make_windows(transcript.duration, cfg.llm.window_min, cfg.llm.overlap_min)
     timer = Timer()
     all_cands: list[LLMCandidate] = []
     failed = 0
+    options = {"num_predict": TOKENS_PER_CANDIDATE * cfg.llm.max_candidates_per_window + 64}
     for i, (a, b) in enumerate(windows):
         check_cancel(reporter)
-        text = window_lines(transcript.segments, a, b, latin)
-        if len(text.split()) < 30:
+        segs = window_segments(transcript.segments, a, b)
+        text = window_lines(segs, latin)
+        if sum(len(s.text.split()) for s in segs) < 30:
             continue
         prompt = build_prompt(template, info, text, cfg, a, b)
-        cache = ws.select_cache / f"w{i:03d}_{fingerprint(llm.name, llm.model, prompt)}.json"
+        cache = ws.select_cache / f"w{i:03d}_{fingerprint(llm.name, llm.model, prompt, options)}.json"
         if cache.exists():
-            cands = RawCandidateList.model_validate_json(cache.read_text(encoding="utf-8")).valid()
+            res = RawCandidateList.model_validate_json(cache.read_text(encoding="utf-8"))
         else:
             reporter.progress(i / len(windows), timer.eta(i / len(windows)) if i else None,
                               f"LLM window {i + 1}/{len(windows)} ({int(a // 60)}-{int(b // 60)} min)")
             try:
                 res = llm.complete_json(prompt, RawCandidateList, system=SYSTEM, retries=cfg.llm.max_retries,
-                                        task="select", json_schema=strict_schema(LLMCandidateList))
+                                        task="select", json_schema=strict_schema(CompactList), options=options)
             except LLMError as exc:
                 if "not running" in str(exc) or "not found" in str(exc) or "API_KEY" in str(exc):
                     raise
                 log.warning(f"Skipping window {i + 1} ({int(a // 60)}-{int(b // 60)} min) for now: {exc}")
                 failed += 1
                 continue
-            cands = res.valid()
-            if len(cands) < len(res.candidates):
-                log.warning(f"window {i + 1}: ignored {len(res.candidates) - len(cands)} malformed candidate(s)")
             Path(cache).write_text(res.model_dump_json(indent=2), encoding="utf-8")
-        # keep only candidates inside this window (models sometimes hallucinate times)
-        valid = [c for c in cands if a - 5 <= c.start < c.end <= b + 5]
-        if len(valid) < len(cands):
-            log.debug(f"window {i}: dropped {len(cands) - len(valid)} out-of-range candidates")
+        compact, bad = parse_compact(res)
+        if bad:
+            log.warning(f"window {i + 1}: ignored {bad} malformed candidate(s)")
+        mapped = [to_candidate(c, segs) for c in compact]
+        valid = [c for c in mapped if c is not None]
+        if len(valid) < len(mapped):  # models sometimes invent ids
+            log.debug(f"window {i}: dropped {len(mapped) - len(valid)} candidates with unknown sentence ids")
         all_cands += valid
     reporter.progress(1.0, 0, f"{len(all_cands)} raw candidates")
     ws.write_json(ws.llm_candidates, [json.loads(c.model_dump_json()) for c in all_cands])
     return all_cands, failed
+
+
+# ----------------------------------------------------------------------------- titles for the final clips
+def clip_text(transcript: Transcript, start: float, end: float, latin: bool) -> str:
+    ws = words_in_range(transcript.all_words(), start, end)
+    return " ".join((w.roman or romanize_word(w.text)) if latin else w.text for w in ws)
+
+
+def fallback_copy(c: ClipCandidate, text: str) -> tuple[str, str]:
+    first = " ".join(text.split()[:7])
+    title = (c.topic.title() + ": " if c.topic else "") + first
+    return title[:60].rstrip(), first
+
+
+def write_titles(ws: Workspace, cfg: Config, llm: LLMProvider, reporter: ProgressReporter, info: VideoInfo,
+                 transcript: Transcript, cands: list[ClipCandidate]) -> None:
+    """Fill title / hook / why of the final clips (in place), TITLE_BATCH clips per LLM call, each with its full
+    text. A failed batch gets a template title (logged) — selection never fails because of copywriting."""
+    template = load_prompt("clip_titles.md")
+    latin = uses_latin(llm)
+    todo = [c for c in cands if not c.title]
+    for b in range(0, len(todo), TITLE_BATCH):
+        check_cancel(reporter)
+        batch = todo[b:b + TITLE_BATCH]
+        texts = [clip_text(transcript, c.start, c.end, latin) for c in batch]
+        body = "\n\n".join(f"CLIP {n} ({c.end - c.start:.0f} s, topic: {c.topic or '-'}):\n\"\"\"{t}\"\"\""
+                           for n, (c, t) in enumerate(zip(batch, texts), 1))
+        prompt = template.format(podcast_title=info.title, channel=info.channel or "unknown", n=len(batch), clips=body)
+        options = {"num_predict": TITLE_TOKENS_PER_CLIP * len(batch) + 64}
+        cache = ws.select_cache / f"titles_{fingerprint(llm.name, llm.model, prompt, options)}.json"
+        out: TitleList | None = None
+        if cache.exists():
+            out = TitleList.model_validate_json(cache.read_text(encoding="utf-8"))
+        else:
+            reporter.progress(b / max(1, len(todo)), None, f"Titles {b + 1}-{b + len(batch)} of {len(todo)}")
+            try:
+                out = llm.complete_json(prompt, TitleList, system=SYSTEM, retries=cfg.llm.max_retries, task="titles",
+                                        json_schema=strict_schema(TitleList), options=options)
+                cache.write_text(out.model_dump_json(indent=2), encoding="utf-8")
+            except LLMError as exc:
+                if "not running" in str(exc) or "not found" in str(exc) or "API_KEY" in str(exc):
+                    raise
+                log.warning(f"Title batch {b // TITLE_BATCH + 1} failed, using template titles: {exc}")
+        by_id = {t.id: t for t in out.clips} if out else {}
+        for n, (c, t) in enumerate(zip(batch, texts), 1):
+            got = by_id.get(n)
+            fb_title, fb_hook = fallback_copy(c, t)
+            c.title = (got.title.strip() if got and got.title.strip() else fb_title)[:60]
+            c.hook = got.hook.strip() if got and got.hook.strip() else fb_hook
+            c.why = got.why.strip() if got else c.why
