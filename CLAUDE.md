@@ -82,6 +82,18 @@ cd frontend && npm install && npm run build   # build the UI once
   unconfirmed or paused channels never upload; a clip key is unique per channel; never exceed
   `publishing.insert_calls_per_day`; no browser automation of YouTube.
 
+### Instagram (Phase 13)
+- `publish/instagram.py`: Graph client (`GraphIG`, fake hook `set_client_factory`), Facebook Login (`oauth_url`,
+  `finish_oauth` → `pick`), tokens in `workspace/accounts/instagram/<ig id>/token.json` (long-lived user token refreshed
+  <10 days before expiry; Page token for API calls), `preflight()` (ffprobe Reels specs), `revoke()`.
+- `publish/ig_runner.py` (called from `runner._run_locked` per Instagram account): container + resumable upload at
+  slot − `upload_lead_minutes`, poll `status_code`, `media_publish` at the slot after `content_publishing_limit`,
+  missed after `max_late_minutes`, insights every 12 h → `VideoPerf` rows with id `ig:<media id>`.
+- `publish/ig_meta.py`: caption rules (≤5 lowercase hashtags, ≤2,200 chars). `api/ig_routes.py`: Meta app, OAuth,
+  manual accounts, `/queue/{id}/permalink`, `/queue/{id}/video`, `/accounts/{id}/ig-dashboard`, `/publishing/overview`.
+- Accounts are `Channel` rows with `platform="instagram"` (id `ig:<id>` / `ig:manual:<username>`); items have
+  `QueueItem.platform`. Tests: `tests/fake_instagram.py`, `tests/test_instagram.py`. Never automate instagram.com.
+
 ### Queue state machine (Phase 12.5, `publish/states.py`)
 ```
 draft → queued → uploading → scheduled (on YouTube: private + publishAt) → published

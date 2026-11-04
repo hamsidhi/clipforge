@@ -215,13 +215,34 @@ def run_once(cfg: Config | None = None, now: dt.datetime | None = None, progress
             rep.messages.append("Another ClipForge process is publishing right now — skipped this run.")
             return rep
         recover_stuck(now)  # safe: we hold the lock, so nobody else is mid-upload
+        backfill_reasons(now)
         _current_lock = lock
         try:
             rep = _run_locked(cfg, now, progress)
         finally:
             _current_lock = None
         _write_state(cfg, now, rep, source)
+        try:
+            from clipforge.notify import telegram
+
+            telegram.on_run_report(rep)
+        except Exception as exc:
+            log.debug(f"telegram hook failed: {exc}")
+        for iid in rep.published:
+            _audit_publish(iid)
         return rep
+
+
+def _audit_publish(item_id: int) -> None:
+    it = q.get(item_id)
+    if not it:
+        return
+    try:
+        from clipforge.api.auth import audit
+
+        audit("publish", f"{it.platform}: {it.title} → {it.permalink or it.youtube_video_id}")
+    except Exception:
+        pass
 
 
 STATE_FILE = "scheduler_state.json"
@@ -262,12 +283,58 @@ def _is_auth_error(exc: Exception) -> bool:
     return "insufficientPermissions" in msg or "ACCESS_TOKEN_SCOPE_INSUFFICIENT" in msg or "invalid_grant" in msg
 
 
-def _run_locked(cfg: Config, now: dt.datetime, progress) -> RunReport:
-    rep = RunReport()
-    budget = _upload_allowed(cfg, rep) if cfg.publishing.mode == "api" else 0
+def backfill_reasons(now: dt.datetime) -> int:
+    """Rows written by older versions as a bare 'needs_manual' (no reason): give them one, so the UI shows a fix."""
+    n = 0
+    for it in q.items(statuses=("needs_manual",)):
+        if it.reason or it.youtube_video_id or it.ig_media_id:
+            continue
+        if it.platform == "instagram":
+            it.reason = "ig_assisted"
+        elif it.batch:
+            it.reason = "assisted_unlinked"
+        else:
+            it.status, it.reason = "missed", "slot_passed"
+        it.error = it.error or "The publish time passed before it was uploaded."
+        q.save(it)
+        n += 1
+    return n
+
+
+def _instagram_pass(cfg: Config, now: dt.datetime, rep: RunReport, started: float) -> None:
+    """Instagram must publish AT the slot, so it never waits behind long YouTube uploads: it runs first, again
+    between uploads and at the end, each time with the clock advanced by the real time spent so far."""
+    import time
+
+    t = now + dt.timedelta(seconds=time.monotonic() - started)
     for ch in chs.all_channels():
         if ch.platform == "instagram":
-            _run_instagram(ch, cfg, now, rep)
+            _run_instagram(ch, cfg, t, rep)
+
+
+_quota_block: dict[str, dt.datetime] = {}  # workspace → when uploads may try again (next Pacific midnight)
+
+
+def _next_pacific_midnight(now: dt.datetime) -> dt.datetime:
+    from clipforge.publish.timez import PACIFIC
+
+    local = now.astimezone(PACIFIC)
+    nxt = (local + dt.timedelta(days=1)).replace(hour=0, minute=5, second=0, microsecond=0)
+    return nxt.astimezone(dt.timezone.utc)
+
+
+def _run_locked(cfg: Config, now: dt.datetime, progress) -> RunReport:
+    import time
+
+    rep = RunReport()
+    started = time.monotonic()
+    budget = _upload_allowed(cfg, rep) if cfg.publishing.mode == "api" else 0
+    blocked = _quota_block.get(str(cfg.workspace))
+    if blocked and now < blocked:
+        rep.quota_exhausted = True  # YouTube said "quota exceeded" earlier today: don't burn attempts every minute
+    _instagram_pass(cfg, now, rep, started)
+    for ch in chs.all_channels():
+        if ch.platform == "instagram":
             continue
         if ch.paused:
             rep.skipped_channels[ch.id] = "paused"
@@ -280,7 +347,8 @@ def _run_locked(cfg: Config, now: dt.datetime, progress) -> RunReport:
             client = yt.client_for(ch.id, cfg)
             _handle_late(ch, client, cfg, now, rep)  # a passed slot never silently stays "queued", never a bare "Needs you"
             if cfg.publishing.mode == "api" and budget != 0 and not rep.quota_exhausted:
-                budget = _upload_due(ch, client, cfg, now, rep, budget, progress)
+                budget = _upload_due(ch, client, cfg, now, rep, budget, progress,
+                                     between=lambda: _instagram_pass(cfg, now, rep, started))
             since = now - _last_refresh.get(f"{cfg.workspace}|{ch.id}", _EPOCH)
             if since >= REFRESH_EVERY or since < dt.timedelta(0) or rep.uploaded:
                 _refresh_status(ch, client, cfg, now, rep)
@@ -300,7 +368,23 @@ def _run_locked(cfg: Config, now: dt.datetime, progress) -> RunReport:
             else:
                 log.error(f"[publish] channel {ch.id}: {yt.describe_http_error(exc)}")
                 rep.skipped_channels[ch.id] = f"error: {yt.describe_http_error(exc)[:200]}"
+    if rep.quota_exhausted and cfg.publishing.mode == "api":
+        _quota_block.setdefault(str(cfg.workspace), _next_pacific_midnight(now))
+        if _quota_block[str(cfg.workspace)] <= now:
+            _quota_block[str(cfg.workspace)] = _next_pacific_midnight(now)
+        _mark_quota_waiting(now)
+    elif not rep.quota_exhausted:
+        _quota_block.pop(str(cfg.workspace), None)
+    _instagram_pass(cfg, now, rep, started)
     return rep
+
+
+def _mark_quota_waiting(now: dt.datetime) -> None:
+    """Every YouTube clip still waiting to upload says why (all channels share one upload quota)."""
+    for it in q.items(statuses=("queued",)):
+        if it.platform == "youtube" and not it.youtube_video_id and not it.batch and it.reason in ("", "slot_too_close"):
+            it.reason, it.error = "quota", "Upload quota used up today — continues tomorrow automatically (Pacific time)."
+            q.save(it)
 
 
 def _run_instagram(ch: db.Channel, cfg: Config, now: dt.datetime, rep: RunReport) -> None:
@@ -422,7 +506,8 @@ def _handle_late(ch: db.Channel, client, cfg: Config, now: dt.datetime, rep: Run
         rep.missed.append(it.id)  # type: ignore[arg-type]
 
 
-def _upload_due(ch: db.Channel, client, cfg: Config, now: dt.datetime, rep: RunReport, budget: int | None, progress) -> int | None:
+def _upload_due(ch: db.Channel, client, cfg: Config, now: dt.datetime, rep: RunReport, budget: int | None, progress,
+                between=None) -> int | None:
     days = cfg.publishing.upload_ahead_days
     horizon = now + dt.timedelta(days=days) if days > 0 else dt.datetime.max.replace(tzinfo=dt.timezone.utc)
 
@@ -466,6 +551,11 @@ def _upload_due(ch: db.Channel, client, cfg: Config, now: dt.datetime, rep: RunR
             it.status, it.reason, it.error = "needs_manual", "file_missing", str(exc)
             q.save(it)
             continue
+        from clipforge.publish import quota as quota_mod
+
+        if quota_mod.remaining(cfg)["inserts"] <= 0:  # check BEFORE claiming: a claim counts an attempt
+            rep.quota_exhausted = True
+            break
         if not q.claim_for_upload(it.id, it.slot_utc):  # type: ignore[arg-type]
             continue  # changed under us between the read and the claim
         it = q.get(item_id)
@@ -482,8 +572,11 @@ def _upload_due(ch: db.Channel, client, cfg: Config, now: dt.datetime, rep: RunR
             _verify(it, client, slot, rep, now)
             if _current_lock is not None:
                 _current_lock.heartbeat()
+            if between is not None:
+                between()  # Instagram posts due during a long upload batch go out on time
         except yt.QuotaExceeded as exc:
             it.status, it.reason, it.error = "queued", "quota", str(exc)
+            it.attempts = max(0, it.attempts - 1)  # not the clip's fault
             q.save(it)
             rep.quota_exhausted = True
             q.log_quota_rollover(cfg)
@@ -501,7 +594,8 @@ def _upload_due(ch: db.Channel, client, cfg: Config, now: dt.datetime, rep: RunR
             if "quotaExceeded" in msg or "uploadLimitExceeded" in msg:
                 it.status, it.reason = "queued", "quota"
                 it.error = "YouTube says the daily upload limit is reached — continues tomorrow automatically."
-                it.next_attempt_at = now + dt.timedelta(hours=12)
+                it.attempts = max(0, it.attempts - 1)
+                it.next_attempt_at = None
                 q.save(it)
                 rep.quota_exhausted = True
                 break

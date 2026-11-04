@@ -37,18 +37,18 @@ class MetaAppIn(BaseModel):
 
 
 @router.get("/instagram/app", summary="Meta app setup state (secrets masked)")
-def meta_app() -> dict:
+def meta_app(request: Request) -> dict:
     sec = Secrets()
     cfg = load_config()
     return {"app_id": sec.meta_app_id or "", "app_secret": mask_secret(sec.meta_app_secret),
             "login_config_id": sec.meta_login_config_id or "", "configured": ig.configured(),
             "mode": cfg.instagram.mode, "graph_version": cfg.instagram.graph_version,
-            "redirect_uri": "http://localhost:8000/api/instagram/oauth/callback",
+            "redirect_uri": f"http://localhost:{request.url.port or 8000}/api/instagram/oauth/callback",
             "scopes": [{"scope": s, "why": ig.SCOPE_HELP[s]} for s in ig.SCOPES]}
 
 
 @router.post("/instagram/app", summary="Save the Meta App ID / App Secret (.env)")
-def save_meta_app(body: MetaAppIn) -> dict:
+def save_meta_app(body: MetaAppIn, request: Request) -> dict:
     try:
         if body.app_id is not None:
             if body.app_id and not body.app_id.strip().isdigit():
@@ -60,7 +60,7 @@ def save_meta_app(body: MetaAppIn) -> dict:
             save_secret("META_LOGIN_CONFIG_ID", body.login_config_id.strip())
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-    return meta_app()
+    return meta_app(request)
 
 
 # ============================================================================ accounts
@@ -68,9 +68,8 @@ def save_meta_app(body: MetaAppIn) -> dict:
 def ig_oauth_start(request: Request) -> dict:
     _local_only(request)
     port = request.url.port or 80
-    host = "localhost" if request.url.hostname == "localhost" else "127.0.0.1"
-    try:
-        return {"url": ig.oauth_url(f"http://{host}:{port}/api/instagram/oauth/callback")}
+    try:  # always "localhost": it must match the redirect URI registered in the Meta app exactly
+        return {"url": ig.oauth_url(f"http://localhost:{port}/api/instagram/oauth/callback")}
     except FileNotFoundError as exc:
         raise HTTPException(400, str(exc))
 
@@ -140,8 +139,11 @@ def ig_permalink(item_id: int, body: PermalinkIn) -> dict:
         raise HTTPException(404, "Unknown queue item")
     if it.platform != "instagram":
         raise HTTPException(400, "Only for Instagram clips — use Link for YouTube.")
+    from urllib.parse import urlparse
+
     link = body.permalink.strip()
-    if "instagram.com/" not in link:
+    u = urlparse(link)
+    if u.scheme != "https" or u.hostname not in ("instagram.com", "www.instagram.com") or not u.path.strip("/"):
         raise HTTPException(400, "Paste the Reel's link, e.g. https://www.instagram.com/reel/AbC123/")
     others = [o for o in q.items(it.channel_id) if o.permalink and o.permalink.rstrip("/") == link.rstrip("/") and o.id != it.id]
     if others:

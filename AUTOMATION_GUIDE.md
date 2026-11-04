@@ -287,6 +287,69 @@ Approval isn't guaranteed for a personal tool. Assisted mode and API mode both k
 
 ---
 
+## Part G — Instagram Reels (automatic, free)
+
+ClipForge posts Reels through Instagram's official API. **Important difference to YouTube:** Instagram's API can't
+schedule. ClipForge uploads each Reel ~20 minutes before its time and publishes it **at** the time, so **this laptop
+must be on, online, and running ClipForge** at Instagram post times (keep the app open, or run
+`clipforge schedule-task install --daemon`). If it was off for more than 90 minutes past a slot, that Reel is
+**not** posted late. It shows *Missed slot* with **Reschedule** / **Publish now**.
+
+### G1. Make your Instagram a professional account (2 min)
+1. Instagram app → your profile → ☰ → **Settings and activity → Account type and tools → Switch to professional
+   account** → *Creator* (or *Business*). It's free and you keep your followers.
+
+### G2. Create / link a Facebook Page (5 min)
+1. Create a Facebook Page if you don't have one (facebook.com → Pages → Create). Any name, e.g. your clip brand.
+2. Link it: Instagram app → Settings → **Accounts Center** → *Accounts* → add your Facebook account. Then on Facebook:
+   Page → Settings → **Linked accounts → Instagram → Connect**.
+
+### G3. Create the free Meta app (10 min)
+1. Go to https://developers.facebook.com/apps/creation/ (log in with the Facebook account that manages the Page).
+2. Create app → type **Business** → name it "ClipForge" → create.
+3. Add the products **Facebook Login for Business** and **Instagram** (API setup with Facebook login).
+4. Facebook Login → **Settings → Valid OAuth Redirect URIs** → add `http://localhost:8000/api/instagram/oauth/callback`
+   → Save.
+5. **App settings → Basic:** copy the **App ID** and **App Secret**.
+6. Leave the app in **Development** mode. You don't need App Review for your own accounts, because you are the app's admin.
+7. ClipForge: **Settings → Instagram Reels** → paste App ID + App Secret → **Save Meta app**.
+   - If Meta shows "Feature unavailable" / asks for a *configuration*: Facebook Login for Business → Configurations →
+     create one with the permissions listed in the app. Paste its ID into **Login configuration ID**.
+
+### G4. Add the account in ClipForge (on the laptop)
+1. **Accounts → Instagram → Add Instagram account** → log in with Facebook → tick **every** permission and your Page.
+2. Pick the Instagram account (username + followers are shown).
+3. **Confirm** it (avatar + name check), so ClipForge never posts to the wrong account.
+4. Open *Schedule & metadata settings* on the card:
+   - post times (default 13:00, 19:00, 21:30 IST), posts per day;
+   - **Hours after YouTube** (e.g. 3 = the Reel goes out ≥3 h after the same clip's Short);
+   - call-to-action line, *Also show in the main feed*.
+
+### G5. Test post
+1. Gallery → approve a clip → **Add to schedule** → tick your Instagram account (and YouTube if you like) → Add.
+2. Schedule → pick the account → open the clip:
+   - check the caption: max 5 lowercase hashtags, ≤2,200 characters, counters shown;
+   - pick a **cover frame** with the slider.
+3. Click **Publish now** in the clip's fixes (or schedule it ~30 min ahead and wait). Within ~1–2 minutes it's
+   *Published* with a link to the Reel.
+
+### G6. Every week
+- Add new clips to **both** platforms in one go (Add to schedule → tick both). Then Schedule → **All accounts** →
+  **Schedule approved clips** (YouTube first, then Instagram respecting "hours after YouTube").
+- The pink banner on Schedule lists the times the laptop must be on.
+- Dashboard → pick the Instagram account: followers, views/reach/likes/shares/saves, top Reels, best times (after 20
+  Reels), and *Reels posted but not submitted to a campaign* → **Log submission**.
+
+### G7. No Meta app? Assisted Instagram
+**Accounts → Instagram → Add without a Meta app (assisted)** → type your username. Then:
+1. Schedule → pick it → **Prepare Instagram kit**: a folder with the files in order, plus a page with the caption, copy
+   buttons and the time for each.
+2. Post them in the Instagram app, or schedule them all for free in **Meta Business Suite** (Planner → Create Reel →
+   Schedule). ClipForge never automates instagram.com: that's against Instagram's rules.
+3. Paste each Reel's link into the clip (**Reel link**) to track it.
+
+---
+
 ## Part F — Troubleshooting
 
 | You see | Do this |
@@ -302,6 +365,11 @@ Approval isn't guaranteed for a personal tool. Assisted mode and API mode both k
 | Sync didn't match an upload | The Sync dialog suggests clips for each unmatched video: click **Link to …**, or paste the link in the clip |
 | Ollama errors / very slow | Start the Ollama app; or add a free Gemini key in Settings and choose Gemini as the provider |
 | Task Scheduler "Access denied" | Run `clipforge schedule-task install` in an Administrator PowerShell |
+| Instagram: "Add Instagram account" greyed out | Settings → Instagram Reels → paste the Meta App ID + Secret |
+| Instagram: "None of your Pages has a linked Instagram professional account" | Do G1 + G2, and tick the Page on Meta's permission screen |
+| Instagram: "URL blocked" / redirect error from Facebook | Add `http://localhost:8000/api/instagram/oauth/callback` to *Valid OAuth Redirect URIs* (G3.4) and open ClipForge at `localhost:8000` |
+| Instagram clip **Missed slot** | The laptop/app was off at post time. Click Reschedule (or Publish now); keep the app open or use `schedule-task install --daemon` |
+| Instagram "couldn't process the video" | Re-render the clip; check the error (Reels: 3 s–15 min, ≤300 MB, H.264/AAC) and Retry |
 
 Useful commands:
 ```powershell

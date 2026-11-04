@@ -87,11 +87,12 @@ def process_account(ch: db.Channel, cfg: Config, now: dt.datetime, rep) -> None:
                       f"then (more than {cfg.instagram.max_late_minutes} min late — not posted late). Reschedule or Publish now.")
                 rep.missed.append(it.id)
                 continue
+            fresh = False
             if it.status == "queued" and now >= slot - lead:
-                _start_upload(it, ch, client, token, ig_id, cfg, now, rep)
+                fresh = _start_upload(it, ch, client, token, ig_id, cfg, now, rep)
             it = q.get(it.id)
             if it and it.status in ("uploading", "ready") and it.ig_container_id:
-                _advance(it, client, token, ig_id, cfg, now, rep)
+                _advance(it, client, token, ig_id, cfg, now, rep, fresh)
         except ig.IGError as exc:
             if exc.auth:
                 chs.mark_reauth(ch.id, f"Instagram refused the saved login ({exc}). Reconnect.")
@@ -116,28 +117,29 @@ def _retry_or_fail(it: db.QueueItem, msg: str, now: dt.datetime, rep) -> None:
 
 
 def _start_upload(it: db.QueueItem, ch: db.Channel, client: ig.IGClient, token: str, ig_id: str, cfg: Config,
-                  now: dt.datetime, rep) -> None:
+                  now: dt.datetime, rep) -> bool:
+    """Create the container and upload the file. True when this call uploaded it (no resume needed)."""
     if it.next_attempt_at and as_utc(it.next_attempt_at) > now:
-        return
+        return False
     if not ch.confirmed:
         _mark(it, "queued", "channel_unconfirmed", "Confirm this Instagram account (Accounts page) before the first post.")
-        return
+        return False
     probs = q.problems(it)
     if probs:
         _mark(it, "needs_manual", "metadata", " ".join(probs))
-        return
+        return False
     try:
         path = q.clip_file(it, cfg)
     except q.QueueError as exc:
         _mark(it, "needs_manual", "file_missing", str(exc))
-        return
+        return False
     bad = ig.preflight(path)
     if bad:
         _mark(it, "failed", "upload_failed", "The video doesn't meet Instagram's Reels specs: " + " ".join(bad))
         rep.failed.append(it.id)
-        return
+        return False
     if not q.claim_for_container(it.id):
-        return
+        return False
     it = q.get(it.id)  # type: ignore[assignment]
     settings = chs.settings_of(ch, cfg)
     c = client.create_reel(ig_id, token, it.ig_caption, bool(settings.get("share_to_feed", True)), it.ig_thumb_offset_ms)
@@ -158,12 +160,50 @@ def _start_upload(it: db.QueueItem, ch: db.Channel, client: ig.IGClient, token: 
     it.error = ""
     q.save(it)
     rep.uploaded.append(it.id)
+    return True
     log.info(f"[instagram] uploaded queue item {it.id} → container {it.ig_container_id} (publishes {as_utc(it.slot_utc).isoformat()})")  # type: ignore[arg-type]
 
 
-def _advance(it: db.QueueItem, client: ig.IGClient, token: str, ig_id: str, cfg: Config, now: dt.datetime, rep) -> None:
+def _resume_upload(it: db.QueueItem, client: ig.IGClient, token: str, cfg: Config) -> None:
+    """An item left 'uploading' by an earlier run/process (crash mid-upload): continue from Meta's offset.
+    Safe: the process lock means no other upload of this container is running right now."""
+    try:
+        path = q.clip_file(it, cfg)
+    except q.QueueError:
+        return
+    size = path.stat().st_size
+    offset = client.upload_offset(it.ig_container_id, token)
+    if offset < size:
+        log.info(f"[instagram] resuming the upload of queue item {it.id} at byte {offset}/{size}")
+        client.upload(it.ig_container_id, token, path, offset)
+
+
+def _find_published(it: db.QueueItem, client: ig.IGClient, token: str, ig_id: str) -> dict | None:
+    """Meta says the container is PUBLISHED but we never got the media id (timeout after media_publish)."""
+    since = as_utc(it.ig_container_at) - dt.timedelta(minutes=5) if it.ig_container_at else None
+    for m in client.recent_media(ig_id, token, 25):
+        cap = (m.get("caption") or "").strip()
+        ts = m.get("timestamp")
+        when = dt.datetime.fromisoformat(ts.replace("Z", "+00:00").replace("+0000", "+00:00")) if ts else None
+        if cap[:80] == (it.ig_caption or "").strip()[:80] and (since is None or when is None or when >= since):
+            return m
+    return None
+
+
+def _advance(it: db.QueueItem, client: ig.IGClient, token: str, ig_id: str, cfg: Config, now: dt.datetime, rep,
+             fresh: bool = False) -> None:
+    if it.status == "uploading" and not fresh:
+        _resume_upload(it, client, token, cfg)
     st = client.container_status(it.ig_container_id, token)
     code = st.get("status_code", "")
+    if code == "PUBLISHED":  # already live (an earlier media_publish answer got lost): record it, never publish again
+        m = _find_published(it, client, token, ig_id) or {}
+        it.ig_media_id, it.permalink = m.get("id", ""), m.get("permalink", "")
+        it.status, it.reason, it.published_at = "published", "", it.published_at or now
+        it.error = "" if m else "Published on Instagram (ClipForge couldn't read its link — paste it to track stats)."
+        q.save(it)
+        rep.published.append(it.id)
+        return
     if code == "IN_PROGRESS":
         return
     if code == "ERROR":
@@ -176,9 +216,7 @@ def _advance(it: db.QueueItem, client: ig.IGClient, token: str, ig_id: str, cfg:
         it.ig_container_id, it.ig_container_at, it.status = "", None, "queued"
         q.save(it)
         return
-    if code == "PUBLISHED" and it.status != "published":
-        it.status = "ready"
-    if code in ig.STATUS_DONE and it.status == "uploading":
+    if code == "FINISHED" and it.status == "uploading":
         it.status, it.reason = "ready", ""
         q.save(it)
     if it.status != "ready" or now < as_utc(it.slot_utc):  # type: ignore[arg-type]

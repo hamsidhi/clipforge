@@ -152,6 +152,31 @@ class QueueItem(SQLModel, table=True):
         return json.loads(self.yt_state_json or "{}")
 
 
+class AuthSession(SQLModel, table=True):
+    """A logged-in device (Phase 14). Only the SHA-256 of the cookie token is stored."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    token_hash: str = Field(index=True, unique=True)
+    csrf: str = ""
+    device: str = ""                           # user-agent summary / name the user gave
+    ip: str = ""
+    remember: bool = False
+    created_at: dt.datetime = Field(default_factory=now)
+    last_seen: dt.datetime = Field(default_factory=now)
+    expires_at: dt.datetime = Field(default_factory=now)
+    revoked: bool = False
+
+
+class AuditEvent(SQLModel, table=True):
+    """Security / publishing audit log shown in Settings → Security."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    at: dt.datetime = Field(default_factory=now, index=True)
+    kind: str = ""                             # login_ok | login_failed | lockout | logout | revoke | password | publish | telegram
+    detail: str = ""
+    ip: str = ""
+
+
 class VideoPerf(SQLModel, table=True):
     """Latest performance numbers of one uploaded Short."""
 

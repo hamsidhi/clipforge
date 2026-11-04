@@ -233,6 +233,9 @@ def _summary(video_id: str, rendered: bool = True) -> None:
 from clipforge.cli_publish import register as _register_publish  # noqa: E402
 
 _register_publish(app)
+from clipforge.cli_remote import register as _register_remote  # noqa: E402
+
+_register_remote(app)
 
 
 def main() -> None:

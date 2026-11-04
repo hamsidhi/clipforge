@@ -144,11 +144,9 @@ def test_container_error_and_expired(env):
     _run(t)
     cid = q.get(b.id).ig_container_id
     fake.containers[cid]["status"] = "EXPIRED"
-    _run(t + dt.timedelta(minutes=1))
+    _run(t + dt.timedelta(minutes=1))  # EXPIRED → dropped, and the end-of-run pass already made a fresh container
     got = q.get(b.id)
-    assert got.status == "queued" and not got.ig_container_id
-    _run(t + dt.timedelta(minutes=2))
-    assert q.get(b.id).ig_container_id and q.get(b.id).ig_container_id != cid
+    assert got.ig_container_id and got.ig_container_id != cid and got.status in ("uploading", "ready")
 
 
 def test_missed_slot_is_never_posted_late(env):

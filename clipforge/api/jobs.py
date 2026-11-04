@@ -163,7 +163,17 @@ class JobManager:
             return (self.current is not None and self.current.job_id == job_id) or any(t.job_id == job_id for t in self.pending)
 
     # -------------------------------------------------------------- events
+    def _notify(self, job_id: int, ev: dict) -> None:
+        if ev.get("type") == "status" and ev.get("status") in ("done", "failed"):
+            import threading
+
+            from clipforge.notify import telegram
+
+            threading.Thread(target=telegram.on_job_status, args=(job_id, ev["status"], ev.get("error", "")),
+                             daemon=True).start()
+
     def publish(self, job_id: int, ev: dict) -> None:
+        self._notify(job_id, ev)
         ch = self.channels[job_id]
         with self.lock:
             ch.seq += 1

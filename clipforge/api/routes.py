@@ -525,13 +525,21 @@ def _undo_clip(job: db.Job, rank: int) -> dict:
     return _clip_out(job, ws, old, _metas(ws))
 
 
-@router.get("/clips/{clip_id}/video", summary="Rendered clip (supports HTTP Range)")
-def clip_video(clip_id: str, download: bool = False) -> FileResponse:
+@router.get("/clips/{clip_id}/video", summary="Rendered clip (supports HTTP Range); ?preview=1 = 540×960 low-data copy")
+def clip_video(clip_id: str, download: bool = False, preview: bool = False) -> FileResponse:
     job, rank = _parse_clip_id(clip_id)
     f = _ws(job).find_clip(rank)
     if not f:
         raise HTTPException(404, "Clip not rendered yet")
-    return FileResponse(f, media_type="video/mp4", filename=f.name if download else None,
+    headers = {"Cache-Control": "private, max-age=86400"}  # URLs carry ?v=<mtime>, so a re-render gets a new URL
+    if preview and not download:
+        from clipforge.stages.preview import ensure_preview
+
+        try:
+            return FileResponse(ensure_preview(f), media_type="video/mp4", headers=headers)
+        except Exception as exc:
+            log.warning(f"preview proxy failed ({exc}); serving the full clip")
+    return FileResponse(f, media_type="video/mp4", filename=f.name if download else None, headers=headers,
                         content_disposition_type="attachment" if download else "inline")
 
 
@@ -629,6 +637,16 @@ async def upload_chunk(upload_id: str, request: Request, offset: int = 0) -> dic
         async for chunk in request.stream():
             f.write(chunk)
     return {"received": path.stat().st_size}
+
+
+@router.get("/uploads/{upload_id}", summary="How many bytes arrived (resume an interrupted upload from here)")
+def upload_state(upload_id: str) -> dict:
+    path = _upload_path(upload_id)
+    meta_p = path.with_suffix(".json")
+    if not path.exists() or not meta_p.exists():
+        raise HTTPException(404, "Unknown upload")
+    meta = json.loads(meta_p.read_text())
+    return {"received": path.stat().st_size, "size": meta["size"], "complete": meta["complete"], "filename": meta["filename"]}
 
 
 @router.post("/uploads/{upload_id}/complete")

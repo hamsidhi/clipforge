@@ -21,6 +21,8 @@ class FakeInstagram:
         self.revoked: list[str] = []
         self.calls: list[str] = []
         self.auth_broken = False
+        self.lose_publish_response = False
+        self.upload_crash_at: int | None = None  # simulate the process dying mid-upload
 
     def _auth(self, token: str) -> None:
         if self.auth_broken or not token:
@@ -63,6 +65,10 @@ class FakeInstagram:
         size = Path(path).stat().st_size
         c["size"] = size
         assert offset == c["received"], (offset, c["received"])
+        if self.upload_crash_at is not None and offset < self.upload_crash_at:
+            c["received"] = self.upload_crash_at
+            self.upload_crash_at = None
+            raise KeyboardInterrupt  # the process dies
         if self.fail_upload_once_at is not None and offset < self.fail_upload_once_at:
             c["received"] = self.fail_upload_once_at
             self.fail_upload_once_at = None
@@ -93,7 +99,11 @@ class FakeInstagram:
         c["status"] = "PUBLISHED"
         mid = f"m{len(self.published) + 1}"
         self.published.append({"id": mid, "caption": c["caption"]})
-        self.media_store[mid] = {"id": mid, "permalink": f"https://www.instagram.com/reel/{mid}/"}
+        self.media_store[mid] = {"id": mid, "permalink": f"https://www.instagram.com/reel/{mid}/", "caption": c["caption"],
+                                 "timestamp": "2026-11-04T10:00:00+0000"}
+        if self.lose_publish_response:  # Meta published it, but the answer never arrived
+            self.lose_publish_response = False
+            raise IGError("network: read timeout", transient=True)
         self.quota_usage += 1
         return mid
 

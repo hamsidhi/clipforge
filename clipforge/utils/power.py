@@ -88,9 +88,17 @@ def busy_reason(now: dt.datetime | None = None) -> str:
                 return "a ClipForge job is running"
     except Exception:
         pass
-    for it in q.items(statuses=("queued", "uploading", "ready")):
-        if it.platform == "instagram" and it.slot_utc and as_utc(it.slot_utc) - now <= BUSY_WINDOW:
-            return "an Instagram post is due within 60 min"
+    from clipforge.config import load_config
+    from clipforge.publish import channels as chs
+    from clipforge.publish import instagram as ig
+
+    if load_config().instagram.mode == "api":
+        live = {c.id for c in chs.all_channels() if c.platform == "instagram" and not c.paused
+                and c.auth_status == "ok" and not ig.is_manual(c)}
+        for it in q.items(statuses=("queued", "uploading", "ready")):
+            if it.platform == "instagram" and it.channel_id in live and it.slot_utc and \
+                    -dt.timedelta(minutes=5) <= as_utc(it.slot_utc) - now <= BUSY_WINDOW:
+                return "an Instagram post is due within 60 min"
     for it in q.items(statuses=("uploading",)):
         return "an upload is running"
     return ""

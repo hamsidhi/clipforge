@@ -300,6 +300,9 @@ def render(ws: Workspace, cfg: Config, reporter: ProgressReporter | None = None,
             extract_frame(out, min(1.0, c.duration / 2), work / "thumb.jpg", width=360)
         except Exception as exc:
             log.warning(f"thumbnail failed for clip {c.rank}: {exc}")
+        from clipforge.stages.preview import try_preview
+
+        try_preview(out)  # small 540×960 copy for phones / data saver
         ws.write_json(work / "render.json", {"fingerprint": fp, "file": out.name, "candidate": c.model_dump()})
         with lock:
             progress[c.rank] = 1.0

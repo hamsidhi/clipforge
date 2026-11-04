@@ -270,8 +270,22 @@ def revoke(ch: db.Channel) -> str:
     msg = "Saved login deleted."
     try:
         tok = load_tokens(ig_id_of(ch))
-        client().revoke(tok["user_token"])
-        msg = "Access revoked at Meta; saved login deleted."
+        from clipforge.publish import channels as chs
+
+        shared = []  # other Instagram accounts added through the same Facebook login share this user token
+        for other in chs.all_channels():
+            if other.platform == "instagram" and other.id != ch.id and not is_manual(other):
+                try:
+                    if load_tokens(ig_id_of(other)).get("user_token") == tok.get("user_token"):
+                        shared.append(other.title)
+                except (IGError, ValueError, OSError):
+                    pass
+        if shared:
+            msg = (f"Saved login deleted. Meta access kept, because {', '.join(shared)} uses the same Facebook login "
+                   "(disconnect those too to revoke it).")
+        else:
+            client().revoke(tok["user_token"])
+            msg = "Access revoked at Meta; saved login deleted."
     except Exception as exc:
         msg = f"Saved login deleted. Couldn't reach Meta ({exc}) — remove the app in Facebook → Settings → Business integrations."
     shutil.rmtree(account_dir(ig_id_of(ch)), ignore_errors=True)

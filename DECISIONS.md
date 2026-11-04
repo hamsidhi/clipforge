@@ -208,3 +208,78 @@ Cause by cause:
   `yt_state_json` (uploadStatus, privacy, publishAt, processing, failure/rejection reason).
 - **Scheduler robustness:** catch-up run on app start; Task Scheduler every 30 min + at logon + on wake from sleep;
   last run / next run / result written to `workspace/scheduler_state.json` for the Health panel.
+
+## Phase 13 — Instagram Reels (2026-11-04)
+Facts checked against developers.facebook.com today (differences from the brief noted):
+- **Path:** "Instagram API with Facebook Login" (graph.facebook.com + rupload.facebook.com). Only this path supports
+  `upload_type=resumable`, which uploads a local file. The Instagram-Login path needs a public `video_url`.
+- **Permissions:** the docs list `instagram_basic`, `instagram_content_publish`, `pages_read_engagement` (+ `ads_*` only
+  with a Business Manager role on the Page). We also ask `pages_show_list` (list Pages), `business_management` (Pages
+  owned through a Business portfolio) and `instagram_manage_insights` (stats). No App Review is needed for your own
+  accounts: the app stays in Development mode and your Facebook user is its admin.
+- **Business apps** may require "Facebook Login for Business" with a `config_id`. Optional `META_LOGIN_CONFIG_ID` in
+  `.env`; without it the classic `scope=` dialog is used.
+- **Reels flow:**
+  1. `POST /{ig-id}/media` with `media_type=REELS, upload_type=resumable, caption, share_to_feed, thumb_offset`.
+  2. `POST rupload.facebook.com/ig-api-upload/<ver>/<container>` with headers `Authorization: OAuth`, `offset`,
+     `file_size`, and the file bytes as body. Resume: `GET` the same URL returns the received `offset`.
+  3. Poll `status_code` (`IN_PROGRESS` / `FINISHED` / `ERROR` / `EXPIRED` / `PUBLISHED`). Docs: about once a minute, ≤5 min.
+  4. `POST /{ig-id}/media_publish creation_id=…`. Containers expire after 24 h.
+- **Rate limit:** 100 API-published posts per moving 24 h (one docs section still says 50 for carousels). We read
+  `content_publishing_limit` before every publish and keep a margin of 10 (`instagram.publish_limit_margin`).
+- **Reels specs:**
+  - MP4/MOV with moov first; H.264/HEVC, 4:2:0, closed GOP; 23–60 fps; width ≤1920 px; VBR ≤25 Mbps.
+  - AAC ≤48 kHz, mono or stereo.
+  - **3 s – 15 min, ≤300 MB.** Captions ≤2,200 chars and ≤30 hashtags (our own rule: ≤5, lowercase).
+  - `instagram.preflight()` checks all of this with ffprobe plus a moov/mdat atom scan. Our 1080×1920 H.264/AAC faststart clips pass.
+- **Insights:** `views` is the current metric (`plays` / `ig_reels_aggregated_all_plays_count` were deprecated in v22).
+  We read `views, reach, likes, comments, shares, saved`. Followers come from `GET /{ig-id}?fields=followers_count`.
+- **Graph version** `v26.0` (`instagram.graph_version`, used in the docs' examples).
+
+Design:
+- **One queue for both platforms.** `QueueItem.platform`; Instagram accounts are `Channel` rows (`platform=instagram`,
+  id `ig:<ig user id>`, or `ig:manual:<username>` for assisted accounts without a Meta app). The same scheduler,
+  duplicate guard, states, reasons, fixes, bulk actions and dashboard apply.
+- **Timing:** container + upload `upload_lead_minutes` (20) before the slot. Poll each tick; publish at the first tick
+  ≥ slot. The ticker runs every 60 s in the app/daemon, so posts go out within ~1 min. More than `max_late_minutes` (90)
+  late → `missed` (never posted late) with Reschedule / Publish now. EXPIRED → new container; ERROR → failed + Retry.
+- **Tokens:**
+  - Code → short token → long-lived user token (~60 days). The Page token derived from it doesn't expire and is used
+    for Instagram calls.
+  - The user token is refreshed when <10 days are left. Tokens live in `workspace/accounts/instagram/<id>/token.json`
+    and never reach the frontend.
+  - Error 190/102/10/200 → account "needs re-login" (Reconnect); the scheduler never crashes.
+- **Captions:** `ig_meta.build` = hook (if it adds something) + value line + CTA + credit + ≤5 lowercase hashtags (#reels
+  replaces #shorts). Editing in the UI is re-cleaned on save (extras stripped, never silently posted). Cover = `thumb_offset` (ms).
+- **"Post to Instagram X hours after YouTube":** after autoscheduling an Instagram account, a Reel whose clip is also
+  planned on YouTube moves to the first free slot ≥ YouTube slot + `hours_after_youtube` (per account; 0 = never before
+  YouTube). "Schedule approved clips" on *All accounts* schedules YouTube first.
+- **Assisted Instagram** (manual account, no Meta app, or `instagram.mode: assisted`): the batch becomes an
+  *Instagram kit* (files in order + caption copy buttons + times + Meta Business Suite hint). After the slot the clip
+  shows "post it yourself". Pasting the Reel link marks it published (and finds its media id for insights when connected).
+- **No browser automation of instagram.com** (against Instagram's terms). Licensed music can't be chosen through the API; ignored.
+- **OAuth while remote:** both Google and Meta redirect to `localhost`. The Accounts page says "connect on the laptop"
+  when opened from another host. The OAuth start endpoints refuse non-localhost hosts.
+
+### Phase 12.5 / 13 review fixes
+A review subagent reproduced 8 of 10 findings with scratch tests; all fixed, with regression tests in `tests/test_review_fixes.py`:
+1. **"Reschedule all missed" only takes clips that are certainly not uploaded.** Status `missed`; never the reasons
+   `interrupted` / `batched_in_api` / `assisted_unlinked` / `not_scheduled_in_studio`, which could re-upload a clip
+   already on YouTube. Those keep their per-clip buttons ("check Studio first").
+2. **Lost `media_publish` answer:** a container already `PUBLISHED` is looked up with `recent_media` (caption + time)
+   and recorded. It is never published again.
+3. **Instagram "Publish now" / Retry clear the old container**, so a fresh one is made.
+4. **Quota:**
+   - the local quota is checked before claiming (a claim counts an attempt), and `QuotaExceeded` doesn't count as an attempt;
+   - after YouTube says "quota exceeded", uploads pause until the next Pacific midnight instead of retrying every minute;
+   - every waiting clip says "quota".
+5. **Instagram never waits behind YouTube uploads:** it runs first, between YouTube uploads and at the end of every
+   run, with the clock advanced by the real time spent.
+6. **A crash mid-upload is resumed** next run from the offset Meta reports.
+7. **Disconnecting one Instagram account doesn't revoke a Facebook login shared with another connected account.**
+8. **Disconnect also removes** `missed` / `ready` items.
+9. **Keep-awake only for Instagram posts −5…+60 min away** on active, logged-in, API-mode accounts.
+10. **Old bare `needs_manual` rows get a reason** (`backfill_reasons`).
+11. **Minor:**
+    - the Reel link must be `https://(www.)instagram.com/…` (no `javascript:` links);
+    - the Facebook redirect always uses `localhost:<port>`, matching the Meta app setting.

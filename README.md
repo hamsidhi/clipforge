@@ -242,6 +242,20 @@ clipforge sync --channel <id>
 clipforge scheduler --once
 ```
 
+### 5.8 Instagram Reels (Phase 13)
+ClipForge also posts **Reels** through the official Instagram API (free). You need:
+- an Instagram **professional** account linked to a **Facebook Page**;
+- a free **Meta app** (Development mode is fine for your own accounts; no App Review).
+
+Steps: [AUTOMATION_GUIDE.md → Part G](AUTOMATION_GUIDE.md#part-g--instagram-reels-automatic-free). Then:
+- **Accounts → Instagram → Add Instagram account**, and confirm it;
+- **Add to schedule** can target YouTube, Instagram or both;
+- the Schedule page shows both platforms (filter, icons), plus a banner with the times the laptop must be on.
+
+Instagram's API has no scheduling, so ClipForge uploads ~20 min early and publishes **at the slot**. The laptop must be on
+then; a slot missed by >90 min is never posted late. No Meta app? Add the account in **assisted** mode: ClipForge makes
+an *Instagram kit* (files + captions + times) for you to post or schedule in Meta Business Suite.
+
 ## 6. How it works
 
 ```

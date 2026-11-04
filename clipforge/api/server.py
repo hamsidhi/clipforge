@@ -67,6 +67,10 @@ async def lifespan(app: FastAPI):
 
     # CLIPFORGE_NO_TICKER=1: never contact YouTube in the background (demo / screenshots)
     worker.start(ticker=getattr(app.state, "publish_ticker", True) and os.environ.get("CLIPFORGE_NO_TICKER") != "1")
+    if getattr(app.state, "publish_ticker", True) and os.environ.get("CLIPFORGE_NO_TICKER") != "1":
+        from clipforge.notify import telegram
+
+        telegram.bot().start()  # idles until a token is set and telegram.enabled is true
     yield
 
 
@@ -77,13 +81,19 @@ def create_app() -> FastAPI:
                   description="Local API behind the ClipForge web app. Everything runs on your machine.")
     app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
                        allow_methods=["*"], allow_headers=["*"])
+    from clipforge.api.auth import AuthMiddleware, router as auth_router
+
+    app.add_middleware(AuthMiddleware)  # login for anything not coming straight from this laptop (Phase 14)
+    app.include_router(auth_router)
     app.include_router(router)
     from clipforge.api.publish_routes import router as publish_router
 
     app.include_router(publish_router)
     from clipforge.api.ig_routes import router as ig_router
+    from clipforge.api.remote_routes import router as remote_router
 
     app.include_router(ig_router)
+    app.include_router(remote_router)
 
     if (FRONTEND_DIST / "assets").exists():
         app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")
@@ -95,12 +105,32 @@ def create_app() -> FastAPI:
         index = FRONTEND_DIST / "index.html"
         candidate = (FRONTEND_DIST / full_path).resolve()
         if full_path and candidate.is_file() and FRONTEND_DIST.resolve() in candidate.parents:
+            if full_path in ("sw.js", "manifest.webmanifest"):  # PWA files must never be cached stale
+                return FileResponse(candidate, headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"})
             return FileResponse(candidate)
         if index.exists():
             return FileResponse(index, headers={"Cache-Control": "no-cache"})
         return HTMLResponse(NOT_BUILT)
 
     return app
+
+
+def _file_logging() -> None:
+    """Also log to workspace/logs/clipforge.log (rotated: 5 × 2 MB) — the service runs without a console."""
+    import logging
+    from logging.handlers import RotatingFileHandler
+
+    from clipforge.config import load_config
+
+    d = load_config().workspace / "logs"
+    d.mkdir(parents=True, exist_ok=True)
+    root = logging.getLogger("clipforge")
+    if any(isinstance(h, RotatingFileHandler) for h in root.handlers):
+        return
+    h = RotatingFileHandler(d / "clipforge.log", maxBytes=2_000_000, backupCount=5, encoding="utf-8")
+    h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    h.setLevel(logging.INFO)
+    root.addHandler(h)
 
 
 def _lan_ip() -> str | None:
@@ -121,6 +151,13 @@ def serve(host: str = "127.0.0.1", port: int = 8000, dev: bool = False, open_bro
         load_config()
     except ConfigError as exc:
         raise SystemExit(f"\n{exc}\n\nFix config.yaml (or delete the offending lines — defaults are used) and start again.")
+    from clipforge.api.auth import password_set
+
+    if host not in ("127.0.0.1", "localhost", "::1") and not password_set():
+        raise SystemExit("\nRefusing to listen on {host}: anyone on that network could use ClipForge without a password.\n"
+                         "Set one first:  clipforge auth set-password\n"
+                         "(For your phone, prefer `clipforge remote setup` — Tailscale keeps it private.)".format(host=host))
+    _file_logging()
 
     url = f"http://localhost:{port}"
     vite = None

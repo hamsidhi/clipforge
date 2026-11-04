@@ -332,7 +332,7 @@ def delete_channel(channel_id: str) -> dict:
         raise HTTPException(409, "An upload is running for this channel — try again in a minute.")
     with db.session() as s:
         for it in s.exec(select(db.QueueItem).where(db.QueueItem.channel_id == channel_id,
-                                                    db.QueueItem.status.in_(("draft", "queued", "needs_manual", "failed")))).all():  # type: ignore[attr-defined]
+                                                    db.QueueItem.status.in_(("draft", "queued", "needs_manual", "failed", "missed", "ready")))).all():  # type: ignore[attr-defined]
             s.delete(it)
         # stored statistics for this account are deleted too (privacy policy: Disconnect deletes its data)
         perf_ids = [p.youtube_video_id for p in s.exec(select(db.VideoPerf).where(db.VideoPerf.channel_id == channel_id)).all()]
@@ -475,6 +475,9 @@ def queue_delete(item_id: int) -> dict:
     return {"ok": True}
 
 
+UNSAFE_BULK = ("interrupted", "batched_in_api", "assisted_unlinked", "not_scheduled_in_studio")
+
+
 def _do_reschedule(item_id: int) -> db.QueueItem:
     return q.reschedule_next(item_id)
 
@@ -512,6 +515,7 @@ def _do_publish_now(item_id: int) -> db.QueueItem:
     now = now_utc()
     it.slot_utc, it.status, it.reason, it.error, it.batch = now, "queued", "", "", ""
     it.attempts, it.next_attempt_at = 0, None
+    it.ig_container_id, it.ig_container_at = "", None  # a fresh Instagram container (the old one may be stale)
     if it.platform == "youtube":
         it.privacy = "public"
     q.save(it)
@@ -553,8 +557,11 @@ def queue_bulk(body: BulkIn) -> dict:
     ids = list(body.ids)
     action = body.action
     if action in ("reschedule_missed", "retry_failed"):  # "all of them" — no ids needed
-        want = ("missed", "needs_manual") if action == "reschedule_missed" else ("failed",)
-        ids = [it.id for it in q.items(body.channel_id, want) if not it.youtube_video_id and not it.ig_media_id]  # type: ignore[misc]
+        # only clips that certainly aren't on the platform: "interrupted", "batched_in_api", "Uploaded in Studio? not
+        # linked" etc. may already be uploaded — they keep their per-clip buttons (check Studio first)
+        want = ("missed",) if action == "reschedule_missed" else ("failed",)
+        ids = [it.id for it in q.items(body.channel_id, want)  # type: ignore[misc]
+               if not it.youtube_video_id and not it.ig_media_id and it.reason not in UNSAFE_BULK]
         action = "reschedule" if action == "reschedule_missed" else "retry"
     if action == "to_batch":
         by_channel: dict[str, list[int]] = {}

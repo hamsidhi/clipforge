@@ -26,6 +26,17 @@ Everything is unit-tested with a fake YouTube client. The real OAuth flow, uploa
 8. **Audit kit:** GitHub → Settings → Pages → Source **GitHub Actions**, then Actions → *Publish docs-site* → Run.
    Check https://hamsidhi.github.io/clipforge/privacy.html. Then follow AUDIT_KIT.md.
 
+## 1b. Instagram Reels (Phase 13): needs your Instagram + Facebook
+Everything is tested with a fake Graph API. Real setup (AUTOMATION_GUIDE.md → Part G):
+1. Instagram → switch to a **Professional** account; link a **Facebook Page**.
+2. Create the free **Meta app** (Business type), add *Facebook Login for Business* + *Instagram*, and add the redirect URI
+   `http://localhost:8000/api/instagram/oauth/callback`. Copy the App ID + Secret into Settings → Instagram Reels.
+3. On the laptop: Accounts → Instagram → **Add Instagram account** → pick it → **Confirm**.
+4. Test: approve one clip → Add to schedule (Instagram) → Schedule → open it → **Publish now**. Check that it appears
+   on your profile within ~2 minutes and the clip shows the Reel link.
+5. If Meta's login says you need a *configuration*, create one (Facebook Login for Business → Configurations) and paste
+   its ID in Settings. Report what Meta asked for, so the guide can be updated.
+
 ## 2. Phone over Wi-Fi
 ```powershell
 clipforge ui --host 0.0.0.0
