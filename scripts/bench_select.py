@@ -31,6 +31,7 @@ def main() -> None:
     ap.add_argument("--label", required=True)
     ap.add_argument("--out", default="")
     ap.add_argument("--model", default="qwen2.5:7b")
+    ap.add_argument("--ollama-url", default="", help="another Ollama server, e.g. a Vulkan one on :11435")
     ap.add_argument("--workspace", default=str(ROOT / "workspace"))
     args = ap.parse_args()
 
@@ -50,6 +51,8 @@ def main() -> None:
     cfg = load_config()
     cfg.llm.provider = "ollama"
     cfg.llm.model = args.model
+    if args.ollama_url:
+        cfg.llm.ollama_url = args.ollama_url
     holder: dict = {}
     real_get_llm = pipeline.get_llm
 

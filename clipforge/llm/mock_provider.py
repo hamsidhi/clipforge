@@ -76,6 +76,9 @@ class MockProvider(LLMProvider):
                 "ig_caption": "Ye baat sabko pata honi chahiye 👇\nPoora podcast dekho — link bio mein.\nFollow for more 🔥",
                 "hashtags": ["podcast", "hindipodcast", "business", "motivation", "shorts"],
             })
+        if task == "rerank":
+            ids = [int(n) for n in re.findall(r"^CLIP (\d+) \(", prompt, re.MULTILINE)]
+            return json.dumps({"clips": [{"id": n, "score": 5 + n % 4, "hook": 6, "standalone": 6} for n in ids]})
         if task == "titles":
             return json.dumps(self._titles(prompt), ensure_ascii=False)
         return json.dumps(self._select(prompt))

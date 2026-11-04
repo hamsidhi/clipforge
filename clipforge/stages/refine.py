@@ -51,6 +51,14 @@ def refine(
     cands: list[LLMCandidate], words: list[Word], energy: EnergyData | None, cfg: Config, duration: float,
     boundaries: tuple[set[float], set[float]] | None = None,
 ) -> list[ClipCandidate]:
+    return pick(score_pool(cands, words, energy, cfg, duration, boundaries), cfg)
+
+
+def score_pool(
+    cands: list[LLMCandidate], words: list[Word], energy: EnergyData | None, cfg: Config, duration: float,
+    boundaries: tuple[set[float], set[float]] | None = None,
+) -> list[ClipCandidate]:
+    """Snap, score and dedupe every candidate (best first) — no count limit yet."""
     words = sorted(words, key=lambda w: w.start)
     peaks = energy.peaks if energy else []
     scored: list[ClipCandidate] = []
@@ -76,9 +84,15 @@ def refine(
         if any(similar(c, k) for k in kept):
             continue
         kept.append(c)
+    return kept
 
-    # greedy pick with a diversity penalty for repeated topics
-    target = min(cfg.clips.count, cfg.clips.max_count)  # an explicit small count (e.g. a test) is respected
+
+def pick(kept: list[ClipCandidate], cfg: Config, target: int | None = None) -> list[ClipCandidate]:
+    """Greedy pick with a diversity penalty for repeated topics; ranks 1..n by score. `target` overrides the
+    configured clip count (the re-rank shortlist)."""
+    final = target is None
+    if target is None:
+        target = min(cfg.clips.count, cfg.clips.max_count)  # an explicit small count (e.g. a test) is respected
     chosen: list[ClipCandidate] = []
     pool = kept[:]
     while pool and len(chosen) < target:
@@ -88,7 +102,7 @@ def refine(
         best = max(pool, key=lambda c: c.score - 0.75 * topic_counts.get(c.topic.lower(), 0))
         chosen.append(best)
         pool.remove(best)
-    if len(chosen) < min(target, cfg.clips.min_count):
+    if final and len(chosen) < min(target, cfg.clips.min_count):
         log.warning(f"Only {len(chosen)} good clips found (wanted {target}). "
                     "The video may be short, or try another LLM provider / lower clips.min_sec.")
     chosen.sort(key=lambda c: c.score, reverse=True)

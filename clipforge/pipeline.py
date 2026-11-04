@@ -123,9 +123,11 @@ def fp_analyze(ws: Workspace) -> str:
 
 def fp_select(ws: Workspace, cfg: Config) -> str:
     # configured (not resolved) model: pulling a new Ollama model must not invalidate a finished selection
-    prompt_text = [(PROMPTS_DIR / n).read_text(encoding="utf-8") for n in ("clip_selection.md", "clip_titles.md")]
-    return fingerprint(cfg.llm.model_dump(exclude={"timeout_sec", "ollama_url", "keep_alive"}), cfg.clips.model_dump(),
-                       cfg.scoring_weights.model_dump(), prompt_text, ws.stage_time("transcribe"))
+    prompt_text = [(PROMPTS_DIR / n).read_text(encoding="utf-8")
+                   for n in ("clip_selection.md", "clip_titles.md", "clip_rerank.md")]
+    return fingerprint(cfg.llm.model_dump(exclude={"timeout_sec", "ollama_url", "keep_alive", "num_thread"}),
+                       cfg.clips.model_dump(), cfg.scoring_weights.model_dump(), cfg.select.model_dump(), prompt_text,
+                       ws.stage_time("transcribe"))
 
 
 def download_done(ws: Workspace, section: tuple[float, float] | None) -> bool:
@@ -266,7 +268,12 @@ def select(ws: Workspace, cfg: Config, reporter: ProgressReporter | None = None,
     transcript = load_transcript(ws)
     raw, failed, num_ctx = select_clips.run(ws, cfg, llm, reporter, info, transcript)
     energy = ws.read_model(ws.energy, EnergyData) if ws.energy.exists() else None
-    cands = refine.refine(raw, transcript.all_words(), energy, cfg, info.duration, transcript.boundaries())
+    pool = refine.score_pool(raw, transcript.all_words(), energy, cfg, info.duration, transcript.boundaries())
+    if cfg.select.rerank and pool:  # re-score the best few with context, then the usual diversity pick
+        shortlist = refine.pick(pool, cfg, target=cfg.select.rerank_pool)
+        select_clips.rerank(ws, cfg, llm, reporter, info, transcript, shortlist, num_ctx)
+        pool = shortlist
+    cands = refine.pick(pool, cfg)
     if not cands:
         raise RuntimeError("No usable clips were found. Check the transcript, try another LLM provider, "
                            "or lower clips.min_sec in config.yaml.")

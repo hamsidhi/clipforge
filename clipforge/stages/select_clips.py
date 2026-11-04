@@ -8,6 +8,7 @@ written later (`write_titles`) for the final clips only, with each clip's full t
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from pydantic import BaseModel, Field, field_validator
@@ -221,6 +222,28 @@ def uses_latin(llm: LLMProvider) -> bool:
     return llm.name in ("ollama", "mock")
 
 
+# ---- conservative pre-filter: only windows that clearly can't hold a short
+NON_CONTENT = re.compile(
+    r"\bsponsor|\buse (?:the |my )?code\b|promo ?code|coupon|discount code|link (?:is )?in (?:the )?description|"
+    r"download the app|like and subscribe|subscribe to|hit the bell|thank(?:s| you) for watching|"
+    r"see you in the next|welcome (?:back )?to (?:the |our |my )?(?:show|podcast|channel|episode)|"
+    r"today'?s guest|my guest today|comment below", re.IGNORECASE)
+MIN_WORDS_PER_SEC = 0.5     # normal speech is ~2.8 words/s; below this a window is mostly silence or music
+NON_CONTENT_SHARE = 0.6     # share of the window's words in intro/sponsor/outro sentences
+
+
+def skip_reason(segs: list[Segment], start: float, end: float) -> str | None:
+    """Why a window should not go to the LLM — None for every normal window. Never skips for low energy or a
+    "boring" topic: only near-silence, or a window made mostly of intro / sponsor / outro sentences."""
+    words = sum(len(s.text.split()) for s in segs)
+    if end - start >= 60 and words / (end - start) < MIN_WORDS_PER_SEC:
+        return f"almost no speech ({words} words in {(end - start) / 60:.0f} min)"
+    promo = sum(len(s.text.split()) for s in segs if NON_CONTENT.search(s.text))
+    if words and promo / words >= NON_CONTENT_SHARE:
+        return "intro / sponsor read / outro"
+    return None
+
+
 def prompt_ctx(prompts: list[str], num_predict: int, floor: int = 0) -> int:
     """Context size for these prompts: the largest one (≈2.5 chars/token for romanized Hinglish — an over-estimate,
     so nothing is ever truncated) + the reply + the system prompt, rounded up to 1024. One value for the whole
@@ -243,6 +266,10 @@ def run(ws: Workspace, cfg: Config, llm: LLMProvider, reporter: ProgressReporter
     for i, (a, b) in enumerate(windows):
         segs = window_segments(transcript.segments, a, b)
         if sum(len(s.text.split()) for s in segs) < 30:
+            continue
+        why = skip_reason(segs, a, b) if cfg.select.prefilter else None
+        if why:
+            log.info(f"Skipping window {i + 1} ({int(a // 60)}-{int(b // 60)} min): {why}")
             continue
         plan.append((i, a, b, segs, build_prompt(template, info, window_lines(segs, latin), cfg, a, b)))
     num_ctx = prompt_ctx([p for *_, p in plan], predict)
@@ -331,3 +358,80 @@ def write_titles(ws: Workspace, cfg: Config, llm: LLMProvider, reporter: Progres
             c.title = (got.title.strip() if got and got.title.strip() else fb_title)[:60]
             c.hook = got.hook.strip() if got and got.hook.strip() else fb_hook
             c.why = got.why.strip() if got else c.why
+
+
+# ----------------------------------------------------------------------------- re-rank pass
+RERANK_BATCH = 5
+RERANK_TOKENS_PER_CLIP = 40
+
+
+class RerankOut(BaseModel):
+    id: int
+    score: float = Field(0, ge=0, le=10)
+    hook: float = Field(0, ge=0, le=10)
+    standalone: float = Field(0, ge=0, le=10)
+
+    @field_validator("score", "hook", "standalone", mode="before")
+    @classmethod
+    def _clamp(cls, v: float) -> float:
+        return _score(v)
+
+
+class RerankList(BaseModel):
+    clips: list[RerankOut]
+
+
+def rerank(ws: Workspace, cfg: Config, llm: LLMProvider, reporter: ProgressReporter, info: VideoInfo,
+           transcript: Transcript, shortlist: list[ClipCandidate], num_ctx: int = 0) -> None:
+    """Re-score the shortlist (in place), RERANK_BATCH clips per call, each with `rerank_context_sec` of what is
+    said before/after it — so the model can see whether a clip depends on earlier context or stops before its
+    payoff. New sub-scores = mean of the window pass and this pass (two independent looks are steadier than
+    one); the energy-peak / mid-sentence adjustments refine applied are kept. A failed batch keeps its scores."""
+    from clipforge.stages.refine import weighted_score
+
+    template = load_prompt("clip_rerank.md")
+    latin = uses_latin(llm)
+    ctx_sec = cfg.select.rerank_context_sec
+    ordered = sorted(shortlist, key=lambda c: c.start)
+    batches = []
+    for b in range(0, len(ordered), RERANK_BATCH):
+        batch = ordered[b:b + RERANK_BATCH]
+        parts = []
+        for n, c in enumerate(batch, 1):
+            before = clip_text(transcript, max(0.0, c.start - ctx_sec), c.start - 0.01, latin)
+            inside = clip_text(transcript, c.start, c.end, latin)
+            after = clip_text(transcript, c.end + 0.01, c.end + ctx_sec, latin)
+            parts.append(f"CLIP {n} ({c.end - c.start:.0f} s)\nBEFORE: {before or '-'}\nCLIP: \"\"\"{inside}\"\"\"\n"
+                         f"AFTER: {after or '-'}")
+        prompt = template.format(podcast_title=info.title, channel=info.channel or "unknown", clips="\n\n".join(parts))
+        batches.append((b, batch, prompt))
+    predict = RERANK_TOKENS_PER_CLIP * RERANK_BATCH + 64
+    options = {"num_predict": predict, "num_ctx": prompt_ctx([p for *_, p in batches], predict, floor=num_ctx)}
+    w = cfg.scoring_weights
+    for b, batch, prompt in batches:
+        check_cancel(reporter)
+        cache = ws.select_cache / f"rerank_{fingerprint(llm.name, llm.model, prompt, options)}.json"
+        out: RerankList | None = None
+        if cache.exists():
+            out = RerankList.model_validate_json(cache.read_text(encoding="utf-8"))
+        else:
+            reporter.progress(b / max(1, len(ordered)), None, f"Re-rank {b + 1}-{b + len(batch)} of {len(ordered)}")
+            try:
+                out = llm.complete_json(prompt, RerankList, system=SYSTEM, retries=cfg.llm.max_retries, task="rerank",
+                                        json_schema=strict_schema(RerankList), options=options)
+                cache.write_text(out.model_dump_json(indent=2), encoding="utf-8")
+            except LLMError as exc:
+                if "not running" in str(exc) or "not found" in str(exc) or "API_KEY" in str(exc):
+                    raise
+                log.warning(f"Re-rank batch {b // RERANK_BATCH + 1} failed, keeping the first-pass scores: {exc}")
+        by_id = {r.id: r for r in out.clips} if out else {}
+        for n, c in enumerate(batch, 1):
+            r = by_id.get(n)
+            if r is None:
+                continue
+            bonus = c.score - weighted_score(c.scores, w)  # energy peaks / mid-sentence penalty from refine
+            old = c.scores
+            c.scores = Scores(hook=(old.hook + r.hook) / 2, standalone=(old.standalone + r.standalone) / 2,
+                              emotion=(old.emotion + r.score) / 2, value=(old.value + r.score) / 2,
+                              controversy=(old.controversy + r.score) / 2)
+            c.score = round(weighted_score(c.scores, w) + bonus, 2)

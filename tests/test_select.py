@@ -96,3 +96,77 @@ def test_write_titles_batches_and_fallback(tmp_path):
     fresh = [ClipCandidate(start=0, end=25, title="", topic="money")]
     sc.write_titles(ws, Config(), Down("x"), NullReporter(), _info(), t, fresh)
     assert fresh[0].title.startswith("Money: ") and fresh[0].hook
+
+
+def test_prefilter_skips_only_clear_non_content():
+    normal = [seg(i, i * 5.0, "maine apni pehli company mein bahut paisa gawaya aur seekha") for i in range(96)]
+    assert sc.skip_reason(normal, 0, 480) is None
+    quiet = [seg(0, 0, "music"), seg(1, 200, "haan toh chaliye shuru karte hain")]
+    assert "no speech" in sc.skip_reason(quiet, 0, 480)
+    promo = [seg(i, i * 5.0, "this episode is sponsored by acme use code FIGURE for a discount") for i in range(8)]
+    assert "sponsor" in sc.skip_reason(promo + normal[:3], 0, 60)
+    # one subscribe line in a normal window, or a low-energy but talkative window, is never skipped
+    assert sc.skip_reason(normal + [seg(99, 470, "please subscribe to our channel")], 0, 480) is None
+
+
+def test_prefilter_window_not_sent_to_llm(tmp_path):
+    talk = [seg(i, i * 5.0, "maine apni pehli company mein bahut paisa gawaya aur seekha") for i in range(96)]
+    tail = [seg(200 + i, 960 + i * 5.0, "this episode is sponsored by acme use code FIGURE") for i in range(90)]
+    t = Transcript(language="hi", model="x", duration=1440, segments=talk + tail)
+    cfg = Config().with_overrides({"llm.window_min": 8, "llm.overlap_min": 0})
+    prompts = []
+
+    class Spy(MockProvider):
+        def generate(self, prompt, **kw):
+            prompts.append(prompt)
+            return super().generate(prompt, **kw)
+
+    cands, failed, ctx = sc.run(Workspace(tmp_path, "v"), cfg, Spy(), NullReporter(), _info(), t)
+    assert len(prompts) == 1 and cands and failed == 0 and ctx % 1024 == 0
+    off = cfg.with_overrides({"select.prefilter": False})
+    prompts.clear()
+    sc.run(Workspace(tmp_path, "w"), off, Spy(), NullReporter(), _info(), t)
+    assert len(prompts) == 2  # the empty middle window is skipped by the old <30-words rule either way
+
+
+def test_rerank_averages_scores_and_keeps_bonus(tmp_path):
+    from clipforge.models import Scores
+    from clipforge.stages.refine import weighted_score
+
+    t = Transcript(language="hi", model="x", duration=60, segments=SEGS)
+    w = Config().scoring_weights
+    cands = []
+    for i, s in enumerate(SEGS[:6]):
+        sc_ = Scores(hook=8, standalone=8, emotion=8, value=8, controversy=8)
+        cands.append(ClipCandidate(start=s.start, end=s.end + 20, title="", topic="t", scores=sc_,
+                                   score=round(weighted_score(sc_, w) + (0.4 if i == 0 else 0), 2)))
+    prompts = []
+
+    class Spy(MockProvider):
+        def generate(self, prompt, **kw):
+            prompts.append(prompt)
+            return super().generate(prompt, **kw)
+
+    sc.rerank(Workspace(tmp_path, "v"), Config(), Spy(), NullReporter(), _info(), t, cands)
+    assert len(prompts) == 2 and "BEFORE:" in prompts[0] and "AFTER:" in prompts[0]
+    # mock: clip n of a batch -> score 5 + n % 4, hook 6, standalone 6
+    first = cands[0]
+    assert first.scores.hook == 7 and first.scores.value == (8 + 6) / 2
+    assert abs(first.score - (weighted_score(first.scores, w) + 0.4)) < 0.011
+
+
+def test_pipeline_select_with_rerank_mock(tmp_path):
+    from clipforge.stages import refine
+    from clipforge.models import LLMCandidate, Scores
+
+    t = Transcript(language="hi", model="x", duration=60, segments=SEGS)
+    raw = [LLMCandidate(start=s.start, end=s.end + 25, title="", topic=f"t{i}", scores=Scores(hook=i, standalone=5))
+           for i, s in enumerate(SEGS)]
+    cfg = Config().with_overrides({"clips.count": 3, "clips.min_sec": 5, "clips.max_count": 25,
+                                   "select.rerank_pool": 5, "clips.max_overlap": 1.0})
+    pool = refine.score_pool(raw, t.all_words(), None, cfg, 60, t.boundaries())
+    short = refine.pick(pool, cfg, target=cfg.select.rerank_pool)
+    assert len(short) == 5
+    sc.rerank(Workspace(tmp_path, "v"), cfg, MockProvider(), NullReporter(), _info(), t, short)
+    final = refine.pick(short, cfg)
+    assert [c.rank for c in final] == [1, 2, 3] and all(c in short for c in final)

@@ -75,6 +75,13 @@ class LLMConfig(_Section):
     seed: int | None = 42  # Ollama sampling seed: same prompt -> same answer (None = random)
 
 
+class SelectConfig(_Section):
+    prefilter: bool = True  # skip transcript windows that are clearly intro / sponsor read / outro / almost no speech
+    rerank: bool = False    # final pass: the LLM re-scores the best candidates with surrounding context
+    rerank_pool: int = Field(40, ge=5, le=100)  # how many top candidates the re-rank pass looks at
+    rerank_context_sec: float = Field(20, ge=0, le=60)  # context shown before/after each candidate
+
+
 class ScoringWeights(_Section):
     hook: float = 0.3
     standalone: float = 0.25
@@ -277,6 +284,7 @@ class Config(_Section):
     whisper: WhisperConfig = WhisperConfig()
     transcript: TranscriptConfig = TranscriptConfig()
     llm: LLMConfig = LLMConfig()
+    select: SelectConfig = SelectConfig()
     scoring_weights: ScoringWeights = ScoringWeights()
     reframe: ReframeConfig = ReframeConfig()
     captions: CaptionsConfig = CaptionsConfig()

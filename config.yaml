@@ -37,6 +37,12 @@ llm:
   seed: 42             # Ollama sampling seed: same transcript + settings -> same clips (null = random)
   keep_alive: 30m      # Ollama unloads the model this long after the last request (server: 2m frees RAM for Whisper)
 
+select:
+  prefilter: true      # skip transcript windows that are clearly intro / sponsor read / outro / almost no speech
+  rerank: false         # final pass: the LLM re-scores the best candidates with ±context, then the usual pick
+  rerank_pool: 40      # how many top candidates the re-rank pass looks at
+  rerank_context_sec: 20.0  # seconds of context shown before/after each candidate
+
 scoring_weights:
   hook: 0.3
   standalone: 0.25
