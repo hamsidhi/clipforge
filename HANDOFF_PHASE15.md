@@ -119,4 +119,4 @@ Your own settings (slots, 10 posts/day, 10 days ahead, Telegram on) were never c
   re-enables the scheduler task. Then restart `clipforge ui`. If the server is unreachable: stop it in the Oracle
   console (Instance → Stop) before using the laptop.
 * **Server gone, laptop must take over now**: `clipforge worker --standalone-emergency` (fences the server first).
-* **Code**: `git log` → Phase 15a `279431e`, 15b `15cc284`; the previous version is `69e65df`.
+* **Code**: `git log` → Phase 15a `279431e`, 15b `15cc284`, 15c (reviews) `6e511b2`; the version before Phase 15 is `69e65df`.
