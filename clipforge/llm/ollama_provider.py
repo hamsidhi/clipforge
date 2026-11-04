@@ -49,9 +49,10 @@ class OllamaProvider(LLMProvider):
             model = chosen
         super().__init__(model, temperature, timeout)
         self.max_tokens = max_tokens
+        self.calls: list[dict] = []  # Ollama's own counters per request (prompt/eval tokens + seconds) for benchmarks
 
     def generate(self, prompt: str, *, system: str | None = None, json_mode: bool = True, task: str = "",
-                 json_schema: dict | None = None) -> str:
+                 json_schema: dict | None = None, options: dict | None = None) -> str:
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
@@ -62,7 +63,8 @@ class OllamaProvider(LLMProvider):
             "stream": False,
             # num_predict caps runaway generations (JSON mode can otherwise emit whitespace until the context
             # is full — minutes on a CPU); keep_alive avoids reloading the model between windows
-            "options": {"temperature": self.temperature, "num_ctx": 16384, "num_predict": self.max_tokens},
+            "options": {"temperature": self.temperature, "num_ctx": 16384, "num_predict": self.max_tokens,
+                        **(options or {})},
             "keep_alive": self.keep_alive,
         }
         if json_mode:
@@ -75,4 +77,19 @@ class OllamaProvider(LLMProvider):
             raise LLMError(f"Ollama model '{self.model}' not found. Run: ollama pull {self.model}")
         if r.status_code >= 400:
             raise LLMError(f"Ollama error {r.status_code}: {r.text[:300]}")
-        return r.json()["message"]["content"]
+        data = r.json()
+        self.calls.append(_stats(data, task))
+        return data["message"]["content"]
+
+
+def _stats(data: dict, task: str) -> dict:
+    ns = 1e9
+    return {
+        "task": task,
+        "prompt_tokens": data.get("prompt_eval_count", 0),
+        "output_tokens": data.get("eval_count", 0),
+        "prompt_sec": round(data.get("prompt_eval_duration", 0) / ns, 2),
+        "output_sec": round(data.get("eval_duration", 0) / ns, 2),
+        "load_sec": round(data.get("load_duration", 0) / ns, 2),
+        "total_sec": round(data.get("total_duration", 0) / ns, 2),
+    }

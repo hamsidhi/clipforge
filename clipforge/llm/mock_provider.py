@@ -53,7 +53,7 @@ class MockProvider(LLMProvider):
         super().__init__("mock", temperature, timeout)
 
     def generate(self, prompt: str, *, system: str | None = None, json_mode: bool = True, task: str = "",
-                 json_schema: dict | None = None) -> str:
+                 json_schema: dict | None = None, options: dict | None = None) -> str:
         if task == "transliterate":
             pairs = re.findall(r"^(\d+): (.+)$", prompt, re.MULTILINE)
             return json.dumps({k: romanize_word(w.strip()) for k, w in pairs}, ensure_ascii=False)

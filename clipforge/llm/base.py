@@ -42,20 +42,22 @@ class LLMProvider(ABC):
 
     @abstractmethod
     def generate(self, prompt: str, *, system: str | None = None, json_mode: bool = True, task: str = "",
-                 json_schema: dict | None = None) -> str:
+                 json_schema: dict | None = None, options: dict | None = None) -> str:
         """Return the raw text completion. `task` is a hint used only by the mock provider; `json_schema`
-        constrains the output on providers that support structured outputs (Ollama)."""
+        constrains the output on providers that support structured outputs (Ollama); `options` are per-call
+        Ollama options (num_predict, num_ctx, …) that override the provider defaults — other providers ignore them."""
 
     def complete_json(
         self, prompt: str, schema: type[T], *, system: str | None = None, retries: int = 3, task: str = "",
-        json_schema: dict | None = None,
+        json_schema: dict | None = None, options: dict | None = None,
     ) -> T:
         """Ask for JSON matching `schema`; on parse/validation errors, retry with the error appended."""
         last_err = ""
         attempt_prompt = prompt
         for attempt in range(1, retries + 1):
             try:
-                raw = self.generate(attempt_prompt, system=system, json_mode=True, task=task, json_schema=json_schema)
+                raw = self.generate(attempt_prompt, system=system, json_mode=True, task=task, json_schema=json_schema,
+                                    options=options)
             except LLMError:
                 raise
             except Exception as exc:  # network etc.
