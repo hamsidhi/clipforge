@@ -25,6 +25,8 @@ SYSTEM = "You are an expert short-form video editor. You always answer with vali
 TOKENS_PER_CANDIDATE = 56   # {"s":12,"e":25,"score":8,"hook":8,"standalone":7,"topic":"startup funding"} ≈ 35 tokens
 TITLE_BATCH = 5
 TITLE_TOKENS_PER_CLIP = 110
+WORDS_PER_SEC = 2.8   # measured 2.9-3.05 on two Figuring Out episodes (Whisper words / speech time), minus fillers
+CHARS_PER_TOKEN = 2.5  # deliberately low (measured ≈3+ for romanized Hinglish on qwen2.5) → num_ctx never truncates
 
 
 def _score(v) -> float:
@@ -97,8 +99,67 @@ def window_segments(segments: list[Segment], start: float, end: float) -> list[S
     return [s for s in segments if not (s.end <= start or s.start >= end) and s.text.strip()]
 
 
-def window_lines(segs: list[Segment], latin: bool) -> str:
-    return "\n".join(f"{i}| [{s.start:.1f}-{s.end:.1f}] {segment_text(s, latin)}" for i, s in enumerate(segs, 1))
+# ---- LLM-input cleanup (never touches the transcript / captions)
+ALWAYS_FILLERS = {"um", "umm", "uh", "uhh", "uhm", "hmm", "hmmm", "erm", "er"}
+# immediate repeats of these collapse to one ("haan haan", "like like", "the the"); real Hindi reduplication
+# ("dheere dheere", "kabhi kabhi") is NOT in the list, because it carries meaning
+REPEAT_COLLAPSE = {
+    "haan", "han", "ha", "haa", "like", "so", "toh", "to", "the", "a", "an", "i", "and", "but", "yeah", "yes", "ya",
+    "matlab", "ki", "ke", "ka", "main", "mai", "mein", "hai", "is", "it", "it's", "its", "that", "of", "ok", "okay",
+    "achha", "acha", "accha", "right", "nahi", "na", "we", "you", "aur", "par", "ye", "yeh", "wo", "woh", "jo",
+}
+YOU_KNOW_KEEP = {"what", "how", "why", "that", "the", "this", "about", "who", "where", "when", "if"}
+_PUNCT = ".,!?;:…।\"'"
+
+
+def _bare(tok: str) -> str:
+    return tok.strip(_PUNCT).lower()
+
+
+def strip_fillers(text: str) -> str:
+    """Drop filler words and immediate repetitions — for the LLM prompt only (fewer tokens, same meaning):
+    um/uh/hmm; "haan haan" -> "haan"; "you know" as a filler (before a comma / at the line end, or opening a
+    sentence that doesn't continue with what/how/that… — "you know what…" stays); "matlab" as a filler (line
+    start, after punctuation, or before a comma — "iska matlab hai" stays)."""
+    toks = text.split()
+    out: list[str] = []
+    i = 0
+    while i < len(toks):
+        tok, bare = toks[i], _bare(toks[i])
+        prev_ends = not out or out[-1][-1] in _PUNCT
+        if bare in ALWAYS_FILLERS:
+            i += 1
+            continue
+        if bare == "you" and i + 1 < len(toks) and _bare(toks[i + 1]) == "know":
+            nxt = toks[i + 1]
+            last = i + 2 >= len(toks)
+            if last or nxt[-1] in ",.?!…" or (prev_ends and _bare(toks[i + 2]) not in YOU_KNOW_KEEP):
+                if out and nxt[-1] in ".?!…" and out[-1][-1] not in _PUNCT:
+                    out[-1] += nxt[-1]  # keep the sentence end
+                i += 2
+                continue
+        if bare == "matlab" and (prev_ends or tok.endswith(",")):
+            i += 1
+            continue
+        if out and bare and bare in REPEAT_COLLAPSE and _bare(out[-1]) == bare:
+            i += 1
+            continue
+        out.append(tok)
+        i += 1
+    return " ".join(out)
+
+
+def window_lines(segs: list[Segment], latin: bool, timestamps: bool = False, clean: bool = True) -> str:
+    """`id| text` per sentence (1-based id = position in `segs`). Lines left empty by the cleanup are omitted;
+    the other ids don't change."""
+    lines = []
+    for i, s in enumerate(segs, 1):
+        text = segment_text(s, latin)
+        if clean:
+            text = strip_fillers(text)
+        if text:
+            lines.append(f"{i}| [{s.start:.1f}-{s.end:.1f}] {text}" if timestamps else f"{i}| {text}")
+    return "\n".join(lines)
 
 
 def seg_start(seg: Segment) -> float:
@@ -149,6 +210,8 @@ def build_prompt(template: str, info: VideoInfo, transcript_text: str, cfg: Conf
         max_candidates=cfg.llm.max_candidates_per_window,
         min_sec=int(cfg.clips.min_sec),
         max_sec=int(cfg.clips.max_sec),
+        min_words=int(cfg.clips.min_sec * WORDS_PER_SEC),
+        max_words=int(cfg.clips.max_sec * WORDS_PER_SEC),
         transcript=transcript_text,
     )
 
@@ -158,23 +221,34 @@ def uses_latin(llm: LLMProvider) -> bool:
     return llm.name in ("ollama", "mock")
 
 
+def prompt_ctx(prompts: list[str], num_predict: int, floor: int = 0) -> int:
+    """Context size for these prompts: the largest one (≈2.5 chars/token for romanized Hinglish — an over-estimate,
+    so nothing is ever truncated) + the reply + the system prompt, rounded up to 1024. One value for the whole
+    stage, because a different num_ctx makes Ollama reload the model."""
+    need = max((len(p) for p in prompts), default=0) / CHARS_PER_TOKEN + num_predict + 128
+    return max(floor, int(-(-need // 1024) * 1024))
+
+
 def run(ws: Workspace, cfg: Config, llm: LLMProvider, reporter: ProgressReporter, info: VideoInfo,
-        transcript: Transcript) -> tuple[list[LLMCandidate], int]:
-    """Returns (candidates, number of windows that failed and should be retried next run)."""
+        transcript: Transcript) -> tuple[list[LLMCandidate], int, int]:
+    """Returns (candidates, number of windows that failed and should be retried next run, num_ctx used)."""
     template = load_prompt()
     latin = uses_latin(llm)
     windows = make_windows(transcript.duration, cfg.llm.window_min, cfg.llm.overlap_min)
     timer = Timer()
     all_cands: list[LLMCandidate] = []
     failed = 0
-    options = {"num_predict": TOKENS_PER_CANDIDATE * cfg.llm.max_candidates_per_window + 64}
+    predict = TOKENS_PER_CANDIDATE * cfg.llm.max_candidates_per_window + 64
+    plan = []
     for i, (a, b) in enumerate(windows):
-        check_cancel(reporter)
         segs = window_segments(transcript.segments, a, b)
-        text = window_lines(segs, latin)
         if sum(len(s.text.split()) for s in segs) < 30:
             continue
-        prompt = build_prompt(template, info, text, cfg, a, b)
+        plan.append((i, a, b, segs, build_prompt(template, info, window_lines(segs, latin), cfg, a, b)))
+    num_ctx = prompt_ctx([p for *_, p in plan], predict)
+    options = {"num_predict": predict, "num_ctx": num_ctx}
+    for i, a, b, segs, prompt in plan:
+        check_cancel(reporter)
         cache = ws.select_cache / f"w{i:03d}_{fingerprint(llm.name, llm.model, prompt, options)}.json"
         if cache.exists():
             res = RawCandidateList.model_validate_json(cache.read_text(encoding="utf-8"))
@@ -201,7 +275,7 @@ def run(ws: Workspace, cfg: Config, llm: LLMProvider, reporter: ProgressReporter
         all_cands += valid
     reporter.progress(1.0, 0, f"{len(all_cands)} raw candidates")
     ws.write_json(ws.llm_candidates, [json.loads(c.model_dump_json()) for c in all_cands])
-    return all_cands, failed
+    return all_cands, failed, num_ctx
 
 
 # ----------------------------------------------------------------------------- titles for the final clips
@@ -217,20 +291,25 @@ def fallback_copy(c: ClipCandidate, text: str) -> tuple[str, str]:
 
 
 def write_titles(ws: Workspace, cfg: Config, llm: LLMProvider, reporter: ProgressReporter, info: VideoInfo,
-                 transcript: Transcript, cands: list[ClipCandidate]) -> None:
+                 transcript: Transcript, cands: list[ClipCandidate], num_ctx: int = 0) -> None:
     """Fill title / hook / why of the final clips (in place), TITLE_BATCH clips per LLM call, each with its full
-    text. A failed batch gets a template title (logged) — selection never fails because of copywriting."""
+    text. A failed batch gets a template title (logged) — selection never fails because of copywriting.
+    `num_ctx`: the selection's context size, reused when big enough (no model reload)."""
     template = load_prompt("clip_titles.md")
     latin = uses_latin(llm)
     todo = [c for c in cands if not c.title]
+    batches = []
     for b in range(0, len(todo), TITLE_BATCH):
-        check_cancel(reporter)
         batch = todo[b:b + TITLE_BATCH]
         texts = [clip_text(transcript, c.start, c.end, latin) for c in batch]
         body = "\n\n".join(f"CLIP {n} ({c.end - c.start:.0f} s, topic: {c.topic or '-'}):\n\"\"\"{t}\"\"\""
                            for n, (c, t) in enumerate(zip(batch, texts), 1))
         prompt = template.format(podcast_title=info.title, channel=info.channel or "unknown", n=len(batch), clips=body)
-        options = {"num_predict": TITLE_TOKENS_PER_CLIP * len(batch) + 64}
+        batches.append((b, batch, texts, prompt))
+    predict = TITLE_TOKENS_PER_CLIP * TITLE_BATCH + 64
+    options = {"num_predict": predict, "num_ctx": prompt_ctx([p for *_, p in batches], predict, floor=num_ctx)}
+    for b, batch, texts, prompt in batches:
+        check_cancel(reporter)
         cache = ws.select_cache / f"titles_{fingerprint(llm.name, llm.model, prompt, options)}.json"
         out: TitleList | None = None
         if cache.exists():

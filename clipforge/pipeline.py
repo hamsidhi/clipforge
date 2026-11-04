@@ -264,7 +264,7 @@ def select(ws: Workspace, cfg: Config, reporter: ProgressReporter | None = None,
     reporter.stage("select", "running", f"{llm.name}:{llm.model}")
     info = load_info(ws)
     transcript = load_transcript(ws)
-    raw, failed = select_clips.run(ws, cfg, llm, reporter, info, transcript)
+    raw, failed, num_ctx = select_clips.run(ws, cfg, llm, reporter, info, transcript)
     energy = ws.read_model(ws.energy, EnergyData) if ws.energy.exists() else None
     cands = refine.refine(raw, transcript.all_words(), energy, cfg, info.duration, transcript.boundaries())
     if not cands:
@@ -275,7 +275,7 @@ def select(ws: Workspace, cfg: Config, reporter: ProgressReporter | None = None,
 
         clip_whisper.ensure_exact(ws, cfg, transcript, [(c.start, c.end) for c in cands], reporter)
         cands = clip_whisper.resnap(cands, transcript, cfg, info.duration)
-    select_clips.write_titles(ws, cfg, llm, reporter, info, transcript, cands)
+    select_clips.write_titles(ws, cfg, llm, reporter, info, transcript, cands, num_ctx)
     _drop_stale_renders(ws, cands)
     save_candidates(ws, cands)
     if failed:

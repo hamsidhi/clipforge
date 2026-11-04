@@ -24,8 +24,25 @@ SEGS = [seg(i, i * 5.0) for i in range(10)]
 def test_window_segments_numbering_and_lines():
     segs = sc.window_segments(SEGS + [Segment(id=99, start=60, end=61, text="  ")], 9.0, 31.0)
     assert [s.id for s in segs] == [2, 3, 4, 5, 6]  # overlap with [9, 31) (seg 1 ends at 7.3); blank one ignored
+    assert sc.window_lines(segs, latin=True, timestamps=True).splitlines()[0].startswith("1| [10.0-")
     lines = sc.window_lines(segs, latin=True).splitlines()
-    assert lines[0].startswith("1| [10.0-") and lines[-1].startswith("5| ")
+    assert lines[0] == "1| ek do teen chaar" and lines[-1].startswith("5| ")
+
+
+def test_lines_drop_fillers_but_keep_ids():
+    segs = [seg(0, 0, "haan haan toh suno"), seg(1, 5, "um"), seg(2, 10, "you know, maine 5 crore loss kiya")]
+    assert sc.window_lines(segs, latin=True).splitlines() == ["1| haan toh suno", "3| maine 5 crore loss kiya"]
+    assert segs[0].words[1].text == "haan"  # the transcript itself is untouched
+
+
+def test_strip_fillers_keeps_meaning():
+    f = sc.strip_fillers
+    assert f("like like it was um crazy") == "like it was crazy"
+    assert f("Matlab, ye galat hai") == "ye galat hai"
+    assert f("iska matlab hai ki paisa") == "iska matlab hai ki paisa"
+    assert f("You know what, I lost 5 crore") == "You know what, I lost 5 crore"
+    assert f("dheere dheere sab theek hua you know.") == "dheere dheere sab theek hua."
+    assert f("the the thing is, you know the rules") == "the thing is, you know the rules"
 
 
 def test_ids_map_to_word_times_inclusive():

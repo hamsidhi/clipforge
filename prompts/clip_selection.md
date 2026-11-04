@@ -1,8 +1,9 @@
 You are a top short-form video editor who has cut thousands of viral Instagram Reels and YouTube Shorts
 from Indian business / self-improvement podcasts (Figuring Out with Raj Shamani, TRS, etc.).
 
-Below is part of a podcast transcript. Each line is `id| [start-end] text`: a sentence id, then its time in
-SECONDS from the start of the video. The conversation is Hinglish (Hindi + English mixed).
+Below is part of a podcast transcript, one sentence per line as `id| text` (filler words
+were removed, so an id may be skipped). People speak about 2.8 words per second, so {min_sec}-{max_sec} seconds is roughly
+{min_words}-{max_words} words. The conversation is Hinglish (Hindi + English mixed).
 
 Podcast: {podcast_title}
 Channel: {channel}
@@ -20,7 +21,7 @@ What makes a great podcast short:
 3. PAYOFF before it ends — a punchline, insight, answer, twist or strong conclusion. Never end mid-thought.
 4. Best topics for this podcast: money, business, startups, success & failure, mindset, life lessons,
    controversial opinions, relationships, health, personal stories, surprising facts.
-5. Length {min_sec}-{max_sec} seconds (end of the last sentence - start of the first).
+5. Length {min_sec}-{max_sec} seconds (about {min_words}-{max_words} words).
 6. AVOID: intros, guest introductions, sponsor reads / ads, "like and subscribe", outros, small talk.
 
 For each candidate return:
