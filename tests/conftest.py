@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+import os
+
 import pytest
+
+# FastAPI's TestClient connects as peer "testclient" with Host "testserver"; the app treats those as the laptop
+# itself only when this flag is set (never in production).
+os.environ["CLIPFORGE_TESTING"] = "1"
 
 from clipforge.models import Word
 

@@ -347,3 +347,23 @@ certificates enabled in the admin console (`clipforge remote setup` checks `tail
   web app (or runs them itself), and remembers them in `.clipforge-seen.json`. Off by default.
 - **Optional alternative, not built in: Cloudflare Tunnel + Access.** Public hostname protected by Cloudflare Access
   (email one-time code). Documented with warnings in AUTOMATION_GUIDE Part H; never auto-enabled.
+
+### Phase 14 security review fixes
+A security-review subagent found 9 issues (6 confirmed with scratch tests). All are fixed, with regressions in `tests/test_remote.py`:
+1. **Other websites could POST to the trusted localhost** (e.g. *Publish now*, overwrite `client_secret.json`).
+   - Every `/api/*` request with `Sec-Fetch-Site` other than same-origin/none is now refused.
+   - So is any state-changing request whose `Origin` isn't this host (or the Vite dev server).
+   - Only the Google/Meta OAuth callbacks (and health) accept cross-site navigations.
+2. **`--dev --host 0.0.0.0` let LAN phones in without a password:** the Vite proxy rewrote Host and sent no X-Forwarded-For.
+   It now uses `xfwd: true` (no `changeOrigin`). Only an all-loopback X-Forwarded-For still counts as the laptop.
+3. **Open redirect on `/login?next=`:** `next` is parsed with `URL` and must be same-origin.
+4. **Global lockout DoS:** someone rotating addresses could lock the owner out. The global counter now only slows logins (2 s);
+   only the guessing address is locked.
+5. **Telegram pairing guesses:** the code is cancelled after 5 wrong attempts, and the attempts are audit-logged.
+6. **Test-only hosts (`testclient` / `testserver` / empty Host) were trusted in production:** they now count as local only
+   with `CLIPFORGE_TESTING=1` (set in `tests/conftest.py`).
+7. **Plain-HTTP LAN mode:** a loud startup warning; the login page warns when not HTTPS. Tailscale is the recommended path.
+8. **Hardening:**
+   - uploads can't exceed their declared size;
+   - remote sessions can't start jobs on arbitrary laptop file paths;
+   - the `auth` / `output` / `remote` settings can only be changed on the laptop.

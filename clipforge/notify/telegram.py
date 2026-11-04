@@ -63,6 +63,7 @@ class Bot:
     def __init__(self, transport: httpx.BaseTransport | None = None) -> None:
         self.transport = transport
         self.pair_code: tuple[str, float] | None = None
+        self.pair_failures = 0
         self.offset = 0
         self.stop = threading.Event()
         self.thread: threading.Thread | None = None
@@ -92,6 +93,7 @@ class Bot:
     def new_pair_code(self) -> str:
         code = f"{secrets.randbelow(10 ** 6):06d}"
         self.pair_code = (code, time.time() + 600)
+        self.pair_failures = 0
         return code
 
     def _try_pair(self, user_id: int, text: str) -> bool:
@@ -100,6 +102,11 @@ class Bot:
             return False
         code, until = self.pair_code
         if time.time() > until or not secrets.compare_digest(m.group(1), code):
+            self.pair_failures += 1
+            _audit("telegram", f"Wrong pairing code from Telegram user {user_id}")
+            if self.pair_failures >= 5:  # guessing: the code is burnt, make a new one in Settings
+                self.pair_code = None
+                _audit("telegram", "Pairing code cancelled after 5 wrong attempts")
             return False
         save_secret("TELEGRAM_CHAT_ID", str(user_id))
         self.pair_code = None

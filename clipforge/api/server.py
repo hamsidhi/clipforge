@@ -171,6 +171,10 @@ def serve(host: str = "127.0.0.1", port: int = 8000, dev: bool = False, open_bro
         log.warning("Web UI not built yet: cd frontend && npm install && npm run build")
 
     if host == "0.0.0.0":
+        log.warning("LAN mode: the password and the login cookie travel UNENCRYPTED over your Wi-Fi. Use it only on a "
+                    "network you trust — for anywhere-access use `clipforge remote setup` (Tailscale, HTTPS).")
+        if dev:
+            log.warning("--dev on the LAN: Vite forwards phone requests with X-Forwarded-For, so they still need the password.")
         ip = _lan_ip()
         if ip:
             log.info(f"On your phone (same Wi-Fi) open: http://{ip}:{5173 if dev else port}")

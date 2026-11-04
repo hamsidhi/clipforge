@@ -11,19 +11,29 @@ import { Label } from '@/components/ui/label'
 
 interface AuthStatus { authenticated: boolean; local: boolean; password_set: boolean; setup_required: boolean; https: boolean }
 
+/** Only same-origin paths (blocks /\evil.com, //evil.com, tabs, absolute URLs…). */
+function safeNext(raw: string | null): string {
+  try {
+    const u = new URL(raw || '/', window.location.origin)
+    return u.origin === window.location.origin ? u.pathname + u.search + u.hash : '/'
+  } catch {
+    return '/'
+  }
+}
+
 /** Login screen for the phone (Tailscale) — the laptop itself (localhost) never needs it. */
 export default function Login() {
   const [params] = useSearchParams()
-  const next = params.get('next') || '/'
+  const next = safeNext(params.get('next'))
   const [password, setPassword] = useState('')
   const [remember, setRemember] = useState(true)
   const { data: st } = useQuery({ queryKey: ['auth'], queryFn: () => request<AuthStatus>('/api/auth/status') })
   const login = useMutation({
     mutationFn: () => request<{ ok: boolean }>('/api/auth/login', { method: 'POST', body: JSON.stringify({ password, remember }) }),
-    onSuccess: () => window.location.assign(next.startsWith('/') && !next.startsWith('//') ? next : '/'),
+    onSuccess: () => window.location.assign(next),
   })
   if (st?.authenticated) {
-    window.location.replace(next.startsWith('/') && !next.startsWith('//') ? next : '/')
+    window.location.replace(next)
     return null
   }
   return (

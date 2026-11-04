@@ -353,3 +353,71 @@ def test_pwa_manifest_share_target_and_sw():
     assert "/api/" in sw and "startsWith('/api/')" in sw  # the API is never cached
     for icon in m["icons"]:
         assert (root / icon["src"].lstrip("/")).exists()
+
+
+# ----------------------------------------------------------------------------- security review regressions
+def test_other_websites_cannot_post_to_localhost(env):
+    app, _ = env
+    with TestClient(app) as local:
+        evil = {"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"}
+        assert local.post("/api/publishing/run", headers=evil).status_code == 403
+        assert local.post("/api/publishing/client-secret", content=b"{}", headers={**evil, "Content-Type": "text/plain"}).status_code == 403
+        assert local.get("/api/probe?url=https://youtu.be/x", headers={"Sec-Fetch-Site": "cross-site"}).status_code == 403
+        assert local.post("/api/publishing/run", headers={"Origin": "https://evil.example"}).status_code == 403  # no Sec-Fetch-*
+        ok = {"Origin": "http://testserver", "Sec-Fetch-Site": "same-origin"}
+        assert local.post("/api/publishing/run", headers=ok).status_code == 200
+        assert local.post("/api/publishing/run", headers={"Origin": "http://localhost:5173"}).status_code == 200  # vite dev
+        # Google / Meta sign-in redirects are cross-site navigations and must still work
+        assert local.get("/api/oauth/callback?error=access_denied", headers={"Sec-Fetch-Site": "cross-site"},
+                         follow_redirects=False).status_code in (302, 303, 307)
+
+
+def test_dev_proxy_and_test_hosts_are_not_trusted(env, monkeypatch):
+    app, _ = env
+    with TestClient(app) as c:
+        # Vite proxy (xfwd) forwarding a LAN phone: loopback peer, local Host, but X-Forwarded-For = phone
+        assert c.get("/api/jobs", headers={"X-Forwarded-For": "192.168.1.50", "Host": "127.0.0.1:8000"}).status_code == 401
+        # ... and forwarding the laptop's own browser stays trusted
+        assert c.get("/api/jobs", headers={"X-Forwarded-For": "127.0.0.1", "Host": "127.0.0.1:8000"}).status_code == 200
+        monkeypatch.delenv("CLIPFORGE_TESTING")
+        assert c.get("/api/jobs").status_code == 401  # "testclient"/"testserver" only count under pytest
+
+
+def test_global_flood_slows_but_never_locks_out_the_owner(env, monkeypatch):
+    from clipforge.api import auth
+
+    app, _ = env
+    monkeypatch.setattr(auth.time, "sleep", lambda s: None)
+    with TestClient(app) as local:
+        local.post("/api/auth/setup", json={"password": "correct horse battery"})
+        for i in range(20):  # attacker rotates addresses
+            TestClient(app, headers={"X-Forwarded-For": f"100.64.0.{i}"}).post("/api/auth/login", json={"password": "x"})
+        owner = TestClient(app, headers={"X-Forwarded-For": "100.64.9.9", "Host": "laptop.ts.net"})
+        assert owner.post("/api/auth/login", json={"password": "correct horse battery"}).status_code == 200
+
+
+def test_pairing_code_burns_after_5_wrong_guesses(tg):
+    from clipforge.config import Secrets
+
+    b, fake, app = tg
+    code = b.new_pair_code()
+    wrong = f"{(int(code) + 1) % 10 ** 6:06d}"
+    for _ in range(5):
+        b.handle(_msg(666, f"/pair {wrong}"))
+    b.handle(_msg(666, f"/pair {code}"))  # even the right code is dead now
+    assert not Secrets().telegram_chat_id and b.pair_code is None
+
+
+def test_remote_session_limits(env):
+    app, _ = env
+    with TestClient(app) as local:
+        local.post("/api/auth/setup", json={"password": "correct horse battery"})
+        r = _remote(app)
+        r.post("/api/auth/login", json={"password": "correct horse battery"})
+        h = {"X-CSRF-Token": r.cookies["cf_csrf"]}
+        assert r.post("/api/jobs", json={"url": str(Path(__file__))}, headers=h).status_code == 400  # laptop files
+        assert r.put("/api/settings", json={"config": {"auth": {"trust_localhost": False}}}, headers=h).status_code == 403
+        assert r.put("/api/settings", json={"config": {"clips": {"count": 18}}}, headers=h).status_code == 200
+        uid = local.post("/api/uploads", json={"filename": "a.mp4", "size": 10}).json()["upload_id"]
+        assert local.put(f"/api/uploads/{uid}?offset=0", content=b"x" * 11).status_code == 400  # over the declared size
+        assert local.put(f"/api/uploads/{uid}?offset=0", content=b"x" * 10).json()["received"] == 10

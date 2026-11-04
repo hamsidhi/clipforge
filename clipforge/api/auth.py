@@ -32,7 +32,17 @@ COOKIE = "cf_session"
 CSRF_COOKIE = "cf_csrf"
 CSRF_HEADER = "x-csrf-token"
 SHORT_SESSION = dt.timedelta(hours=12)        # "remember this device" off
-LOOPBACK = ("127.0.0.1", "::1", "localhost", "testclient")
+LOOPBACK = ("127.0.0.1", "::1", "localhost")
+LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
+# browser navigations coming back from Google / Meta sign-in are cross-site by nature (they check their own `state`)
+CROSS_SITE_OK = ("/api/oauth/callback", "/api/instagram/oauth/callback", "/api/health")
+
+
+def _testing() -> bool:
+    """FastAPI's TestClient talks as peer 'testclient' with Host 'testserver' — only accepted under pytest."""
+    import os
+
+    return os.environ.get("CLIPFORGE_TESTING") == "1"
 PROXY_HEADERS = ("x-forwarded-for", "forwarded", "x-real-ip", "tailscale-user-login", "tailscale-user-name",
                  "cf-connecting-ip", "x-forwarded-host")
 # reachable without a session (health check, the login screen itself, OAuth callbacks which are localhost-only anyway)
@@ -84,14 +94,42 @@ def client_ip(request: Request) -> str:
     return request.client.host if request.client else ""
 
 
+def _loopback_peer(request: Request) -> bool:
+    ip = client_ip(request)
+    return ip in LOOPBACK or (_testing() and ip == "testclient")
+
+
 def is_local(request: Request) -> bool:
-    """Directly from this laptop (not through Tailscale Serve / a tunnel / the LAN)."""
-    if client_ip(request) not in LOOPBACK:
+    """Directly from this laptop (not through Tailscale Serve / a tunnel / the LAN / a dev proxy)."""
+    if not _loopback_peer(request):
         return False
-    if any(h in request.headers for h in PROXY_HEADERS):
+    for h in PROXY_HEADERS:
+        if h not in request.headers:
+            continue
+        # a local dev proxy (Vite with xfwd) forwarding the laptop's own browser adds X-Forwarded-For: 127.0.0.1
+        if h == "x-forwarded-for" and all(x.strip() in LOOPBACK for x in request.headers[h].split(",")):
+            continue
         return False
     host = (request.headers.get("host") or "").rsplit(":", 1)[0].strip("[]").lower()
-    return host in ("localhost", "127.0.0.1", "::1", "testserver", "")
+    return host in LOCAL_HOSTS or (_testing() and host == "testserver")
+
+
+def _origin_ok(request: Request) -> bool:
+    """Is this request from ClipForge's own pages? Blocks other web pages open in the same browser (CSRF against
+    the trusted localhost) — browsers always send Sec-Fetch-Site / Origin on cross-site requests."""
+    site = request.headers.get("sec-fetch-site")
+    if site and site not in ("same-origin", "none"):
+        return False
+    origin = request.headers.get("origin")
+    if origin and request.method not in ("GET", "HEAD", "OPTIONS"):
+        from urllib.parse import urlparse
+
+        o = urlparse(origin)
+        host = request.headers.get("host", "")
+        dev = o.hostname in LOCAL_HOSTS and o.port == 5173  # `npm run dev` (Vite) proxies the API
+        if not dev and (o.netloc or "").lower() != host.lower():
+            return False
+    return True
 
 
 def is_https(request: Request) -> bool:
@@ -190,7 +228,12 @@ class _Limiter:
             return max(0.0, self.locked_until.get(ip, 0) - time.time())
 
     def locked_any(self, ip: str) -> float:
-        return max(self.locked(ip), self.locked("*"))
+        """Only the address itself gets locked out; a global flood (someone rotating addresses) only slows logins
+        down (see `slow_down`) — otherwise an attacker could lock the owner out forever."""
+        return self.locked(ip)
+
+    def slow_down(self) -> bool:
+        return self.locked("*") > 0
 
     def fail(self, ip: str) -> bool:
         """Record a failure; True when this failure triggers a lockout. A global counter ("*", 3× the per-address limit)
@@ -235,6 +278,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if path.startswith(LOCAL_ONLY_PATHS) and not is_local(request):
             return JSONResponse({"detail": "API docs are only available on the laptop (http://localhost:8000/docs)."}, 404)
         request.state.session = None
+        if path.startswith("/api/") and not path.startswith(CROSS_SITE_OK) and not _origin_ok(request):
+            return JSONResponse({"detail": "Blocked: this request came from another website."}, 403)
         request.state.local = trusted(request)
         if path.startswith("/api/") and not path.startswith(PUBLIC_API) and not request.state.local:
             sess = session_for(request)
@@ -292,9 +337,11 @@ class LoginIn(BaseModel):
 @router.post("/auth/login")
 def login(body: LoginIn, request: Request, response: Response) -> dict:
     ip = client_ip(request)
-    if ip in LOOPBACK and request.headers.get("x-forwarded-for"):  # behind Tailscale Serve: the real phone address
+    if _loopback_peer(request) and request.headers.get("x-forwarded-for"):  # behind Tailscale Serve: the real phone address
         ip = request.headers["x-forwarded-for"].split(",")[0].strip()
     wait = limiter.locked_any(ip)
+    if not wait and limiter.slow_down():
+        time.sleep(2)  # many wrong passwords from many addresses: make guessing slow for everyone, block nobody
     if wait:
         raise HTTPException(429, f"Too many wrong passwords — try again in {int(wait // 60) + 1} min.")
     if not password_set():

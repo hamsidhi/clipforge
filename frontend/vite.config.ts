@@ -12,7 +12,8 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': { target: 'http://127.0.0.1:8000', changeOrigin: true },
+      // xfwd: the API must see who is really asking (a phone on the LAN is not "this laptop")
+      '/api': { target: 'http://127.0.0.1:8000', xfwd: true },
     },
   },
   build: {

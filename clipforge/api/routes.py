@@ -142,7 +142,7 @@ class JobCreate(BaseModel):
 
 
 @router.post("/jobs", summary="Create a clip job from a YouTube URL or an uploaded file")
-def create_job(body: JobCreate) -> dict:
+def create_job(body: JobCreate, request: Request = None) -> dict:  # type: ignore[assignment]
     settings = body.settings.model_dump(exclude_none=True)
     try:
         job_config(settings)  # validate before touching the upload, so a bad setting doesn't consume it
@@ -161,7 +161,9 @@ def create_job(body: JobCreate) -> dict:
         title = Path(name).stem
     elif body.url and body.url.strip():
         source = body.url.strip()
-        if not is_url(source) and not Path(source).exists():
+        remote = request is not None and not getattr(request.state, "local", True)
+        if not is_url(source) and (remote or not Path(source).exists()):
+            # a file path on the laptop is only accepted from the laptop itself; phones upload the file instead
             raise HTTPException(400, "Paste a YouTube link (https://…) or upload a video file.")
         title = ""
     else:
@@ -633,10 +635,16 @@ async def upload_chunk(upload_id: str, request: Request, offset: int = 0) -> dic
     size = path.stat().st_size
     if offset > size:
         raise HTTPException(409, f"Expected offset {size}")
+    declared = json.loads(path.with_suffix(".json").read_text())["size"]
     with open(path, "r+b") as f:
         f.truncate(offset)  # a retried chunk after a partial write overwrites the partial data
         f.seek(offset)
+        written = offset
         async for chunk in request.stream():
+            written += len(chunk)
+            if written > declared:  # never more than the file size announced at the start (disk-filling)
+                f.truncate(offset)
+                raise HTTPException(400, f"More data than the declared {declared} bytes")
             f.write(chunk)
     return {"received": path.stat().st_size}
 
@@ -711,10 +719,18 @@ class SettingsUpdate(BaseModel):
     secrets: Optional[dict[str, Optional[str]]] = None
 
 
+LAPTOP_ONLY_SECTIONS = ("auth", "output", "remote")  # login rules, where files go, the watch folder
+
+
 @router.put("/settings", summary="Update config.yaml values and/or API keys (.env)")
-def put_settings(body: SettingsUpdate) -> dict:
+def put_settings(body: SettingsUpdate, request: Request) -> dict:
     if body.config is not None:
         cur = _cfg().model_dump(mode="json")
+        if not getattr(request.state, "local", True):
+            changed = [s for s in LAPTOP_ONLY_SECTIONS if isinstance(body.config.get(s), dict)
+                       and any(cur.get(s, {}).get(k) != v for k, v in body.config[s].items())]
+            if changed:
+                raise HTTPException(403, f"Change {', '.join(changed)} settings on the laptop itself.")
         for section, values in body.config.items():
             if section in cur and isinstance(values, dict):
                 cur[section].update(values)
