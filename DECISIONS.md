@@ -283,3 +283,67 @@ A review subagent reproduced 8 of 10 findings with scratch tests; all fixed, wit
 11. **Minor:**
     - the Reel link must be `https://(www.)instagram.com/…` (no `javascript:` links);
     - the Facebook redirect always uses `localhost:<port>`, matching the Meta app setting.
+
+## Phase 14 — Use ClipForge from the phone (2026-11-04)
+Checked today: Tailscale Serve CLI (tailscale.com/kb/1242): `tailscale serve --bg --https=443 127.0.0.1:8000`, off with
+`… off`, `tailscale serve status --json`. It is tailnet-only; Funnel (public) is never used. HTTPS needs MagicDNS + HTTPS
+certificates enabled in the admin console (`clipforge remote setup` checks `tailscale status --json` and prints the steps).
+- **Who must log in:** anything not coming straight from the laptop. "Local" = loopback peer **and** no proxy headers
+  (`X-Forwarded-For`, `Tailscale-User-*`, `Forwarded`, …) **and** a localhost `Host`. Tailscale Serve connects from
+  127.0.0.1, so the header/Host checks are what tell a phone apart; a DNS-rebinding page with a foreign Host also counts
+  as remote. `auth.trust_localhost: false` makes the laptop log in too.
+- **Password:** stdlib `hashlib.scrypt` (n=2^15, r=8, p=1, 16-byte salt). No new dependency (argon2/bcrypt need native
+  wheels), same strength class. Only the hash is stored, in `.env` (`CLIPFORGE_PASSWORD_HASH`). Minimum 10 characters.
+  Changing it logs every device out. `clipforge auth set-password`, or Settings on the laptop. Remote changes need the
+  current password.
+- **Sessions:**
+  - random 32-byte token in an `HttpOnly; SameSite=Strict` cookie (`Secure` when HTTPS, incl. `X-Forwarded-Proto`
+    from loopback); only its SHA-256 is stored in `AuthSession`;
+  - "remember this device" = 30 days (`auth.session_days`), otherwise 12 h; devices listed and revocable in
+    Settings → Security.
+- **CSRF:** double-submit token (readable `cf_csrf` cookie + `X-CSRF-Token` header) on every state-changing request of a session.
+- **Rate limit:** 5 wrong passwords per address in 15 min → 15-min lockout (plus a global 15/15 min). Audit-logged.
+- **Hardening:**
+  - `/api/health` is public and returns only ok + version;
+  - `/docs` and `/openapi.json` are laptop-only;
+  - CSP `default-src 'self'`, `X-Frame-Options: DENY`, `Referrer-Policy: same-origin`, `nosniff`;
+  - `--host 0.0.0.0` (LAN) refuses to start without a password.
+- **Service:**
+  - one hidden Task Scheduler task at logon runs `pythonw -m clipforge service run`;
+  - a watchdog restarts `clipforge ui` with backoff 5 s → 5 min (reset after 5 min healthy) and logs to
+    `workspace/logs/service.log`;
+  - the UI logs to `clipforge.log` (rotating 5 × 2 MB).
+- **Keep-awake:** `SetThreadExecutionState(ES_CONTINUOUS|ES_SYSTEM_REQUIRED)` held by one thread while a job runs or an
+  Instagram post is due within 60 min (`power.keep_awake: when_busy`). It doesn't stop lid-close sleep: that's a Windows
+  power setting (README).
+- **PWA:**
+  - manifest (standalone, maskable icon, `share_target` GET /share → New job with the link);
+  - service worker caching the app shell only (network-first navigation, cache-first hashed assets, never `/api/*`),
+    plus an offline page "can't reach your laptop".
+  - Needs HTTPS → Tailscale.
+- **Phone UI:**
+  - bottom bar Jobs / Gallery (latest episode) / Schedule / Stats / More;
+  - swipe right/left on a clip = approve/reject, tap = play;
+  - ±0.5 s trim nudges that snap to words, bigger trim handles on touch;
+  - pull-to-refresh;
+  - resumable uploads (upload id remembered per file, `GET /api/uploads/{id}` tells the offset; 4 MB chunks remotely).
+- **Preview proxy:** 540×960, ~0.9 Mbps H.264 + 64 kbps AAC, faststart, in `clips/_work/NN/preview.mp4`.
+  - Made after each render and lazily for old clips.
+  - Used automatically when the page isn't on localhost ("data saver", toggle per device); the full file is only for
+    download.
+  - Clip videos get `Cache-Control: private, max-age=86400` (URLs carry `?v=<mtime>`).
+- **Telegram:**
+  - long polling (`getUpdates`, 50 s) from the laptop, so no public server;
+  - pairing with a 6-digit one-time code (10 min); the paired user id is stored in `.env` (`TELEGRAM_CHAT_ID`), and
+    every other user is ignored and audit-logged (once an hour);
+  - pause and schedule ask for confirmation with inline buttons; job-finished messages carry the top 3 clips as preview
+    videos (≤50 MB) with ✅ / ❌ buttons;
+  - alerts are de-duplicated; daily summary at 22:00 IST;
+  - backoff 1 → 60 s on network errors;
+  - plain httpx, tested with `httpx.MockTransport`.
+- **OAuth while remote:** both Google (Desktop client) and Meta redirect to `localhost`, so accounts are connected on
+  the laptop. The UI says so and the OAuth start endpoints refuse other hosts.
+- **`clipforge watch <folder>`:** picks up video files whose size has been stable for 30 s, hands them to the running
+  web app (or runs them itself), and remembers them in `.clipforge-seen.json`. Off by default.
+- **Optional alternative, not built in: Cloudflare Tunnel + Access.** Public hostname protected by Cloudflare Access
+  (email one-time code). Documented with warnings in AUTOMATION_GUIDE Part H; never auto-enabled.

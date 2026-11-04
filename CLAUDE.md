@@ -82,6 +82,18 @@ cd frontend && npm install && npm run build   # build the UI once
   unconfirmed or paused channels never upload; a clip key is unique per channel; never exceed
   `publishing.insert_calls_per_day`; no browser automation of YouTube.
 
+### Remote / phone (Phase 14)
+- `api/auth.py`: `AuthMiddleware` gates every `/api/*` path except health/auth for non-local requests (local = loopback
+  peer + no proxy headers + localhost Host). Cookie session (`AuthSession`, token hash only) + CSRF double-submit
+  (`cf_csrf` cookie → `X-CSRF-Token`, sent by `frontend/src/api/client.ts`), scrypt password in `.env`, lockout,
+  `AuditEvent` log, security headers. Tests use `TestClient(app, headers={"X-Forwarded-For": …})` to act remote.
+- `remote.py` (Tailscale status/serve, QR), `service.py` (watchdog + logon task), `watch.py`, `utils/power.py`
+  (keep-awake), `stages/preview.py` (540×960 proxy, `?preview=1`), `notify/telegram.py` + `commands.py` (bot,
+  `set_bot()` for tests with `httpx.MockTransport`), `api/remote_routes.py`, `cli_remote.py`.
+- PWA: `frontend/public/{manifest.webmanifest, sw.js, icons/}` (icons from `scripts/make_icons.py`); never cache `/api/*`.
+- Phone screenshots: `node scripts/screenshots.mjs http://127.0.0.1:8010 1 1-1 phase14` (390×844, fails on console
+  errors or horizontal scroll, checks the PWA basics).
+
 ### Instagram (Phase 13)
 - `publish/instagram.py`: Graph client (`GraphIG`, fake hook `set_client_factory`), Facebook Login (`oauth_url`,
   `finish_oauth` → `pick`), tokens in `workspace/accounts/instagram/<ig id>/token.json` (long-lived user token refreshed

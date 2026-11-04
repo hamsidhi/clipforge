@@ -20,7 +20,7 @@ DEMO = ROOT / "workspace_demo"
 sys.path.insert(0, str(ROOT))
 
 
-def main(source_id: str = "sdMHVIcPGwg") -> None:
+def main(source_id: str = "TjPPIf-M6KE") -> None:
     src = ROOT / "workspace" / source_id
     if not (src / "candidates.json").exists():
         raise SystemExit(f"workspace/{source_id} has no clips — process an episode first.")

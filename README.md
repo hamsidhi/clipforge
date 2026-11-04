@@ -256,6 +256,25 @@ Instagram's API has no scheduling, so ClipForge uploads ~20 min early and publis
 then; a slot missed by >90 min is never posted late. No Meta app? Add the account in **assisted** mode: ClipForge makes
 an *Instagram kit* (files + captions + times) for you to post or schedule in Meta Business Suite.
 
+## 5.9 Use it from your phone (Tailscale, PWA, Telegram)
+Your laptop keeps doing the work; your phone becomes the remote control, from anywhere and privately (nothing is exposed to
+the internet). In short: `clipforge auth set-password` → `clipforge service install` → install Tailscale on laptop + phone
+(same account, MagicDNS + HTTPS on) → `clipforge remote setup` → scan the QR → **Install app**. Share YouTube links straight
+into ClipForge, swipe to approve clips, schedule, and get Telegram pings with one-tap approve buttons.
+Full steps + troubleshooting: [AUTOMATION_GUIDE.md → Part H](AUTOMATION_GUIDE.md#part-h--use-it-from-your-phone-anywhere-free-private).
+
+**Windows power settings for a laptop that serves your phone:** plugged in → *never sleep*; lid close → *do nothing*
+(your choice). Tailscale must start at login (tray icon → *Run unattended*). Health check without login: `GET /api/health`.
+
+```bash
+clipforge auth set-password | sessions | revoke-all
+clipforge remote setup | status | stop
+clipforge service install | remove | status
+clipforge schedule-task install [--daemon]
+clipforge watch <folder>          # auto-start jobs for videos dropped into a (synced) folder
+clipforge telegram test
+```
+
 ## 6. How it works
 
 ```

@@ -350,6 +350,97 @@ must be on, online, and running ClipForge** at Instagram post times (keep the ap
 
 ---
 
+## Part H — Use it from your phone (anywhere, free, private)
+
+ClipForge keeps running on your laptop at home (it has the CPU, Ollama and the files). Your Android phone becomes the
+remote control: start jobs, approve clips, schedule, watch stats, get Telegram pings. Nothing is opened to the public
+internet. **Tailscale** (free personal plan) links your phone and laptop privately.
+
+### H1. Laptop: password + keep it running (10 min)
+1. Set a password (the phone needs it; the laptop itself doesn't):
+   ```powershell
+   clipforge auth set-password
+   ```
+2. Start ClipForge at every login, restarting it if it crashes (web app + publishing scheduler):
+   ```powershell
+   clipforge service install
+   ```
+   (Then either log out and in, or start it now: `schtasks /Run /TN "ClipForge Service"`. Logs: `workspace\logs\`.)
+3. Windows power settings (Settings → System → Power & battery):
+   - **Plugged in: Never sleep** (screen can turn off; that's fine).
+   - Control Panel → Power Options → *Choose what closing the lid does* → **When plugged in: Do nothing** (your choice:
+     only if you leave the laptop closed and charging).
+   - ClipForge also keeps the laptop awake by itself while a job runs or an Instagram post is due (Settings → Phone &
+     remote → Keep the laptop awake).
+
+### H2. Tailscale on both devices (10 min)
+1. Laptop: install from https://tailscale.com/download → log in (Google account is fine). In the tray icon settings
+   tick **Run unattended** / start at login.
+2. Phone: install **Tailscale** from the Play Store → log in with the **same** account → switch it on.
+3. Admin console https://login.tailscale.com/admin/dns: **MagicDNS → Enable** and **HTTPS Certificates → Enable**.
+4. Laptop:
+   ```powershell
+   clipforge remote setup
+   ```
+   It checks everything above, publishes ClipForge privately at `https://<laptop>.<tailnet>.ts.net` and shows a QR code
+   (also in Settings → Phone & remote).
+
+### H3. Phone: open + install the app
+1. Scan the QR (or type the address) in **Chrome** on the phone → log in → tick *Remember this device*.
+2. Chrome ⋮ → **Install app** (or the *Install app* button at the top). ClipForge now opens like a normal app.
+3. **Share links straight in:** in the YouTube app → Share → **ClipForge** → New job opens with the link filled in.
+4. On the phone:
+   - the bottom bar has Jobs · Gallery · Schedule · Stats · More;
+   - in the Gallery, **swipe right = approve, swipe left = reject**, tap = play;
+   - the trimmer has ±0.5 s buttons;
+   - pull down to refresh.
+   - Videos play as small previews (data saver; change it in Settings → Phone & remote).
+5. Uploading a video file from the phone resumes by itself if the connection drops.
+6. Connecting new YouTube/Instagram **accounts** is done on the laptop (Google/Meta send logins back to `localhost`).
+   Everything else works from the phone.
+
+### H4. Telegram bot (5 min, optional but handy)
+1. Telegram → **@BotFather** → `/newbot` → pick a name → copy the token.
+2. ClipForge → Settings → Phone & remote → Telegram: paste the token → **Save token** → **Pair** → send the shown
+   `/pair 123456` to your new bot. Only your Telegram account can use it from now on.
+3. You get:
+   - **Job finished:** the top 3 clips as videos, with ✅ Approve / ❌ Reject / ✏️ Open buttons;
+   - **Job failed / posted / upload failed / Instagram slot missed / account needs re-login / quota used up;**
+   - **a daily summary at 22:00 IST.**
+   Each one can be switched off.
+4. Commands: send a YouTube link (or `/new <link>`), `/status`, `/queue`, `/approve 12 1,3,5`,
+   `/schedule 12 both`, `/pause <account>`, `/resume <account>`, `/dashboard`, `/help`. Pause and schedule ask for confirmation.
+
+### H5. A phone-only day
+1. Morning: in the YouTube app, **Share → ClipForge** on a new episode → *Create clips*.
+2. ~1–2 h later Telegram pings "Job finished" with the top clips → tap ✅ on the good ones (or open the Gallery and swipe).
+3. Send `/schedule <job> both` → ✅ Yes. YouTube Shorts upload as private + scheduled. Reels publish at their slots
+   while the laptop stays on.
+4. Evening: `/dashboard` or the Stats tab; the 22:00 summary arrives by itself.
+
+### H6. Optional alternative: Cloudflare Tunnel (public address)
+Only if you can't use Tailscale on a device. A Cloudflare Tunnel + **Cloudflare Access** (email one-time code) can put
+ClipForge at e.g. `clipforge.yourdomain.com`.
+- **Warning:** the address is public on the internet; ClipForge's password and Cloudflare Access are then all that
+  protect your accounts.
+- Keep `auth.trust_localhost: true` only if nothing else on the laptop proxies to it. Never run a tunnel without
+  Access + a strong password.
+- ClipForge doesn't set this up for you on purpose.
+
+### Phone troubleshooting
+| Problem | Fix |
+|---|---|
+| Phone says "Can't reach your laptop" | Laptop on and awake? `clipforge service status`; Tailscale switched on on **both** (tray icon / phone app)? |
+| Laptop fell asleep | Power settings in H1.3; Settings → Phone & remote → Keep awake = *Always* if needed |
+| Tailscale logged out | Open Tailscale on the laptop, log in, keep *Run unattended* on; `clipforge remote status` |
+| Certificate / "not secure" warning | Enable **HTTPS Certificates** in the Tailscale admin DNS page, run `clipforge remote setup` again, use the `https://…ts.net` address |
+| "Set a password on the laptop first" | `clipforge auth set-password` on the laptop |
+| "Too many wrong passwords" | Wait 15 min (or revoke devices in Settings → Security) |
+| Telegram bot silent | Settings → Phone & remote → Telegram: token saved? *Paired*? *Bot enabled* on? ClipForge running? Send `/help` |
+| Share menu doesn't show ClipForge | Install the app first (H3.2); Android lists installed web apps as share targets |
+
+---
+
 ## Part F — Troubleshooting
 
 | You see | Do this |

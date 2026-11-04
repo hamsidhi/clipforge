@@ -37,6 +37,18 @@ Everything is tested with a fake Graph API. Real setup (AUTOMATION_GUIDE.md → 
 5. If Meta's login says you need a *configuration*, create one (Facebook Login for Business → Configurations) and paste
    its ID in Settings. Report what Meta asked for, so the guide can be updated.
 
+## 1c. Phone remote control (Phase 14): needs Tailscale on both devices + your Telegram
+Tested with fakes; the real setup is AUTOMATION_GUIDE.md → Part H:
+1. `clipforge auth set-password`, then `clipforge service install`, then log out and back in. Check that
+   http://localhost:8000 opens without you starting anything.
+2. Install Tailscale on the laptop + phone (same account). In the admin console: MagicDNS + HTTPS Certificates on.
+   Then run `clipforge remote setup`. **Tailscale isn't installed on this laptop yet**, so this couldn't be tested here.
+3. Phone: open the printed `https://…ts.net` address → log in → Install app. Try: Share a YouTube link from the YouTube
+   app → ClipForge; swipe in the Gallery; a 1-minute file upload over mobile data.
+4. Telegram: @BotFather → token → Settings → Phone & remote → Save → Pair → `/pair <code>`; then `/help` and `/status`.
+5. Power: plugged in → never sleep; lid close → do nothing (if you want it closed). Tailscale → Run unattended.
+6. If anything in the remote setup differs from the guide (Tailscale CLI output, Chrome install prompt), note it.
+
 ## 2. Phone over Wi-Fi
 ```powershell
 clipforge ui --host 0.0.0.0
