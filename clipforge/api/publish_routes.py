@@ -76,11 +76,17 @@ def publishing_status() -> dict:
         banner = {"level": "warning", "text": "Your API project isn't audited and the unverified-project lock is on: "
                   "API uploads stay private. Only a single test upload is allowed — use assisted mode or request the audit.",
                   "link": AUDIT_FORM}
+    elif p.mode == "assisted":
+        banner = {"level": "info", "text": "Assisted mode: ClipForge prepares everything, you upload the batch in YouTube "
+                  "Studio (~10 min/week), then Sync. Clips are never uploaded automatically in this mode. API mode "
+                  "uploads by itself (private + scheduled) — Google lifted the unaudited-project lock on 2 Nov 2026.",
+                  "link": None}
     elif not p.api_audited:
         banner = {"level": "info", "text": "Google lifted the private-only lock for unaudited API projects on 2 Nov 2026, so "
                   "API mode works now. The audit is only needed for more quota (100 uploads/day by default).",
                   "link": AUDIT_FORM}
     return {
+        "audit_status": p.audit_status, "audit_applied_on": p.audit_applied_on, "late_policy": p.late_policy,
         "mode": p.mode, "api_audited": p.api_audited, "unverified_lock": p.unverified_lock, "banner": banner,
         "audit_form": AUDIT_FORM, "quota": rem, "uploads_left_today": rem["inserts"],
         "client_secret": yt.client_secret_path().exists(), "channels": len(chs.all_channels()),
@@ -103,6 +109,88 @@ async def upload_client_secret(request: Request) -> dict:
 @router.post("/publishing/run", summary="Run the scheduler now (upload due clips, refresh statuses, sync stats)")
 def run_now() -> dict:
     return {"queued": worker.submit("run", "Scheduler run", run_scheduler)}
+
+
+def _token_health(ch: db.Channel) -> dict:
+    """Read-only look at the saved token (no network): present, refresh token, expiry."""
+    import json as _json
+
+    if ch.platform == "instagram":
+        from clipforge.publish import instagram as ig
+
+        return ig.token_health(ch)
+    p = yt.token_path(ch.id)
+    if not p.exists():
+        return {"ok": False, "text": "No saved login — Reconnect."}
+    try:
+        data = _json.loads(p.read_text(encoding="utf-8"))
+    except ValueError:
+        return {"ok": False, "text": "Saved login is unreadable — Reconnect."}
+    if ch.auth_status != "ok":
+        return {"ok": False, "text": ch.auth_error or "Needs re-login."}
+    if not data.get("refresh_token"):
+        return {"ok": False, "text": "No refresh token — Reconnect."}
+    return {"ok": True, "text": "Login OK (refreshes automatically)."}
+
+
+@router.get("/publishing/health", summary="Scheduler + accounts health for the Dashboard")
+def publishing_health() -> dict:
+    from clipforge.publish import runner, states
+
+    cfg = load_config()
+    st = runner.read_state(cfg)
+    rem = quota.remaining(cfg)
+    accounts = []
+    for ch in chs.all_channels():
+        attention = [it for it in q.items(ch.id, states.ATTENTION)]
+        accounts.append({"id": ch.id, "title": ch.title, "platform": ch.platform, "paused": ch.paused,
+                         "token": _token_health(ch), "attention": len(attention)})
+    try:
+        from clipforge.utils import power
+
+        awake = power.status()
+    except Exception:
+        awake = {"mode": "unknown", "holding": False}
+    tasks = []
+    try:
+        from clipforge.cli_publish import task_status
+
+        tasks = task_status()
+    except Exception:
+        pass
+    next_tick = worker.next_tick_at
+    return {
+        "last_run_at": st.get("last_run_at"), "last_source": st.get("last_source"), "last_result": st.get("last_result", {}),
+        "runs": st.get("runs", {}), "next_run_at": next_tick, "ticker": worker.ticker_on,
+        "mode": cfg.publishing.mode, "quota": rem, "audit_status": cfg.publishing.audit_status,
+        "api_audited": cfg.publishing.api_audited, "accounts": accounts, "keep_awake": awake, "tasks": tasks,
+        "server_time": now_utc().isoformat(),
+    }
+
+
+class AuditIn(BaseModel):
+    status: Literal["not_applied", "applied", "approved", "rejected"]
+    applied_on: Optional[str] = None
+
+
+@router.post("/publishing/audit", summary="Record the YouTube API audit status (approved → api_audited = true)")
+def set_audit(body: AuditIn) -> dict:
+    from clipforge.config import save_config
+
+    cfg = load_config()
+    over: dict[str, Any] = {"publishing.audit_status": body.status}
+    if body.applied_on is not None:
+        try:
+            dt.date.fromisoformat(body.applied_on)
+        except ValueError:
+            raise HTTPException(400, "Date must look like 2026-11-04")
+        over["publishing.audit_applied_on"] = body.applied_on
+    if body.status == "approved":
+        over["publishing.api_audited"] = True
+    elif body.status in ("not_applied", "rejected"):
+        over["publishing.api_audited"] = False
+    save_config(cfg.with_overrides(over))
+    return publishing_status()
 
 
 # ============================================================================ channels + OAuth
@@ -216,18 +304,33 @@ def check_auth(channel_id: str) -> dict:
     return {"ok": ok, "channel": _channel_out(chs.get(channel_id))}  # type: ignore[arg-type]
 
 
-@router.delete("/channels/{channel_id}")
+@router.delete("/channels/{channel_id}", summary="Disconnect: revoke access at Google/Meta and delete the saved login")
 def delete_channel(channel_id: str) -> dict:
-    _ch_or_404(channel_id)
+    ch = _ch_or_404(channel_id)
     if any(it.status == "uploading" for it in q.items(channel_id)):
         raise HTTPException(409, "An upload is running for this channel — try again in a minute.")
     with db.session() as s:
         for it in s.exec(select(db.QueueItem).where(db.QueueItem.channel_id == channel_id,
                                                     db.QueueItem.status.in_(("draft", "queued", "needs_manual", "failed")))).all():  # type: ignore[attr-defined]
             s.delete(it)
+        # stored statistics for this account are deleted too (privacy policy: Disconnect deletes its data)
+        perf_ids = [p.youtube_video_id for p in s.exec(select(db.VideoPerf).where(db.VideoPerf.channel_id == channel_id)).all()]
+        for p in s.exec(select(db.VideoPerf).where(db.VideoPerf.channel_id == channel_id)).all():
+            s.delete(p)
+        if perf_ids:
+            for snap in s.exec(select(db.StatSnapshot).where(db.StatSnapshot.youtube_video_id.in_(perf_ids))).all():  # type: ignore[attr-defined]
+                s.delete(snap)
+        for d in s.exec(select(db.ChannelDaily).where(db.ChannelDaily.channel_id == channel_id)).all():
+            s.delete(d)
         s.commit()
+    if ch.platform == "instagram":
+        from clipforge.publish import instagram as ig
+
+        revoked = ig.revoke(ch)
+    else:
+        revoked = yt.revoke(channel_id)
     chs.remove(channel_id)
-    return {"ok": True}
+    return {"ok": True, "revoked": revoked}
 
 
 # ============================================================================ queue
@@ -272,19 +375,30 @@ class QueuePatch(BaseModel):
     slot_local: Optional[str] = None  # "2026-11-05T21:00" in the channel's timezone
     category_id: Optional[str] = None
     ig_caption: Optional[str] = None
+    privacy: Optional[Literal["scheduled", "public", "unlisted", "private"]] = None
+    ig_thumb_offset_ms: Optional[int] = None
 
 
 @router.patch("/queue/{item_id}")
 def queue_patch(item_id: int, body: QueuePatch) -> dict:
     it = _item_or_404(item_id)
-    if it.status in ("uploading", "scheduled", "published") and (body.title or body.description or body.tags or body.slot_local):
-        raise HTTPException(409, "Already on YouTube — edit it in YouTube Studio.")
+    if (it.status in q.ON_PLATFORM or it.youtube_video_id or it.ig_media_id) and (
+            body.title or body.description or body.tags or body.slot_local or body.privacy or body.ig_caption):
+        raise HTTPException(409, "Already on the platform — edit it there (YouTube Studio / Instagram).")
     import json
 
     from clipforge.publish.metadata_opt import tags_within_limit
 
     if body.title is not None:
+        if len(body.title.strip()) > 100:
+            raise HTTPException(400, "YouTube titles can be at most 100 characters.")
         it.title = body.title.strip()
+    if body.description is not None and len(body.description) > 5000:
+        raise HTTPException(400, "YouTube descriptions can be at most 5,000 characters.")
+    if body.privacy is not None:
+        it.privacy = body.privacy
+    if body.ig_thumb_offset_ms is not None:
+        it.ig_thumb_offset_ms = max(0, body.ig_thumb_offset_ms)
     if body.description is not None:
         it.description = body.description
     if body.tags is not None:
@@ -292,7 +406,9 @@ def queue_patch(item_id: int, body: QueuePatch) -> dict:
     if body.category_id is not None:
         it.category_id = body.category_id
     if body.ig_caption is not None:
-        it.ig_caption = body.ig_caption
+        from clipforge.publish import ig_meta
+
+        it.ig_caption = ig_meta.clean_caption(body.ig_caption)
     if any(v is not None for v in (body.title, body.description, body.tags)):
         it.meta_status = "ready"
     it = q.save(it)
@@ -330,23 +446,116 @@ def queue_delete(item_id: int) -> dict:
     return {"ok": True}
 
 
+def _do_reschedule(item_id: int) -> db.QueueItem:
+    return q.reschedule_next(item_id)
+
+
+def _do_retry(item_id: int) -> db.QueueItem:
+    it = _item_or_404(item_id)
+    if it.status not in ("failed", "missed", "needs_manual", "queued") or it.youtube_video_id or it.ig_media_id:
+        raise q.QueueError("Only failed or missed clips that aren't on the platform yet can be retried.")
+    if it.slot_utc and as_utc(it.slot_utc) < now_utc() + slots.LEAD:
+        return q.reschedule_next(item_id)  # the old time is gone: next free slot
+    it.status, it.reason, it.error, it.attempts, it.next_attempt_at = "queued", "", "", 0, None
+    it.ig_container_id, it.ig_container_at = "", None
+    return q.save(it)
+
+
+def _do_unbatch(item_id: int) -> db.QueueItem:
+    it = _item_or_404(item_id)
+    if it.youtube_video_id or it.ig_media_id or it.status in q.ON_PLATFORM:
+        raise q.QueueError("Already uploaded — nothing to change.")
+    it.batch, it.reason, it.error = "", "", ""
+    if it.status in ("needs_manual", "missed"):
+        if it.slot_utc and as_utc(it.slot_utc) < now_utc() + slots.LEAD:
+            q.save(it)
+            return q.reschedule_next(item_id)
+        it.status = "queued"
+    return q.save(it)
+
+
+def _do_publish_now(item_id: int) -> db.QueueItem:
+    it = _item_or_404(item_id)
+    if it.youtube_video_id or it.ig_media_id or it.status in q.ON_PLATFORM:
+        raise q.QueueError("Already uploaded — publish it on the platform (YouTube Studio / Instagram).")
+    if it.platform == "youtube" and load_config().publishing.mode != "api":
+        raise q.QueueError("Publish now uploads with the API — switch to API mode, or upload it in YouTube Studio.")
+    now = now_utc()
+    it.slot_utc, it.status, it.reason, it.error, it.batch = now, "queued", "", "", ""
+    it.attempts, it.next_attempt_at = 0, None
+    if it.platform == "youtube":
+        it.privacy = "public"
+    q.save(it)
+    worker.submit("run", "Scheduler run", run_scheduler)
+    return it
+
+
+@router.post("/queue/{item_id}/reschedule", summary="Move to the channel's next free slot")
+def queue_reschedule(item_id: int) -> dict:
+    return _item_out(_wrap(_do_reschedule, item_id))
+
+
+@router.post("/queue/{item_id}/retry", summary="Retry a failed/missed clip (next free slot if its time passed)")
+def queue_retry(item_id: int) -> dict:
+    return _item_out(_wrap(_do_retry, item_id))
+
+
+@router.post("/queue/{item_id}/unbatch", summary="Remove from a Studio batch so API mode uploads it")
+def queue_unbatch(item_id: int) -> dict:
+    return _item_out(_wrap(_do_unbatch, item_id))
+
+
+@router.post("/queue/{item_id}/publish-now", summary="Upload/publish this clip now (API mode)")
+def queue_publish_now(item_id: int) -> dict:
+    return _item_out(_wrap(_do_publish_now, item_id))
+
+
 class BulkIn(BaseModel):
-    ids: list[int]
-    action: Literal["unschedule", "delete", "shift", "regenerate"]
+    ids: list[int] = []
+    action: Literal["unschedule", "delete", "shift", "regenerate", "reschedule", "retry", "unbatch", "to_batch",
+                    "reschedule_missed", "retry_failed"]
     days: float = 1
+    channel_id: Optional[str] = None
 
 
 @router.post("/queue/bulk")
 def queue_bulk(body: BulkIn) -> dict:
     done, errors = [], []
-    for i in body.ids:
+    ids = list(body.ids)
+    action = body.action
+    if action in ("reschedule_missed", "retry_failed"):  # "all of them" — no ids needed
+        want = ("missed", "needs_manual") if action == "reschedule_missed" else ("failed",)
+        ids = [it.id for it in q.items(body.channel_id, want) if not it.youtube_video_id and not it.ig_media_id]  # type: ignore[misc]
+        action = "reschedule" if action == "reschedule_missed" else "retry"
+    if action == "to_batch":
+        by_channel: dict[str, list[int]] = {}
+        for i in ids:
+            it = q.get(i)
+            if it and it.platform == "youtube":
+                by_channel.setdefault(it.channel_id, []).append(i)
+        out = []
+        for ch_id, ch_ids in by_channel.items():
+            try:
+                res = batch.prepare(ch_id, len(ch_ids), force=True, ids=ch_ids)
+                done += [e["id"] for e in res["items"]]
+                out.append({"relative": res["relative"], "url": f"/api/batches/files/{res['relative']}/batch.html"})
+            except q.QueueError as exc:
+                errors.append({"id": None, "error": str(exc)})
+        return {"done": done, "errors": errors, "batches": out}
+    for i in ids:
         try:
-            if body.action == "unschedule":
+            if action == "unschedule":
                 q.unschedule(i)
-            elif body.action == "delete":
+            elif action == "delete":
                 q.delete(i)
-            elif body.action == "regenerate":
+            elif action == "regenerate":
                 queue_regenerate(i)  # raises 409 for clips already on YouTube / in a batch
+            elif action == "reschedule":
+                _do_reschedule(i)
+            elif action == "retry":
+                _do_retry(i)
+            elif action == "unbatch":
+                _do_unbatch(i)
             else:
                 it = q.get(i)
                 if not it or not it.slot_utc:

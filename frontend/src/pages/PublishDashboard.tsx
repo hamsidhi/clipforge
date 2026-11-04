@@ -7,6 +7,7 @@ import { api } from '@/api/client'
 import { pub, WEEKDAYS } from '@/api/publish'
 import type { Dashboard, Group, YppTier } from '@/api/publishTypes'
 import ChannelPicker from '@/components/ChannelPicker'
+import HealthPanel from '@/components/HealthPanel'
 import { EmptyState, ErrorBox, PageHeader } from '@/components/common'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -145,6 +146,7 @@ export default function PublishDashboard() {
           </>
         }
       />
+      <HealthPanel />
       {!channelId && !isLoading ? (
         <EmptyState icon={BarChart3} title="No channel yet" action={<Button asChild><Link to="/channels">Connect a channel</Link></Button>} />
       ) : error ? <ErrorBox error={error} /> : !data ? <Skeleton className="h-96 rounded-xl" /> : (

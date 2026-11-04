@@ -7,6 +7,8 @@ import {
 import { toast } from 'sonner'
 import { istLabel, pub, STATUS_LABEL, STATUS_STYLE, useChannels, usePublishing, useQueue, WEEKDAYS } from '@/api/publish'
 import type { QueueItem, SyncResult } from '@/api/publishTypes'
+import type { BulkAction } from '@/api/publish'
+import FixActions from '@/components/FixActions'
 import ChannelPicker from '@/components/ChannelPicker'
 import { EmptyState, PageHeader } from '@/components/common'
 import QueueItemDialog from '@/components/QueueItemDialog'
@@ -31,7 +33,7 @@ function startOfWeek(d: Date) {
 }
 
 function ItemChip({ it, onOpen }: { it: QueueItem; onOpen: () => void }) {
-  const draggable = ['draft', 'queued', 'needs_manual', 'failed'].includes(it.status)
+  const draggable = ['draft', 'queued', 'needs_manual', 'failed', 'missed'].includes(it.status) && !it.youtube_video_id && !it.ig_media_id
   return (
     <button
       type="button"
@@ -43,6 +45,7 @@ function ItemChip({ it, onOpen }: { it: QueueItem; onOpen: () => void }) {
     >
       <div className="font-semibold tabular-nums">{it.slot_local?.slice(11)}</div>
       <div className="line-clamp-2">{it.title || '…'}</div>
+      {it.reason_label && <div className="mt-0.5 line-clamp-2 text-[10px] opacity-80">⚠ {it.reason_label}</div>}
       {it.uploading_progress != null && <div className="mt-1 h-1 rounded bg-primary" style={{ width: `${it.uploading_progress * 100}%` }} />}
     </button>
   )
@@ -113,9 +116,10 @@ function ListView({ items, onOpen, channelId }: { items: QueueItem[]; onOpen: (i
   const qc = useQueryClient()
   const [sel, setSel] = useState<number[]>([])
   const bulk = useMutation({
-    mutationFn: (a: { action: 'unschedule' | 'delete' | 'shift' | 'regenerate'; days?: number }) => pub.bulk({ ids: sel, ...a }),
+    mutationFn: (a: { action: BulkAction; days?: number }) => pub.bulk({ ids: sel, ...a }),
     onSuccess: (r) => {
       toast.success(`${r.done.length} updated${r.errors.length ? `, ${r.errors.length} skipped: ${r.errors[0].error}` : ''}`)
+      r.batches?.forEach((b) => window.open(b.url, '_blank'))
       setSel([])
       qc.invalidateQueries({ queryKey: ['queue', channelId] })
     },
@@ -131,6 +135,9 @@ function ListView({ items, onOpen, channelId }: { items: QueueItem[]; onOpen: (i
           <Button size="sm" variant="outline" onClick={() => bulk.mutate({ action: 'shift', days: -1 })}>−1 day</Button>
           <Button size="sm" variant="outline" onClick={() => bulk.mutate({ action: 'unschedule' })}>Unschedule</Button>
           <Button size="sm" variant="outline" onClick={() => bulk.mutate({ action: 'regenerate' })}>Regenerate metadata</Button>
+          <Button size="sm" variant="outline" onClick={() => bulk.mutate({ action: 'reschedule' })}>Next free slots</Button>
+          <Button size="sm" variant="outline" onClick={() => bulk.mutate({ action: 'to_batch' })}>Switch to assisted batch</Button>
+          <Button size="sm" variant="outline" onClick={() => bulk.mutate({ action: 'unbatch' })}>Upload with API instead</Button>
           <Button size="sm" variant="ghost" className="text-destructive" onClick={() => window.confirm('Remove selected clips from the queue?') && bulk.mutate({ action: 'delete' })}>Remove</Button>
         </div>
       )}
@@ -140,7 +147,7 @@ function ListView({ items, onOpen, channelId }: { items: QueueItem[]; onOpen: (i
             <Checkbox checked={sel.includes(it.id)} onCheckedChange={() => toggle(it.id)} aria-label="Select" />
             <button className="min-w-0 flex-1 text-left" onClick={() => onOpen(it)}>
               <div className="truncate font-medium">{it.title || 'Writing metadata…'}</div>
-              <div className="truncate text-xs text-muted-foreground">{istLabel(it.slot_local)} · {it.episode_title} · score {it.score.toFixed(1)}{it.error ? ` · ${it.error}` : ''}</div>
+              <div className="truncate text-xs text-muted-foreground">{istLabel(it.slot_local)} · {it.episode_title} · score {it.score.toFixed(1)}{it.reason_label ? ` · ⚠ ${it.reason_label}` : it.error ? ` · ${it.error}` : ''}</div>
             </button>
             <Badge variant="outline" className={cn('shrink-0 border-transparent', STATUS_STYLE[it.status])}>{STATUS_LABEL[it.status]}</Badge>
           </div>
@@ -151,25 +158,46 @@ function ListView({ items, onOpen, channelId }: { items: QueueItem[]; onOpen: (i
 }
 
 function SyncDialog({ result, onClose }: { result: SyncResult | null; onClose: () => void }) {
+  const qc = useQueryClient()
+  const link = useMutation({
+    mutationFn: ({ id, vid }: { id: number; vid: string }) => pub.link(id, vid),
+    onSuccess: () => {
+      toast.success('Linked')
+      qc.invalidateQueries({ queryKey: ['queue'] })
+    },
+    onError: (e) => toast.error(e.message),
+  })
   return (
     <Dialog open={!!result} onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
         <DialogHeader><DialogTitle>Sync with YouTube</DialogTitle></DialogHeader>
         {result && (
           <div className="space-y-3 text-sm">
-            <p>Linked <b>{result.matched.length}</b> upload(s) to your queue.</p>
+            <p>Linked <b>{result.matched.length}</b> upload(s) to your queue{result.matched.some((m) => m.by === 'file name') ? ' (recognised by file name)' : ''}.</p>
             {result.unmatched_items.length > 0 && (
               <div>
                 <div className="font-medium">Queue clips not found on YouTube yet</div>
                 <ul className="mt-1 list-disc pl-5 text-muted-foreground">{result.unmatched_items.map((u) => <li key={u.queue_id}>{u.title}</li>)}</ul>
-                <p className="mt-1 text-xs text-muted-foreground">Uploaded with a different title? Open the clip and paste its YouTube link to link it.</p>
+                <p className="mt-1 text-xs text-muted-foreground">Not uploaded yet, or uploaded from a renamed file? Link it below or from the clip.</p>
               </div>
             )}
             {result.unmatched_videos.length > 0 && (
               <div>
-                <div className="font-medium">Recent Shorts not from the queue</div>
-                <ul className="mt-1 list-disc pl-5 text-muted-foreground">
-                  {result.unmatched_videos.slice(0, 8).map((v) => <li key={v.video_id}>{v.title} <code className="text-xs">{v.video_id}</code></li>)}
+                <div className="font-medium">Recent Shorts not linked to the queue</div>
+                <ul className="mt-1 space-y-2">
+                  {result.unmatched_videos.slice(0, 8).map((v) => (
+                    <li key={v.video_id} className="rounded-md border p-2">
+                      <div>{v.title} <code className="text-xs text-muted-foreground">{v.file_name || v.video_id}</code></div>
+                      {v.suggestions.length > 0 && (
+                        <div className="mt-1 flex flex-wrap gap-1.5">
+                          {v.suggestions.map((s) => (
+                            <Button key={s.queue_id} size="sm" variant="outline" disabled={link.isPending}
+                              onClick={() => link.mutate({ id: s.queue_id, vid: v.video_id })}>Link to “{s.title}”</Button>
+                          ))}
+                        </div>
+                      )}
+                    </li>
+                  ))}
                 </ul>
               </div>
             )}
@@ -191,6 +219,15 @@ export default function Schedule() {
   const ch = channels.find((c) => c.id === channelId)
   const drafts = items.filter((i) => i.status === 'draft')
   const planned = items.filter((i) => i.status !== 'draft')
+  const attention = items.filter((i) => ['failed', 'missed', 'needs_manual', 'locked_private'].includes(i.status))
+  const fix = useMutation({
+    mutationFn: (action: BulkAction) => pub.bulk({ action, channel_id: channelId }),
+    onSuccess: (r) => {
+      toast.success(`${r.done.length} clip(s) updated${r.errors.length ? ` — ${r.errors.length} couldn't: ${r.errors[0].error}` : ''}`)
+      qc.invalidateQueries({ queryKey: ['queue', channelId] })
+    },
+    onError: (e) => toast.error(e.message),
+  })
   const refresh = () => qc.invalidateQueries({ queryKey: ['queue', channelId] })
 
   const auto = useMutation({
@@ -276,13 +313,39 @@ export default function Schedule() {
         <div className={cn('mb-5 flex items-start gap-3 rounded-xl border p-4 text-sm',
           status.banner.level === 'warning' ? 'border-orange-500/40 bg-orange-500/10' : 'border-sky-500/30 bg-sky-500/10')}>
           <Info className="mt-0.5 size-4 shrink-0" />
-          <div>{status.banner.text} <a className="text-primary underline" href={status.banner.link} target="_blank" rel="noreferrer">Audit &amp; quota form</a></div>
+          <div>{status.banner.text} {status.banner.link && <a className="text-primary underline" href={status.banner.link} target="_blank" rel="noreferrer">Audit &amp; quota form</a>}</div>
         </div>
       )}
       {ch && !ch.confirmed && mode === 'api' && (
         <div className="mb-5 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm">
           Uploads to <b>{ch.title}</b> are blocked until you confirm the channel on the <Link className="text-primary underline" to="/channels">Channels</Link> page.
         </div>
+      )}
+
+      {attention.length > 0 && (
+        <Card className="mb-6 border-amber-500/30">
+          <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2">
+            <CardTitle className="text-base">Needs attention — {attention.length} clip(s)</CardTitle>
+            <div className="flex flex-wrap gap-2">
+              {attention.some((i) => ['missed', 'needs_manual'].includes(i.status) && !i.youtube_video_id) && (
+                <Button size="sm" onClick={() => fix.mutate('reschedule_missed')} disabled={fix.isPending}>Reschedule all missed to next free slots</Button>
+              )}
+              {attention.some((i) => i.status === 'failed') && (
+                <Button size="sm" variant="outline" onClick={() => fix.mutate('retry_failed')} disabled={fix.isPending}>Retry all failed</Button>
+              )}
+            </div>
+          </CardHeader>
+          <CardContent className="grid gap-3 lg:grid-cols-2">
+            {attention.map((it) => (
+              <div key={it.id} className="space-y-2">
+                <button className="block w-full truncate text-left text-sm font-medium hover:text-primary" onClick={() => setOpen(it)}>
+                  {istLabel(it.slot_local)} · {it.title}
+                </button>
+                <FixActions item={it} onLink={() => setOpen(it)} compact />
+              </div>
+            ))}
+          </CardContent>
+        </Card>
       )}
 
       {drafts.length > 0 && (

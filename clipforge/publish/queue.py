@@ -18,8 +18,10 @@ from clipforge.publish import metadata_opt, slots
 from clipforge.publish.timez import as_utc, now_utc, quota_day, utc_to_local
 from clipforge.utils.log import log
 
-ACTIVE = ("draft", "queued", "uploading", "scheduled", "published", "needs_manual", "locked_private")
-PLANNED = ("queued", "uploading", "scheduled", "published", "needs_manual")
+ACTIVE = ("draft", "queued", "uploading", "ready", "scheduled", "uploaded", "published", "needs_manual",
+          "locked_private", "missed", "failed")
+PLANNED = ("queued", "uploading", "ready", "scheduled", "published", "needs_manual")
+ON_PLATFORM = ("uploading", "ready", "scheduled", "uploaded", "published", "locked_private")
 
 
 class QueueError(ValueError):
@@ -73,8 +75,8 @@ def delete(item_id: int) -> None:
     with db.session() as s:
         it = s.get(db.QueueItem, item_id)
         if it:
-            if it.status in ("uploading", "scheduled", "published"):
-                raise QueueError("This clip is already on YouTube — delete it in YouTube Studio instead.")
+            if it.status in ON_PLATFORM:
+                raise QueueError("This clip is already on the platform — delete it there (YouTube Studio / Instagram).")
             s.delete(it)
             s.commit()
 
@@ -211,27 +213,53 @@ def move(item_id: int, slot_utc: dt.datetime, now: dt.datetime | None = None) ->
     it = get(item_id)
     if not it:
         raise QueueError("Unknown queue item")
-    if it.status not in ("draft", "queued", "needs_manual", "failed"):
-        raise QueueError(f"Can't move a clip that is {it.status} — change it in YouTube Studio.")
-    if it.youtube_video_id:  # already uploaded (e.g. linked from Studio): moving here would upload it twice
-        raise QueueError("This clip is already on YouTube — set its time in YouTube Studio, then Sync.")
+    if it.status not in ("draft", "queued", "needs_manual", "failed", "missed"):
+        raise QueueError(f"Can't move a clip that is {it.status} — change it on the platform (YouTube Studio).")
+    if it.youtube_video_id or it.ig_media_id:  # already uploaded (e.g. linked from Studio): moving would upload twice
+        raise QueueError("This clip is already on YouTube — change its time in YouTube Studio (Content → Visibility), "
+                         "then Sync: ClipForge picks up the new time.")
     if as_utc(slot_utc) < (now or now_utc()) + slots.LEAD:
         raise QueueError("Pick a time at least 30 minutes in the future.")
     clash = [o for o in items(it.channel_id, PLANNED) if o.id != it.id and o.slot_utc and as_utc(o.slot_utc) == as_utc(slot_utc)]
     if clash:
         raise QueueError("Another clip is already scheduled at that exact time.")
-    it.slot_utc, it.status, it.error, it.attempts, it.next_attempt_at = as_utc(slot_utc), "queued", "", 0, None
+    it.slot_utc, it.status, it.error, it.reason, it.attempts, it.next_attempt_at = as_utc(slot_utc), "queued", "", "", 0, None
     it.batch = ""  # a new time means a new batch (the old checklist shows the old time)
+    it.ig_container_id, it.ig_container_at = "", None  # an Instagram container expires after 24 h anyway
     return save(it)
+
+
+def next_free_slot(channel_id: str, now: dt.datetime | None = None, exclude_id: int | None = None,
+                   cfg: Config | None = None) -> dt.datetime | None:
+    """The channel's next free publish time (respects its slots, days and posts/day)."""
+    ch = chs.get(channel_id)
+    if not ch:
+        return None
+    plan = slots.Plan.from_settings(chs.settings_of(ch, cfg))
+    taken = [as_utc(o.slot_utc) for o in items(channel_id, PLANNED) if o.slot_utc and o.id != exclude_id]
+    for t, _peak in slots.free_slots(plan, taken, now or now_utc(), 60):
+        return t
+    return None
+
+
+def reschedule_next(item_id: int, now: dt.datetime | None = None) -> db.QueueItem:
+    """Move a clip to the channel's next free slot (one-click fix for missed / failed clips)."""
+    it = get(item_id)
+    if not it:
+        raise QueueError("Unknown queue item")
+    when = next_free_slot(it.channel_id, now, exclude_id=it.id)
+    if when is None:
+        raise QueueError("No free slot in the next 60 days — add slots or raise posts per day in the channel settings.")
+    return move(item_id, when, now)
 
 
 def unschedule(item_id: int) -> db.QueueItem:
     it = get(item_id)
     if not it:
         raise QueueError("Unknown queue item")
-    if it.status in ("uploading", "scheduled", "published") or it.youtube_video_id:
-        raise QueueError("Already on YouTube — change or delete it in YouTube Studio.")
-    it.slot_utc, it.status, it.batch = None, "draft", ""
+    if it.status in ON_PLATFORM or it.youtube_video_id or it.ig_media_id:
+        raise QueueError("Already on the platform — change or delete it there (YouTube Studio / Instagram).")
+    it.slot_utc, it.status, it.batch, it.reason, it.error = None, "draft", "", "", ""
     return save(it)
 
 
@@ -245,6 +273,13 @@ def public(it: db.QueueItem, zone: str = "Asia/Kolkata") -> dict:
     d["slot_utc"] = as_utc(it.slot_utc).isoformat() if it.slot_utc else None
     d["clip_id_hint"] = f"{it.video_id}:{it.rank}"
     d["youtube_url"] = f"https://youtube.com/shorts/{it.youtube_video_id}" if it.youtube_video_id else None
+    d["url"] = d["youtube_url"] or it.permalink or None
+    d["yt_state"] = it.yt_state
+    d.pop("yt_state_json", None)
+    from clipforge.publish import states
+
+    d["reason_label"] = states.label(it.reason)
+    d["actions"] = states.actions(it.reason)
     return d
 
 

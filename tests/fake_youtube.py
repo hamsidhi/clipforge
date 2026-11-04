@@ -19,13 +19,14 @@ class FakeYouTube:
 
     # ---- helpers for tests
     def add_video(self, vid: str, title: str, seconds: int, privacy: str = "public", publish_at: str | None = None,
-                  published_at: str = "2026-11-01T13:00:00Z", views: int = 0) -> None:
+                  published_at: str = "2026-11-01T13:00:00Z", views: int = 0, file_name: str = "") -> None:
         st = {"privacyStatus": privacy, "uploadStatus": "processed"}
         if publish_at:
             st["publishAt"] = publish_at
         self.store[vid] = {"id": vid, "snippet": {"title": title, "publishedAt": published_at},
                            "status": st, "contentDetails": {"duration": f"PT{seconds}S"},
-                           "statistics": {"viewCount": str(views), "likeCount": "3", "commentCount": "1"}}
+                           "statistics": {"viewCount": str(views), "likeCount": "3", "commentCount": "1"},
+                           "fileDetails": {"fileName": file_name}, "processingDetails": {"processingStatus": "succeeded"}}
         self.order.insert(0, vid)
 
     # ---- API surface used by ClipForge
@@ -45,7 +46,8 @@ class FakeYouTube:
             st.pop("publishAt", None)
         self.store[vid] = {"id": vid, "snippet": {"title": body["snippet"]["title"], "publishedAt": "2026-11-04T00:00:00Z"},
                            "status": {**st, "uploadStatus": "uploaded"}, "contentDetails": {"duration": "PT30S"},
-                           "statistics": {"viewCount": "0"}}
+                           "statistics": {"viewCount": "0"}, "fileDetails": {"fileName": Path(path).name},
+                           "processingDetails": {"processingStatus": "processing"}}
         self.order.insert(0, vid)
         if on_progress:
             on_progress(1.0)

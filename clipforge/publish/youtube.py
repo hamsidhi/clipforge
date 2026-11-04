@@ -137,7 +137,7 @@ class GoogleYouTube:
         out: list[dict] = []
         for i in range(0, len(ids), 50):
             self._charge("videos.list")
-            resp = self.yt.videos().list(part="snippet,status,contentDetails,statistics",
+            resp = self.yt.videos().list(part="snippet,status,contentDetails,statistics,processingDetails,fileDetails",
                                          id=",".join(ids[i : i + 50])).execute()
             out += resp.get("items", [])
         return out
@@ -197,6 +197,26 @@ def set_client_factory(factory: Callable[[str, Config], YouTubeClient] | None) -
     """Tests install a fake here; None restores the real Google client."""
     global _factory
     _factory = factory or _default_factory
+
+
+def revoke(channel_id: str, cfg: Config | None = None) -> str:
+    """Revoke ClipForge's access at Google (best effort) — the Disconnect button. Returns a status sentence."""
+    p = token_path(channel_id, cfg)
+    if _factory is not _default_factory:  # tests / demo: never call Google
+        return "Access removed (test mode)."
+    if not p.exists():
+        return "No saved login."
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        token = data.get("refresh_token") or data.get("token")
+        import httpx
+
+        r = httpx.post("https://oauth2.googleapis.com/revoke", data={"token": token}, timeout=15)
+        if r.status_code == 200:
+            return "Access revoked at Google."
+        return f"Google answered {r.status_code} — remove ClipForge at https://myaccount.google.com/permissions to be sure."
+    except Exception as exc:
+        return f"Couldn't reach Google ({exc}) — remove ClipForge at https://myaccount.google.com/permissions."
 
 
 def client_for(channel_id: str, cfg: Config | None = None) -> YouTubeClient:

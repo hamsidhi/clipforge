@@ -28,14 +28,16 @@ def _link_or_copy(src: Path, dst: Path) -> None:
         shutil.copy2(src, dst)
 
 
-def prepare(channel_id: str, n: int | None = None, cfg: Config | None = None, now=None, force: bool = False) -> dict:
-    """Take the next N queued clips (not yet in a batch) and build workspace/batches/<channel>/<date_time>/."""
+def prepare(channel_id: str, n: int | None = None, cfg: Config | None = None, now=None, force: bool = False,
+            ids: list[int] | None = None) -> dict:
+    """Take the next N queued clips (not yet in a batch) and build workspace/batches/<channel>/<date_time>/.
+    `ids` + `force`: "Switch these to assisted batch" in API mode (batched clips are never uploaded by the API)."""
     import datetime as dt
 
     from clipforge.publish.timez import as_utc
 
     cfg = cfg or load_config()
-    if cfg.publishing.mode == "api" and not force:
+    if cfg.publishing.mode == "api" and not (force and ids):
         raise q.QueueError("You're in API mode — ClipForge uploads these clips itself. A Studio batch would upload them "
                            "twice. Switch to assisted mode first (Settings → Publishing).")
     ch = chs.get(channel_id)
@@ -46,10 +48,11 @@ def prepare(channel_id: str, n: int | None = None, cfg: Config | None = None, no
     n = min(n or cfg.publishing.batch_max, cfg.publishing.batch_max)
     todo = []
     for it in q.items(channel_id, ("queued",)):
-        if not it.slot_utc or it.batch or it.youtube_video_id:
+        if not it.slot_utc or it.batch or it.youtube_video_id or (ids is not None and it.id not in ids):
             continue
         if as_utc(it.slot_utc) < now + dt.timedelta(minutes=30):  # Studio can't schedule in the past
-            it.status, it.error = "needs_manual", "The publish time passed before it was uploaded — pick a new time."
+            it.status, it.reason = "missed", "slot_passed"
+            it.error = "The publish time passed before it was put in a Studio batch — Reschedule it."
             q.save(it)
             continue
         todo.append(it)
@@ -82,7 +85,7 @@ def prepare(channel_id: str, n: int | None = None, cfg: Config | None = None, no
                                                   indent=2, ensure_ascii=False), encoding="utf-8")
     (folder / "batch.html").write_text(render_html(ch.title, ch.thumbnail, entries, zone), encoding="utf-8")
     for it, _ in sources:  # only now mark them as batched (a failure above leaves nothing half-done)
-        it.batch = rel
+        it.batch, it.reason, it.error = rel, "", ""
         q.save(it)
     return {"folder": str(folder), "relative": rel, "count": len(entries), "items": entries}
 
@@ -140,7 +143,8 @@ a.btn,button{{background:#ffe600;color:#000;border:0;border-radius:8px;padding:7
 <li>For each video (file names start with the number below): paste <b>Title</b>, <b>Description</b> and <b>Tags</b> (Show more → Tags) with the Copy buttons.</li>
 <li>Audience: <b>No, it's not made for kids</b>. Altered content: <b>No</b>.</li>
 <li><b>Visibility → Schedule</b> → set the date and time shown on the card (IST) → <b>Schedule</b>. Tick “Done”.</li>
-<li>Back in ClipForge: <b>Schedule → Sync with YouTube</b> to link the uploads (works with read-only access).</li>
+<li>Back in ClipForge: <b>Schedule → Sync with YouTube</b> to link the uploads (works with read-only access).
+ClipForge recognises each upload by its <b>file name</b>, so you may change titles or times in Studio — Sync adopts YouTube's time.</li>
 </ol>
 {''.join(rows)}
 <script>

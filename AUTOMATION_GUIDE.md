@@ -14,7 +14,7 @@ It's written for Windows, but the macOS/Linux differences are noted.
 | Uploading to YouTube with a scheduled publish time | ✅ in **API mode**; 👤 in assisted mode (you drag files into Studio) |
 | YouTube making them public at the right time | ✅ YouTube does it, even if your laptop is off |
 | Pulling views, subscribers and YPP progress | ✅ every 12 h |
-| Instagram Reels | 👤 manual: Instagram's free API needs a public server, so ClipForge gives you copy-ready captions |
+| Instagram Reels | ✅ with a Meta app (Part G); the laptop must be on at post time. Without one: an Instagram kit you post yourself |
 
 Plan on about **10 minutes of your time per episode** (approving clips). Everything else runs by itself.
 
@@ -163,8 +163,14 @@ From here, Part C (assisted) or Part D (API) takes over.
    - If it shows "Locked private" in ClipForge instead, go to Settings → Publishing and turn on
      **"Unaudited uploads get locked"**, then use assisted mode until Google approves your API audit (see D4).
 
+**How API mode uploads (since Phase 12.5):** a clip is uploaded **as soon as it is scheduled** (quota permitting) as
+*private + publish time*. YouTube then publishes it at the slot by itself, even if your laptop is off. If the laptop
+was off and a slot is less than 15 minutes away (or already passed) when ClipForge gets to it, Settings → Publishing →
+*If a slot is <15 min away or passed* decides: **move it to the next free slot** (default), publish right away, or ask you.
+
 ### D2. Make it run without you (Windows Task Scheduler)
-While `clipforge ui` is open, ClipForge checks every 10 minutes. To also run when the app is closed:
+While `clipforge ui` is open, ClipForge checks every minute (and catches up right after it starts). To also run when the
+app is closed:
 
 ```powershell
 cd E:\youtube\clipforge
@@ -172,15 +178,19 @@ cd E:\youtube\clipforge
 clipforge schedule-task install --dry-run   # shows what it will create
 clipforge schedule-task install
 ```
-This creates two Windows tasks:
-- **ClipForge Scheduler (logon):** runs once when you log in.
-- **ClipForge Scheduler (every 2h):** runs every 2 hours.
+This creates one hidden Windows task, **ClipForge Scheduler**, with three triggers:
+- **every 30 minutes**,
+- **when you log in**,
+- **when the laptop wakes from sleep**.
 
-Each run uploads any clips due in the next 5 days, updates statuses, and pulls stats every 12 h, then exits.
+It also runs a missed run as soon as possible ("start when available"), and runs on battery too.
+Each run uploads clips that are waiting, publishes Instagram posts that are due, updates statuses (and links Studio
+uploads), pulls stats every 12 h, then exits. Add `--daemon` to also start the always-on scheduler at login. You only
+need it for Instagram when the web app isn't open.
 
-- If it says *Access is denied* for the logon task, open PowerShell **as Administrator** and run the same command, or
-  just keep the every-2-hours task.
-- Check it: open **Task Scheduler** from the Start menu → *Task Scheduler Library* → you should see both tasks.
+- If it says *Access is denied*, open PowerShell **as Administrator** and run the same command.
+- Check it: `clipforge schedule-task status`, or **Task Scheduler** → *Task Scheduler Library* → *ClipForge Scheduler*.
+  The Dashboard's **Health** panel also shows the last and next run.
 - Run it by hand any time:
   ```powershell
   clipforge scheduler --once
@@ -192,23 +202,72 @@ Each run uploads any clips due in the next 5 days, updates statuses, and pulls s
 - macOS/Linux: run `crontab -e` and add:
   ```
   @reboot /path/to/clipforge/.venv/bin/clipforge scheduler --once
-  0 */2 * * * /path/to/clipforge/.venv/bin/clipforge scheduler --once
+  */30 * * * * /path/to/clipforge/.venv/bin/clipforge scheduler --once
   ```
 
-**Why your laptop doesn't need to be on at 9 pm:** clips are uploaded up to 5 days ahead with a fixed publish time,
-and YouTube's own servers publish them. The laptop only needs to be on now and then, at least once every few days,
-to upload the next batch.
+**Why your laptop doesn't need to be on at 9 pm:** clips are uploaded right after you schedule them, with a fixed
+publish time, and YouTube's own servers publish them. The laptop only needs to be on once after you schedule.
+(Instagram is different: see Part G.)
 
 ### D3. Your weekly routine in API mode
 1. Once or twice a week, run a new episode (Part B, steps 1–4). About 10 minutes of approving.
 2. That's it. Uploads, publishing and stats run on their own.
-3. Glance at **Schedule** for any **orange/amber** items ("Needs you"). They're explained in the clip's dialog (for example
-   "the slot passed while the laptop was off — pick a new time").
+3. Glance at **Schedule → Needs attention**. Every item says **why** and has one-click fixes (see the next section).
 
-### D4. If you need more than 100 uploads a day
-At 3 Shorts/day per channel you'd need 30+ channels to hit this limit, so you'll probably never need it.
-If you do: request more quota via the [YouTube API audit & quota form](https://support.google.com/youtube/contact/yt_api_form).
-Once approved, tick **"My API project passed Google's audit"** in Settings.
+### D4. The YouTube API audit (optional)
+Since 2 Nov 2026 the audit is **not needed to publish**. It only raises the quota (100 uploads/day by default) and gives
+you an "audited" record. Everything for it is ready in **[AUDIT_KIT.md](AUDIT_KIT.md)**: the form answers, the public
+privacy policy and terms pages, and the screenshots + screencast in `docs/audit/`.
+1. GitHub repo → **Settings → Pages → Source: GitHub Actions** (one time), so `https://hamsidhi.github.io/clipforge/` goes live.
+2. Fill the form with AUDIT_KIT.md (add your Cloud **project number**), attach the files from `docs/audit/`.
+3. **Settings → Publishing → Apply for the YouTube API audit → Applied** (with the date). When Google answers, set
+   Approved/Rejected. Approved also sets `api_audited: true`.
+Approval isn't guaranteed for a personal tool. Assisted mode and API mode both keep working either way.
+
+---
+
+## Why "Needs you" appeared, and what to do now
+
+**What happened (diagnosed on this laptop, 4 Nov 2026):**
+- You were in **assisted mode**, where ClipForge never uploads by itself, and no Task Scheduler task existed.
+- You uploaded 10 clips in YouTube Studio straight from the `clips` folder, **changed most titles** and picked your own times.
+- The old Sync recognised uploads only by title, so it linked just 3 of them. The other clips stayed "queued" in
+  ClipForge, and the moment ClipForge's (different) slot passed they turned into a reasonless "Needs you", even though
+  YouTube had them correctly scheduled.
+- Nothing was wrong on YouTube: all 10 were private + scheduled for 5 Nov, so nothing was public yet.
+
+**What changed:**
+- **Sync recognises uploads by their file name**, even with new titles. Then by title with `#shorts` and hashtags ignored.
+  Before calling anything "missed", ClipForge runs Sync by itself. Your Studio time wins over ClipForge's slot.
+- **Every problem says why and offers a fix.** Examples:
+
+  | Reason shown | One-click fixes |
+  |---|---|
+  | Assisted mode: upload this batch in YouTube Studio | Open batch · Sync · Link · Reschedule |
+  | Uploaded in Studio? Not linked yet | Sync · Link · Reschedule |
+  | In a Studio batch, so API mode won't upload it | Upload with API instead · Sync · Link |
+  | The slot passed before the upload / laptop was off | Reschedule to next free slot · Publish now |
+  | Login expired | Reconnect |
+  | Locked private by YouTube | What this means · Open in Studio |
+  | Upload quota used up | Nothing: continues tomorrow by itself |
+  | Upload failed: *error* | Retry · Reschedule |
+
+- **Schedule → Needs attention** has bulk buttons: *Reschedule all missed to next free slots*, *Retry all failed*.
+  The list view adds *Switch to assisted batch* and *Upload with API instead* for selected clips.
+- **Dashboard → Health** shows the last and next scheduler run, login status per account, quota left, audit status and
+  keep-awake state.
+
+**What to do now:**
+1. Restart the app: Ctrl+C in the old `clipforge ui` window, then `clipforge ui`.
+2. **Schedule → Sync with YouTube.** (I already ran it once: all 9 of your Studio uploads are now linked and show
+   "Scheduled on YouTube" at your Studio times.)
+3. Choose a mode:
+   - **API mode** (recommended now that the lock is gone): Settings → Publishing → Mode = API. Then run
+     `clipforge schedule-task install` once. The remaining clips upload by themselves as private + scheduled.
+   - **Stay assisted:** Schedule → *Prepare batch* → upload the files in Studio (from the batch folder or `clips/`;
+     changing titles/times is fine) → *Sync*.
+4. Optional check that your API project isn't locked: `clipforge publish-test UCT5PqvmHmx8HldPvyZwRRTQ` uploads one
+   3-second private test video scheduled 30 days out and reports "Not locked" or "Locked". Delete it in Studio afterwards.
 
 ---
 
@@ -236,10 +295,11 @@ Once approved, tick **"My API project passed Google's audit"** in Settings.
 | "config.yaml has invalid values" when starting | The message names the bad line; fix or delete it (defaults are used) |
 | Channel shows **needs re-login** | Channels → **Reconnect** (and set the consent screen to *In production*, see A2.4) |
 | "Not granted: youtube.upload" on a channel | Reconnect and tick **every** box on Google's permission screen |
-| Clip status **Needs you** | Open it; the message says what to do (new time, sync from Studio, fix the title) |
+| Clip status **Needs you** / **Missed slot** | Schedule → *Needs attention*: the reason + buttons say what to do |
 | Clip status **Locked private** | Publish it manually in Studio; Settings → turn on "Unaudited uploads get locked" |
+| Health: "Last scheduler run" is hours ago | Open the app, or `clipforge schedule-task install` (30 min / logon / wake) |
 | "Upload quota used up for today" | Nothing: it continues automatically the next day (quota resets at midnight US Pacific ≈ 1:30 pm IST) |
-| Sync didn't match an upload | Open the clip → paste its YouTube link → **Link** |
+| Sync didn't match an upload | The Sync dialog suggests clips for each unmatched video: click **Link to …**, or paste the link in the clip |
 | Ollama errors / very slow | Start the Ollama app; or add a free Gemini key in Settings and choose Gemini as the provider |
 | Task Scheduler "Access denied" | Run `clipforge schedule-task install` in an Administrator PowerShell |
 
@@ -253,7 +313,8 @@ clipforge sync --channel UC…   # link Studio uploads + pull stats
 ```
 
 ## Safety rules ClipForge always follows
-- Nothing goes public without a time slot you scheduled. Uploads are always *private + scheduled*.
+- Nothing goes public without a time slot you scheduled. Uploads are *private + scheduled* unless you pick another
+  visibility for a clip (Public at the slot, Unlisted, Private).
 - An unconfirmed or **paused** channel never receives uploads.
 - The same clip can't be queued twice on one channel. Clips already on YouTube or in a Studio batch are never uploaded again.
 - It never goes over the daily upload quota, and never automates the YouTube website itself (that's against YouTube's rules).

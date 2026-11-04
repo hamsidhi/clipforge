@@ -18,6 +18,9 @@ a **local LLM via Ollama** (or the free tiers of Gemini/Groq), FastAPI and React
 ---
 
 > **Want it to run by itself?** Follow the step-by-step [AUTOMATION_GUIDE.md](AUTOMATION_GUIDE.md).
+> Public pages (for Google's API audit): [home](https://hamsidhi.github.io/clipforge/) ·
+> [privacy policy](https://hamsidhi.github.io/clipforge/privacy.html) · [terms](https://hamsidhi.github.io/clipforge/terms.html)
+> · audit answers in [AUDIT_KIT.md](AUDIT_KIT.md).
 
 ## 1. Install
 
@@ -222,7 +225,7 @@ Earnings = approved views ÷ 1000 × rate × (1 − fee). The Dashboard lists pu
 
 ### 5.6 Running unattended
 ```powershell
-clipforge schedule-task install            # Windows: runs `clipforge scheduler --once` at login and every 2 h
+clipforge schedule-task install            # Windows: hidden task — every 30 min, at login and on wake (--daemon: always-on too)
 clipforge schedule-task install --dry-run  # show the commands only
 clipforge schedule-task remove
 ```

@@ -47,3 +47,4 @@ Thumbs.db
 workspace/channels/
 client_secret*.json
 workspace_demo/
+!docs/audit/*.mp4

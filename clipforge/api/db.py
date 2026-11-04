@@ -89,6 +89,8 @@ class Channel(SQLModel, table=True):
     auth_error: str = ""
     paused: bool = False
     confirmed: bool = False                   # first-upload confirmation given (avatar + name shown)
+    platform: str = "youtube"                 # youtube | instagram (id is "ig:<ig user id>")
+    extra_json: str = "{}"                    # instagram: username, page id/name, followers, token expiry
     settings_json: str = "{}"
     created_at: dt.datetime = Field(default_factory=now)
     last_sync_at: Optional[dt.datetime] = None
@@ -96,6 +98,10 @@ class Channel(SQLModel, table=True):
     @property
     def settings(self) -> dict[str, Any]:
         return json.loads(self.settings_json or "{}")
+
+    @property
+    def extra(self) -> dict[str, Any]:
+        return json.loads(self.extra_json or "{}")
 
 
 class QueueItem(SQLModel, table=True):
@@ -111,8 +117,17 @@ class QueueItem(SQLModel, table=True):
     score: float = 0
     duration: float = 0
     slot_utc: Optional[dt.datetime] = Field(default=None, index=True)
-    status: str = "draft"                      # draft|queued|uploading|scheduled|published|failed|locked_private|needs_manual
+    status: str = "draft"                      # see clipforge/publish/states.py
+    reason: str = ""                           # why it needs attention (code in states.REASONS) — never a bare "Needs you"
+    platform: str = "youtube"                  # youtube | instagram
+    privacy: str = "scheduled"                 # youtube: scheduled (private+publishAt) | public | unlisted | private
     youtube_video_id: str = ""
+    yt_state_json: str = "{}"                  # last verified YouTube state: uploadStatus, privacy, publishAt, processing…
+    ig_container_id: str = ""                  # instagram: media container (expires after 24 h)
+    ig_container_at: Optional[dt.datetime] = None
+    ig_media_id: str = ""
+    permalink: str = ""
+    ig_thumb_offset_ms: Optional[int] = None
     attempts: int = 0
     next_attempt_at: Optional[dt.datetime] = None
     error: str = ""
@@ -131,6 +146,10 @@ class QueueItem(SQLModel, table=True):
     @property
     def tags(self) -> list[str]:
         return json.loads(self.tags_json or "[]")
+
+    @property
+    def yt_state(self) -> dict[str, Any]:
+        return json.loads(self.yt_state_json or "{}")
 
 
 class VideoPerf(SQLModel, table=True):

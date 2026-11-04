@@ -78,5 +78,24 @@ cd frontend && npm install && npm run build   # build the UI once
 - Tests: `tests/fake_youtube.py` + `tests/test_publish*.py` — never call Google in tests.
 - Demo/screenshots: `python scripts/demo_publish.py`, then run the UI with `CLIPFORGE_CONFIG=workspace_demo/config.yaml`
   and `CLIPFORGE_NO_TICKER=1`; `node scripts/screenshots.mjs http://127.0.0.1:8010 1 1-1 phase12`.
-- Safety invariants: uploads are always private + publishAt; unconfirmed or paused channels never upload; a clip key is
-  unique per channel; never exceed `publishing.insert_calls_per_day`; no browser automation of YouTube.
+- Safety invariants: uploads default to private + publishAt (other visibilities only when the user picks them per clip);
+  unconfirmed or paused channels never upload; a clip key is unique per channel; never exceed
+  `publishing.insert_calls_per_day`; no browser automation of YouTube.
+
+### Queue state machine (Phase 12.5, `publish/states.py`)
+```
+draft → queued → uploading → scheduled (on YouTube: private + publishAt) → published
+                          ↘ failed (retryable)   ↘ locked_private
+queued → needs_manual (assisted mode only: upload in Studio, then Sync/Link) | missed (slot passed: Reschedule / Publish now)
+uploaded = private/unlisted by the user's choice (never goes public by itself)
+```
+- Every attention state carries `QueueItem.reason` (code in `states.REASONS` → label + UI actions). Never set a bare
+  `needs_manual` without a reason.
+- API mode uploads as soon as an item is queued (`upload_ahead_days: 0`). `runner._handle_late` applies
+  `publishing.late_policy` (next_slot | publish_now | ask) when a slot is <15 min away or passed.
+- Assisted mode: before flagging anything, `reconcile.sync` runs (throttled to 30 min). It matches Studio uploads by
+  `fileDetails.fileName` (clip file / batch file), then by title (hashtags stripped). YouTube's publishAt wins over our slot.
+- `runner.apply_state` stores the verified YouTube state in `yt_state_json` after every upload/refresh.
+- `workspace/scheduler_state.json` = last run (source app/task/daemon) for the Health panel (`/api/publishing/health`).
+- Worker ticks every 60 s (first tick 5 s after start = catch-up); YouTube status refresh is throttled to 10 min.
+- Task Scheduler: one XML task (`utils/winsched.py`): every 30 min + logon + wake event, StartWhenAvailable, hidden (pythonw).

@@ -161,3 +161,50 @@ A review subagent confirmed 16 issues with scratch tests; all fixed:
   analytics wait 5 days and retry incomplete data; unticked OAuth permissions are reported on the channel.
 - Batch file route validates the path before touching the filesystem (a `//host/share` path would make Windows
   open an SMB connection and leak an NTLM hash).
+
+## Phase 12.5 — "Needs you" bug (2026-11-04)
+
+### Phase 12.5 diagnosis (checked on this laptop before changing code)
+Evidence:
+- `config.yaml`: `publishing.mode: assisted`, `api_audited: false`, `unverified_lock: false`, `posts_per_day: 6`.
+- `workspace/youtube_quota.json`: 0 `videos.insert` calls ever. ClipForge has **never uploaded anything**.
+- Task Scheduler: **no ClipForge tasks** (`schtasks /query` has no match). The scheduler only ran while `clipforge ui` was open.
+- DB: 1 channel (`figuring clips`, token OK, confirmed). 19 queue items: 3 `scheduled` (linked by Sync),
+  16 `queued`, 15 of them in a Studio batch (`batches/figuring-clips/2026-11-04_050921`).
+- YouTube (read-only API, token works): 10 uploads on the channel, all **processed, private + publishAt = 5 Nov**,
+  i.e. scheduled correctly by Studio and not locked. Nothing is public yet because every upload is set for tomorrow.
+  `videos.list(part=fileDetails)` shows they were uploaded from `workspace/<id>/clips/NN_slug.mp4`
+  (not from the batch folder) and **most titles were edited in Studio**.
+
+Cause by cause:
+- a. **TRUE: assisted mode.** By design nothing uploads automatically. `runner._flag_missed` turns every `queued`
+  item into `needs_manual` as soon as its ClipForge slot is 15 min away, with a generic message.
+- b. Not the cause (mode is assisted), but true too: no Task Scheduler task. The 10-min ticker runs only while the
+  web app is open, and in API mode the upload window was only `upload_ahead_days`, so a closed app meant missed slots.
+- c. Not true. Google lifted the private-only lock on 2 Nov 2026 (revision history; checked again today), and
+  the 10 Studio uploads are scheduled, not locked.
+- d. Not true. The token refreshes fine. The scopes granted are upload, readonly and analytics.
+- e. **TRUE: reconcile bug + state-machine bug.**
+  - Sync matched clips only by title (≥0.8 similarity). Titles edited in Studio and the `#shorts` suffix broke it, so
+    **7 of 10 Studio uploads were never linked**. Those clips stay `queued` and flip to "Needs you" when ClipForge's slot
+    passes, although YouTube has them scheduled (at a different time the user chose in Studio).
+  - The batch time and the Studio time disagree, so the "missed" check uses the wrong time.
+  - Also, in API mode, batched items are never uploaded (to avoid duplicates), so they always end up as "Needs you".
+  - A passed slot always became a reasonless "Needs you", even in API mode.
+
+### Fixes
+- **Reconcile** matches by the original upload file name first (`fileDetails.fileName`, owner-only, 1 unit), against
+  the clip file (`NN_slug.mp4`) and the batch file. Then by title with hashtags / `#shorts` stripped and word overlap.
+  Each pass runs only when the match is unambiguous. Unmatched videos come back with suggestions for one-click Link.
+- **Sync runs automatically** before anything is called missed (assisted mode, at most every 30 min, read-only).
+- **Explicit state machine** (`publish/states.py`):
+  - `draft → queued → uploading → scheduled → published`
+  - `failed` (retryable), `locked_private`, `needs_manual` (assisted only), `missed`
+  - Every non-happy state carries a `reason` code + message. The UI turns that into one-click fixes.
+- **API mode uploads as soon as an item is queued** (quota permitting) as private + publishAt. If the slot is <15 min
+  away or passed, `publishing.late_policy` decides: `next_slot` (default, moves it to the next free slot and tells you),
+  `publish_now`, or `ask` (state `missed` with both buttons).
+- **Verification** after each upload: `videos.list(part=status,processingDetails)`. The real state is stored in
+  `yt_state_json` (uploadStatus, privacy, publishAt, processing, failure/rejection reason).
+- **Scheduler robustness:** catch-up run on app start; Task Scheduler every 30 min + at logon + on wake from sleep;
+  last run / next run / result written to `workspace/scheduler_state.json` for the Health panel.

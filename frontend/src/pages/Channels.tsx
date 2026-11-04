@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, ChevronDown, KeyRound, Loader2, Plus, RefreshCw, ShieldCheck, Trash2, Tv } from 'lucide-react'
+import { AlertTriangle, ChevronDown, KeyRound, Loader2, Plus, RefreshCw, ShieldCheck, Tv, Unplug } from 'lucide-react'
 import { toast } from 'sonner'
 import { pub, useChannels, usePublishing, WEEKDAYS } from '@/api/publish'
 import type { Channel, ChannelSettings } from '@/api/publishTypes'
@@ -198,7 +198,10 @@ function ChannelCard({ ch }: { ch: Channel }) {
   })
   const del = useMutation({
     mutationFn: () => pub.deleteChannel(ch.id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['channels'] }),
+    onSuccess: (r) => {
+      toast.success(`Disconnected — ${r.revoked}`)
+      qc.invalidateQueries({ queryKey: ['channels'] })
+    },
     onError: (e) => toast.error(e.message),
   })
   return (
@@ -231,9 +234,9 @@ function ChannelCard({ ch }: { ch: Channel }) {
             <Switch checked={!ch.paused} onCheckedChange={(v) => pause.mutate(!v)} id={`p-${ch.id}`} />
             <Label htmlFor={`p-${ch.id}`}>{ch.paused ? 'Paused' : 'Active'}</Label>
           </div>
-          <Button size="icon" variant="ghost" aria-label="Remove channel"
-            onClick={() => window.confirm(`Remove ${ch.title}? Its login is deleted; scheduled YouTube videos stay on YouTube.`) && del.mutate()}>
-            <Trash2 />
+          <Button size="sm" variant="ghost" className="text-destructive" aria-label="Disconnect and revoke access"
+            onClick={() => window.confirm(`Disconnect ${ch.title}? ClipForge revokes its access at Google and deletes the saved login. Videos already on YouTube stay there.`) && del.mutate()}>
+            <Unplug /> Disconnect
           </Button>
         </div>
       </CardContent>

@@ -1,5 +1,7 @@
 """Publishing worker: a light second thread (uploads are network-bound and must not wait behind a 1-hour
-transcription in the main job queue). Tasks are de-duplicated by key. A ticker runs the scheduler every 10 min."""
+transcription in the main job queue). Tasks are de-duplicated by key. A ticker runs the scheduler every minute
+(cheap when nothing is due: YouTube statuses are re-read at most every 10 min; Instagram needs minute precision)
+and once right after start-up (catch-up after the laptop was off)."""
 
 from __future__ import annotations
 
@@ -14,7 +16,8 @@ from typing import Any, Callable
 from clipforge.config import load_config
 from clipforge.utils.log import log
 
-TICK_SECONDS = 600
+TICK_SECONDS = 60
+FIRST_TICK_SECONDS = 5
 
 
 @dataclass
@@ -34,6 +37,8 @@ class PublishWorker:
         self.history: collections.deque = collections.deque(maxlen=50)
         self.upload_progress: dict[int, float] = {}
         self._started = False
+        self.ticker_on = False
+        self.next_tick_at: str | None = None
 
     def start(self, ticker: bool = True) -> None:
         if self._started:
@@ -41,6 +46,7 @@ class PublishWorker:
         self._started = True
         threading.Thread(target=self._loop, name="clipforge-publish", daemon=True).start()
         if ticker:
+            self.ticker_on = True
             threading.Thread(target=self._tick, name="clipforge-publish-tick", daemon=True).start()
 
     def submit(self, key: str, label: str, fn: Callable[[], Any]) -> bool:
@@ -85,8 +91,14 @@ class PublishWorker:
                     self.current = None
                     self.upload_progress.clear()
 
+    def _set_next(self, seconds: float) -> None:
+        import datetime as dt
+
+        self.next_tick_at = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=seconds)).isoformat()
+
     def _tick(self) -> None:
-        time.sleep(30)
+        self._set_next(FIRST_TICK_SECONDS)
+        time.sleep(FIRST_TICK_SECONDS)
         while True:
             try:
                 from clipforge.publish import channels
@@ -95,6 +107,13 @@ class PublishWorker:
                     self.submit("run", "Scheduler run", run_scheduler)
             except Exception as exc:
                 log.warning(f"[publish] tick failed: {exc}")
+            try:
+                from clipforge.utils import power
+
+                power.update()  # keep the laptop awake while a job runs or an Instagram post is due
+            except Exception as exc:
+                log.debug(f"keep-awake update failed: {exc}")
+            self._set_next(TICK_SECONDS)
             time.sleep(TICK_SECONDS)
 
 

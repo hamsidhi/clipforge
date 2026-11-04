@@ -1,14 +1,21 @@
 import { useQuery } from '@tanstack/react-query'
 import { request } from './client'
-import type { Batch, Channel, ChannelSettings, Dashboard, PublishingStatus, QueueItem, Reminder, SyncResult } from './publishTypes'
+import type { AuditStatus, Batch, Channel, ChannelSettings, Dashboard, Health, PublishingStatus, QueueItem, Reminder, SyncResult } from './publishTypes'
 
 const json = (body: unknown) => JSON.stringify(body)
+
+export type BulkAction =
+  | 'unschedule' | 'delete' | 'shift' | 'regenerate' | 'reschedule' | 'retry' | 'unbatch' | 'to_batch'
+  | 'reschedule_missed' | 'retry_failed'
 
 export const pub = {
   status: () => request<PublishingStatus>('/api/publishing/status'),
   uploadClientSecret: (file: File) =>
     request<{ type: string; client_id: string }>('/api/publishing/client-secret', { method: 'POST', body: file }),
   runScheduler: () => request<{ queued: boolean }>('/api/publishing/run', { method: 'POST' }),
+  health: () => request<Health>('/api/publishing/health'),
+  setAudit: (status: AuditStatus, applied_on?: string) =>
+    request<PublishingStatus>('/api/publishing/audit', { method: 'POST', body: json({ status, applied_on }) }),
 
   channels: () => request<Channel[]>('/api/channels'),
   oauthStart: () => request<{ url: string }>('/api/channels/oauth/start', { method: 'POST' }),
@@ -20,19 +27,24 @@ export const pub = {
     request<Channel>(`/api/channels/${id}`, { method: 'PATCH', body: json(body) }),
   confirmChannel: (id: string) => request<Channel>(`/api/channels/${id}/confirm`, { method: 'POST' }),
   checkAuth: (id: string) => request<{ ok: boolean; channel: Channel }>(`/api/channels/${id}/check-auth`, { method: 'POST' }),
-  deleteChannel: (id: string) => request<{ ok: boolean }>(`/api/channels/${id}`, { method: 'DELETE' }),
+  deleteChannel: (id: string) => request<{ ok: boolean; revoked: string }>(`/api/channels/${id}`, { method: 'DELETE' }),
 
   queue: (channelId?: string, status?: string) =>
     request<QueueItem[]>(`/api/queue?${channelId ? `channel_id=${channelId}&` : ''}${status ? `status=${status}` : ''}`),
   add: (body: { channel_id: string; job_id?: number; video_id?: string; ranks?: number[] | null }) =>
     request<{ added: QueueItem[] }>('/api/queue', { method: 'POST', body: json(body) }),
-  patch: (id: number, body: Partial<Pick<QueueItem, 'title' | 'description' | 'tags' | 'slot_local' | 'category_id' | 'ig_caption'>>) =>
+  patch: (id: number, body: Partial<Pick<QueueItem, 'title' | 'description' | 'tags' | 'slot_local' | 'category_id' | 'ig_caption' | 'privacy' | 'ig_thumb_offset_ms'>>) =>
     request<QueueItem>(`/api/queue/${id}`, { method: 'PATCH', body: json(body) }),
   regenerate: (id: number) => request<QueueItem>(`/api/queue/${id}/regenerate`, { method: 'POST' }),
   unschedule: (id: number) => request<QueueItem>(`/api/queue/${id}/unschedule`, { method: 'POST' }),
   remove: (id: number) => request<{ ok: boolean }>(`/api/queue/${id}`, { method: 'DELETE' }),
-  bulk: (body: { ids: number[]; action: 'unschedule' | 'delete' | 'shift' | 'regenerate'; days?: number }) =>
-    request<{ done: number[]; errors: { id: number; error: string }[] }>('/api/queue/bulk', { method: 'POST', body: json(body) }),
+  bulk: (body: { ids?: number[]; action: BulkAction; days?: number; channel_id?: string }) =>
+    request<{ done: number[]; errors: { id: number | null; error: string }[]; batches?: { relative: string; url: string }[] }>(
+      '/api/queue/bulk', { method: 'POST', body: json(body) }),
+  reschedule: (id: number) => request<QueueItem>(`/api/queue/${id}/reschedule`, { method: 'POST' }),
+  retry: (id: number) => request<QueueItem>(`/api/queue/${id}/retry`, { method: 'POST' }),
+  unbatch: (id: number) => request<QueueItem>(`/api/queue/${id}/unbatch`, { method: 'POST' }),
+  publishNow: (id: number) => request<QueueItem>(`/api/queue/${id}/publish-now`, { method: 'POST' }),
   autoschedule: (channelId: string, item_ids?: number[]) =>
     request<{ scheduled: QueueItem[]; still_draft: { id: number; title: string; meta_status: string; problems: string[] }[] }>(
       `/api/channels/${channelId}/autoschedule`, { method: 'POST', body: json({ item_ids }) }),
@@ -74,8 +86,15 @@ export function useQueue(channelId?: string) {
   })
 }
 
+export function useHealth() {
+  return useQuery({ queryKey: ['health'], queryFn: pub.health, refetchInterval: 30000 })
+}
+
 export const STATUS_STYLE: Record<string, string> = {
   draft: 'bg-muted text-muted-foreground',
+  ready: 'bg-primary/15 text-primary',
+  uploaded: 'bg-violet-500/15 text-violet-300',
+  missed: 'bg-rose-500/15 text-rose-300',
   queued: 'bg-sky-500/15 text-sky-300',
   uploading: 'bg-primary/15 text-primary',
   scheduled: 'bg-violet-500/15 text-violet-300',
@@ -86,8 +105,9 @@ export const STATUS_STYLE: Record<string, string> = {
 }
 
 export const STATUS_LABEL: Record<string, string> = {
-  draft: 'Draft', queued: 'Queued', uploading: 'Uploading', scheduled: 'Scheduled on YouTube', published: 'Published',
-  failed: 'Failed', locked_private: 'Locked private', needs_manual: 'Needs you',
+  draft: 'Draft', queued: 'Queued', uploading: 'Uploading', ready: 'Uploaded, publishes at slot',
+  scheduled: 'Scheduled on YouTube', uploaded: 'On YouTube (private/unlisted)', published: 'Published',
+  failed: 'Failed', locked_private: 'Locked private', needs_manual: 'Needs you', missed: 'Missed slot',
 }
 
 export function istLabel(slotLocal: string | null): string {

@@ -27,6 +27,7 @@ class RunReport:
     failed: list[int] = field(default_factory=list)
     locked: list[int] = field(default_factory=list)
     missed: list[int] = field(default_factory=list)
+    rescheduled: list[int] = field(default_factory=list)
     published: list[int] = field(default_factory=list)
     synced: list[str] = field(default_factory=list)
     skipped_channels: dict[str, str] = field(default_factory=dict)
@@ -35,30 +36,53 @@ class RunReport:
 
 
 def upload_body(it: db.QueueItem, settings: dict, slot: dt.datetime) -> dict:
+    """privacy 'scheduled' (default): private + publishAt, so YouTube itself makes it public at the slot.
+    'public' is only uploaded at the slot (laptop must be on); 'private'/'unlisted' never go public by themselves."""
     lang = settings.get("language", "hi")
+    privacy = it.privacy or "scheduled"
+    status: dict = {"privacyStatus": "private" if privacy == "scheduled" else privacy,
+                    "selfDeclaredMadeForKids": False, "containsSyntheticMedia": False, "embeddable": True}
+    if privacy == "scheduled":
+        status["publishAt"] = iso_utc(slot)
     return {
         "snippet": {"title": it.title[:100], "description": it.description[:5000], "tags": it.tags,
                     "categoryId": it.category_id or "27", "defaultLanguage": lang, "defaultAudioLanguage": lang},
-        # private + publishAt: YouTube itself makes it public at the slot. Nothing goes public without a slot.
-        "status": {"privacyStatus": "private", "publishAt": iso_utc(slot), "selfDeclaredMadeForKids": False,
-                   "containsSyntheticMedia": False, "embeddable": True},
+        "status": status,
     }
 
 
-def classify(video: dict, expected_publish: dt.datetime | None) -> tuple[str, str]:
+def yt_state(video: dict, now: dt.datetime | None = None) -> dict:
+    st, pd = video.get("status", {}), video.get("processingDetails", {})
+    return {k: v for k, v in {
+        "uploadStatus": st.get("uploadStatus"), "privacyStatus": st.get("privacyStatus"), "publishAt": st.get("publishAt"),
+        "processingStatus": pd.get("processingStatus"), "failureReason": st.get("failureReason"),
+        "rejectionReason": st.get("rejectionReason"), "checked_at": iso_utc(now or now_utc()),
+    }.items() if v}
+
+
+def classify(video: dict, expected_publish: dt.datetime | None, privacy: str = "scheduled") -> tuple[str, str]:
     """Map a videos.list item to a queue status: (status, message)."""
+    status, _reason, msg = classify_ex(video, expected_publish, privacy)
+    return status, msg
+
+
+def classify_ex(video: dict, expected_publish: dt.datetime | None, privacy: str = "scheduled") -> tuple[str, str, str]:
+    """(status, reason code, message)."""
     st = video.get("status", {})
     upload_status = st.get("uploadStatus", "")
     if upload_status in ("rejected", "failed"):
         reason = st.get("rejectionReason") or st.get("failureReason") or upload_status
-        return "failed", f"YouTube {upload_status} the upload: {reason}"
-    privacy = st.get("privacyStatus")
-    if privacy == "public":
-        return "published", ""
-    if privacy == "private" and expected_publish is not None and not st.get("publishAt"):
-        return "locked_private", ("YouTube kept this video private and dropped the schedule (API project lock). "
-                                  "Publish it from YouTube Studio, or request the API audit.")
-    return "scheduled", ""
+        return "failed", "rejected", f"YouTube {upload_status} the upload: {reason}"
+    vis = st.get("privacyStatus")
+    if vis == "public":
+        return "published", "", ""
+    if privacy in ("private", "unlisted") and vis == privacy:
+        return "uploaded", "", ""
+    if vis == "private" and expected_publish is not None and not st.get("publishAt"):
+        return "locked_private", "locked_private", (
+            "YouTube kept this video private and dropped the schedule (API project lock). Publish it from YouTube "
+            "Studio, or request the API audit.")
+    return "scheduled", "", ""
 
 
 def _upload_allowed(cfg: Config, rep: RunReport) -> int | None:
@@ -167,17 +191,20 @@ def recover_stuck(now: dt.datetime) -> int:
     after the last chunk but before saving the id), so never re-upload blindly: ask the user to check Studio + Sync."""
     n = 0
     for it in q.items(statuses=("uploading",)):
+        if it.platform != "youtube":
+            continue  # Instagram containers are re-checked by the Instagram runner
         if it.youtube_video_id:
             it.status = "scheduled"
         else:
-            it.status, it.error = "needs_manual", ("The upload was interrupted. Check YouTube Studio: if the video is "
-                                                  "there, use Sync with YouTube (or Link); if not, move it to a new time.")
+            it.status, it.reason, it.error = "needs_manual", "interrupted", (
+                "The upload was interrupted. Check YouTube Studio: if the video is there, use Sync with YouTube (or Link); "
+                "if not, Reschedule.")
         q.save(it)
         n += 1
     return n
 
 
-def run_once(cfg: Config | None = None, now: dt.datetime | None = None, progress=None) -> RunReport:
+def run_once(cfg: Config | None = None, now: dt.datetime | None = None, progress=None, source: str = "app") -> RunReport:
     global _current_lock
     cfg = cfg or load_config()
     now = as_utc(now or now_utc())
@@ -190,9 +217,40 @@ def run_once(cfg: Config | None = None, now: dt.datetime | None = None, progress
         recover_stuck(now)  # safe: we hold the lock, so nobody else is mid-upload
         _current_lock = lock
         try:
-            return _run_locked(cfg, now, progress)
+            rep = _run_locked(cfg, now, progress)
         finally:
             _current_lock = None
+        _write_state(cfg, now, rep, source)
+        return rep
+
+
+STATE_FILE = "scheduler_state.json"
+
+
+def _write_state(cfg: Config, now: dt.datetime, rep: RunReport, source: str) -> None:
+    """Last run info for the Health panel (any process: web app, daemon, Task Scheduler)."""
+    import json
+    from dataclasses import asdict
+
+    path = cfg.workspace / STATE_FILE
+    data = read_state(cfg)
+    summary = {k: (len(v) if isinstance(v, list) else v) for k, v in asdict(rep).items() if v}
+    data.update({"last_run_at": iso_utc(now), "last_source": source, "last_result": summary})
+    data.setdefault("runs", {})[source] = iso_utc(now)
+    try:
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except OSError as exc:
+        log.warning(f"Couldn't write {path}: {exc}")
+
+
+def read_state(cfg: Config | None = None) -> dict:
+    import json
+
+    path = (cfg or load_config()).workspace / STATE_FILE
+    try:
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def _is_auth_error(exc: Exception) -> bool:
@@ -208,18 +266,25 @@ def _run_locked(cfg: Config, now: dt.datetime, progress) -> RunReport:
     rep = RunReport()
     budget = _upload_allowed(cfg, rep) if cfg.publishing.mode == "api" else 0
     for ch in chs.all_channels():
+        if ch.platform == "instagram":
+            _run_instagram(ch, cfg, now, rep)
+            continue
         if ch.paused:
             rep.skipped_channels[ch.id] = "paused"
             continue
         if ch.auth_status == "needs_reauth":
             rep.skipped_channels[ch.id] = "needs re-login"
+            _flag_reauth_items(ch.id, now)
             continue
-        _flag_missed(ch.id, now, rep)  # both modes: a passed slot never silently stays "queued"
         try:
             client = yt.client_for(ch.id, cfg)
+            _handle_late(ch, client, cfg, now, rep)  # a passed slot never silently stays "queued", never a bare "Needs you"
             if cfg.publishing.mode == "api" and budget != 0 and not rep.quota_exhausted:
                 budget = _upload_due(ch, client, cfg, now, rep, budget, progress)
-            _refresh_status(ch, client, cfg, now, rep)
+            since = now - _last_refresh.get(f"{cfg.workspace}|{ch.id}", _EPOCH)
+            if since >= REFRESH_EVERY or since < dt.timedelta(0) or rep.uploaded:
+                _refresh_status(ch, client, cfg, now, rep)
+                _last_refresh[f"{cfg.workspace}|{ch.id}"] = now
             last = ch.last_sync_at
             if last is None or now - as_utc(last) >= dt.timedelta(hours=cfg.publishing.sync_every_hours):
                 analytics.sync_channel(ch.id, client, cfg, now)
@@ -231,26 +296,147 @@ def _run_locked(cfg: Config, now: dt.datetime, progress) -> RunReport:
                 chs.mark_reauth(ch.id, str(exc) if isinstance(exc, yt.NeedsReauth) else
                                 f"Google refused the saved login or permissions ({yt.describe_http_error(exc)}). Reconnect.")
                 rep.skipped_channels[ch.id] = "needs re-login"
+                _flag_reauth_items(ch.id, now)
             else:
                 log.error(f"[publish] channel {ch.id}: {yt.describe_http_error(exc)}")
                 rep.skipped_channels[ch.id] = f"error: {yt.describe_http_error(exc)[:200]}"
     return rep
 
 
-def _flag_missed(channel_id: str, now: dt.datetime, rep: RunReport) -> None:
+def _run_instagram(ch: db.Channel, cfg: Config, now: dt.datetime, rep: RunReport) -> None:
+    try:
+        from clipforge.publish import ig_runner
+
+        ig_runner.process_account(ch, cfg, now, rep)
+    except Exception as exc:  # never crash the scheduler
+        log.error(f"[publish] instagram {ch.id}: {exc}")
+        rep.skipped_channels[ch.id] = f"error: {str(exc)[:200]}"
+
+
+def _flag_reauth_items(channel_id: str, now: dt.datetime) -> None:
+    """Clips due soon on an account whose login expired: say so on the clip (the fix is Reconnect)."""
     for it in q.items(channel_id, ("queued",)):
-        if it.slot_utc and not it.youtube_video_id and as_utc(it.slot_utc) < now + MIN_LEAD:
-            it.status = "needs_manual"
-            it.error = ("The publish time passed. If you uploaded it in Studio, use Sync with YouTube; otherwise pick a new time."
-                        if it.batch else "The slot passed before the clip could be uploaded — pick a new time.")
+        if it.slot_utc and as_utc(it.slot_utc) < now + dt.timedelta(days=2) and it.reason != "login_expired":
+            it.reason, it.error = "login_expired", "The account's login expired — click Reconnect on the Accounts page."
             q.save(it)
-            rep.missed.append(it.id)
+
+
+SYNC_THROTTLE = dt.timedelta(minutes=30)
+REFRESH_EVERY = dt.timedelta(minutes=10)  # the ticker runs every minute; YouTube statuses don't need that
+_last_refresh: dict[str, dt.datetime] = {}
+_last_auto_sync: dict[str, dt.datetime] = {}
+_EPOCH = dt.datetime(2000, 1, 1, tzinfo=dt.timezone.utc)
+
+
+def _late_cutoff(it: db.QueueItem, now: dt.datetime) -> bool:
+    """Is it too late to upload this clip for its slot?"""
+    slot = as_utc(it.slot_utc)  # type: ignore[arg-type]
+    if it.privacy == "public":  # uploaded at the slot itself; give a sleeping laptop an hour
+        return now > slot + dt.timedelta(hours=1)
+    if it.privacy in ("private", "unlisted"):
+        return False  # never published, so never late
+    return slot < now + MIN_LEAD
+
+
+def _local(t: dt.datetime, ch: db.Channel, cfg: Config) -> str:
+    from clipforge.publish.timez import utc_to_local
+
+    return utc_to_local(t, chs.settings_of(ch, cfg)["timezone"]).strftime("%a %d %b %H:%M")
+
+
+def _handle_late(ch: db.Channel, client, cfg: Config, now: dt.datetime, rep: RunReport) -> None:
+    from clipforge.publish import reconcile
+
+    def waiting() -> list[db.QueueItem]:
+        return [it for it in q.items(ch.id, ("queued",)) if it.slot_utc and not it.youtube_video_id]
+
+    queued = waiting()
+    assisted = cfg.publishing.mode != "api"
+    # 1. Studio uploads first: link them (read-only), so nothing that is really scheduled gets flagged
+    due_batched = [it for it in queued if it.batch and as_utc(it.slot_utc) < now + MIN_LEAD]  # type: ignore[arg-type]
+    if due_batched and now - _last_auto_sync.get(f"{cfg.workspace}|{ch.id}", _EPOCH) >= SYNC_THROTTLE:
+        _last_auto_sync[f"{cfg.workspace}|{ch.id}"] = now
+        try:
+            res = reconcile.sync(ch.id, cfg, client)
+            rep.messages += [f"Linked Studio upload “{m['title']}”" for m in res["matched"]]
+        except Exception as exc:
+            if _is_auth_error(exc):
+                raise
+            log.warning(f"[publish] auto-sync {ch.id} failed: {yt.describe_http_error(exc)}")
+        queued = waiting()
+    for it in queued:
+        slot = as_utc(it.slot_utc)  # type: ignore[arg-type]
+        if assisted:
+            if slot > now:
+                continue
+            if it.batch:
+                it.status, it.reason = "needs_manual", "assisted_unlinked"
+                it.error = (f"Assisted mode: this clip was in a Studio batch for {_local(slot, ch, cfg)}. If you uploaded it "
+                            "in YouTube Studio, it isn't linked yet → Sync with YouTube, or Link it to the video. "
+                            "If you didn't upload it, Reschedule.")
+            else:
+                it.status, it.reason = "missed", "assisted_no_batch"
+                it.error = ("Assisted mode: ClipForge doesn't upload by itself, and this clip wasn't in a Studio batch, so "
+                            "nobody uploaded it. Reschedule it (then Prepare batch), or switch to API mode.")
+            q.save(it)
+            rep.missed.append(it.id)  # type: ignore[arg-type]
+            continue
+        # ---- api mode
+        if it.batch:
+            if slot < now + MIN_LEAD:
+                it.status, it.reason = "needs_manual", "batched_in_api"
+                it.error = ("This clip is in a Studio batch, so API mode didn't upload it (no double uploads). If you "
+                            "uploaded it in Studio: Sync or Link. Otherwise: Upload with API instead (removes it from the batch).")
+                q.save(it)
+                rep.missed.append(it.id)  # type: ignore[arg-type]
+            elif it.reason != "batched_in_api":
+                it.reason = "batched_in_api"
+                it.error = "In a Studio batch — API mode won't upload it unless you remove it from the batch."
+                q.save(it)
+            continue
+        if not _late_cutoff(it, now):
+            continue
+        policy = cfg.publishing.late_policy
+        code = "slot_passed" if slot <= now else "slot_too_close"
+        if policy == "publish_now":
+            it.privacy, it.slot_utc, it.reason = "public", now, ""
+            it.error = f"Was due {_local(slot, ch, cfg)} — publishing now (late_policy = publish_now)."
+            q.save(it)
+            rep.messages.append(f"“{it.title}” missed its slot — publishing now.")
+            continue
+        if policy == "next_slot":
+            try:
+                moved = q.reschedule_next(it.id, now)
+                new = as_utc(moved.slot_utc)  # type: ignore[arg-type]
+                moved.error = f"Moved automatically from {_local(slot, ch, cfg)} to {_local(new, ch, cfg)} (the slot was too close or had passed)."
+                q.save(moved)
+                rep.rescheduled.append(it.id)  # type: ignore[arg-type]
+                rep.messages.append(f"“{it.title}” moved to {_local(new, ch, cfg)}.")
+                continue
+            except q.QueueError as exc:
+                log.warning(f"[publish] couldn't reschedule {it.id}: {exc}")
+        it.status, it.reason = "missed", code
+        it.error = (f"The slot ({_local(slot, ch, cfg)}) passed before ClipForge could upload it — usually the laptop was off "
+                    "or asleep. Reschedule to the next free slot, or Publish now.")
+        q.save(it)
+        rep.missed.append(it.id)  # type: ignore[arg-type]
 
 
 def _upload_due(ch: db.Channel, client, cfg: Config, now: dt.datetime, rep: RunReport, budget: int | None, progress) -> int | None:
-    horizon = now + dt.timedelta(days=cfg.publishing.upload_ahead_days)
-    candidates = [it.id for it in q.items(ch.id, ("queued",))
-                  if it.slot_utc and as_utc(it.slot_utc) <= horizon and not it.youtube_video_id and not it.batch]
+    days = cfg.publishing.upload_ahead_days
+    horizon = now + dt.timedelta(days=days) if days > 0 else dt.datetime.max.replace(tzinfo=dt.timezone.utc)
+
+    def due(it: db.QueueItem) -> bool:
+        if not it.slot_utc or it.youtube_video_id or it.batch:
+            return False
+        slot = as_utc(it.slot_utc)
+        if it.privacy == "public":
+            return slot <= now + dt.timedelta(minutes=1) and not _late_cutoff(it, now)
+        if it.privacy in ("private", "unlisted"):
+            return True
+        return now + MIN_LEAD <= slot <= horizon
+
+    candidates = [it.id for it in q.items(ch.id, ("queued",)) if due(it)]
     for item_id in candidates:
         if budget is not None and budget <= 0:
             break
@@ -260,46 +446,44 @@ def _upload_due(ch: db.Channel, client, cfg: Config, now: dt.datetime, rep: RunR
         if not live_ch or live_ch.paused or live_ch.auth_status != "ok":
             break
         it = q.get(item_id)
-        if not it or it.status != "queued" or not it.slot_utc or it.youtube_video_id or it.batch:
+        if not it or it.status != "queued" or not due(it):
             continue
-        slot = as_utc(it.slot_utc)
-        if slot < now + MIN_LEAD or slot > horizon:
-            continue
+        slot = as_utc(it.slot_utc)  # type: ignore[arg-type]
         if it.next_attempt_at and as_utc(it.next_attempt_at) > now:
             continue
         if not live_ch.confirmed:
-            it.error = "Confirm this channel (Channels page) before the first upload."
+            it.reason, it.error = "channel_unconfirmed", "Confirm this channel (Accounts page) before the first upload."
             q.save(it)
             continue
         problems = q.problems(it)
         if problems:
-            it.status, it.error = "needs_manual", " ".join(problems)
+            it.status, it.reason, it.error = "needs_manual", "metadata", " ".join(problems)
             q.save(it)
             continue
         try:
             path = q.clip_file(it, cfg)
         except q.QueueError as exc:
-            it.status, it.error = "needs_manual", str(exc)
+            it.status, it.reason, it.error = "needs_manual", "file_missing", str(exc)
             q.save(it)
             continue
-        if not q.claim_for_upload(it.id, it.slot_utc):
+        if not q.claim_for_upload(it.id, it.slot_utc):  # type: ignore[arg-type]
             continue  # changed under us between the read and the claim
         it = q.get(item_id)
         settings = chs.settings_of(live_ch, cfg)
         try:
             vid = client.upload(path, upload_body(it, settings, slot),
                                 on_progress=(lambda f, i=it: progress(i.id, f)) if progress else None)
-            it.youtube_video_id, it.status, it.error, it.next_attempt_at = vid, "scheduled", "", None
+            it.youtube_video_id, it.status, it.reason, it.error, it.next_attempt_at = vid, "scheduled", "", "", None
             q.save(it)
             rep.uploaded.append(it.id)
             if budget is not None:
                 budget -= 1
-            log.info(f"Uploaded queue item {it.id} → {vid} (publishes {slot.isoformat()})")
-            _check_lock(it, client, slot, rep)
+            log.info(f"Uploaded queue item {it.id} → {vid} ({it.privacy}, slot {slot.isoformat()})")
+            _verify(it, client, slot, rep, now)
             if _current_lock is not None:
                 _current_lock.heartbeat()
         except yt.QuotaExceeded as exc:
-            it.status, it.error = "queued", str(exc)
+            it.status, it.reason, it.error = "queued", "quota", str(exc)
             q.save(it)
             rep.quota_exhausted = True
             q.log_quota_rollover(cfg)
@@ -315,39 +499,66 @@ def _upload_due(ch: db.Channel, client, cfg: Config, now: dt.datetime, rep: RunR
                 raise
             msg = yt.describe_http_error(exc)
             if "quotaExceeded" in msg or "uploadLimitExceeded" in msg:
-                it.status, it.error = "queued", "YouTube says the daily upload limit is reached — retrying tomorrow."
+                it.status, it.reason = "queued", "quota"
+                it.error = "YouTube says the daily upload limit is reached — continues tomorrow automatically."
                 it.next_attempt_at = now + dt.timedelta(hours=12)
                 q.save(it)
                 rep.quota_exhausted = True
                 break
             if it.attempts >= MAX_ATTEMPTS:
-                it.status, it.error = "failed", f"Upload failed {it.attempts}× — {msg}"
+                it.status, it.reason, it.error = "failed", "upload_failed", f"Upload failed {it.attempts}× — {msg}"
                 rep.failed.append(it.id)
             else:
-                it.status, it.error = "queued", f"Attempt {it.attempts} failed, retrying: {msg}"
+                it.status, it.reason = "queued", ""
+                it.error = f"Attempt {it.attempts} failed, retrying automatically: {msg}"
                 it.next_attempt_at = now + dt.timedelta(minutes=min(360, 5 * 2 ** it.attempts))
             q.save(it)
+    if rep.quota_exhausted:  # say so on every clip still waiting (they continue automatically tomorrow)
+        for item_id in candidates:
+            it = q.get(item_id)
+            if it and it.status == "queued" and not it.youtube_video_id and it.reason != "quota":
+                it.reason, it.error = "quota", "Upload quota used up today — continues tomorrow automatically (Pacific time)."
+                q.save(it)
     return budget
 
 
-def _check_lock(it: db.QueueItem, client, slot: dt.datetime, rep: RunReport) -> None:
+def _verify(it: db.QueueItem, client, slot: dt.datetime, rep: RunReport, now: dt.datetime) -> None:
+    """Right after an upload: read back the real state (status + processing) and store it."""
     try:
         vids = client.videos([it.youtube_video_id])
     except Exception as exc:
         log.warning(f"Couldn't verify status of {it.youtube_video_id}: {exc}")
         return
-    if not vids:
-        return
-    status, msg = classify(vids[0], slot)
-    if status in ("locked_private", "failed"):
-        it.status, it.error = status, msg
-        q.save(it)
-        (rep.locked if status == "locked_private" else rep.failed).append(it.id)
+    if vids:
+        apply_state(it, vids[0], slot if (it.privacy or "scheduled") == "scheduled" else None, rep, now)
+
+
+def apply_state(it: db.QueueItem, v: dict, expected: dt.datetime | None, rep: RunReport | None, now: dt.datetime) -> db.QueueItem:
+    import json
+
+    status, reason, msg = classify_ex(v, expected, it.privacy or "scheduled")
+    it.yt_state_json = json.dumps(yt_state(v, now))
+    pa = v.get("status", {}).get("publishAt")
+    if pa and status == "scheduled":  # time changed in Studio → follow YouTube
+        it.slot_utc = as_utc(dt.datetime.fromisoformat(pa.replace("Z", "+00:00")))
+    if status != it.status:
+        it.status, it.reason, it.error = status, reason, msg
+        if status == "published":
+            pub = v.get("snippet", {}).get("publishedAt")
+            it.published_at = (as_utc(dt.datetime.fromisoformat(pub.replace("Z", "+00:00"))) if pub and not it.slot_utc
+                               else it.slot_utc or now)
+            if rep is not None:
+                rep.published.append(it.id)  # type: ignore[arg-type]
+        elif rep is not None and status == "locked_private":
+            rep.locked.append(it.id)  # type: ignore[arg-type]
+        elif rep is not None and status == "failed":
+            rep.failed.append(it.id)  # type: ignore[arg-type]
+    return q.save(it)
 
 
 def _refresh_status(ch: db.Channel, client, cfg: Config, now: dt.datetime, rep: RunReport) -> None:
-    """scheduled → published once YouTube made it public (also catches later rejections); linked needs_manual
-    items (uploaded in Studio but not scheduled yet) are re-checked too."""
+    """Re-read every clip that is on YouTube but not final yet: scheduled → published, processing state, time
+    changes made in Studio, later rejections; linked needs_manual items (uploaded in Studio, no schedule yet) too."""
     from clipforge.publish import reconcile
 
     linked = [it for it in q.items(ch.id, ("needs_manual",)) if it.youtube_video_id]
@@ -356,21 +567,16 @@ def _refresh_status(ch: db.Channel, client, cfg: Config, now: dt.datetime, rep: 
         for it in linked:
             if it.youtube_video_id in by:
                 reconcile.apply_video(it, by[it.youtube_video_id])
-    due = [it for it in q.items(ch.id, ("scheduled",)) if it.youtube_video_id and it.slot_utc
-           and as_utc(it.slot_utc) <= now]
-    if not due:
+    watch = [it for it in q.items(ch.id, ("scheduled", "locked_private")) if it.youtube_video_id]
+    if not watch:
         return
-    by_id = {v["id"]: v for v in client.videos([it.youtube_video_id for it in due])}
-    for it in due:
+    by_id = {v["id"]: v for v in client.videos([it.youtube_video_id for it in watch])}
+    for it in watch:
         v = by_id.get(it.youtube_video_id)
         if not v:
-            it.status, it.error = "failed", "Video not found on YouTube any more (deleted?)."
-        else:
-            status, msg = classify(v, as_utc(it.slot_utc))
-            if status == "scheduled":
-                continue
-            it.status, it.error = status, msg
-            if status == "published":
-                it.published_at = it.slot_utc
-                rep.published.append(it.id)
-        q.save(it)
+            if it.slot_utc and as_utc(it.slot_utc) <= now:
+                it.status, it.reason, it.error = "failed", "deleted", "Video not found on YouTube any more (deleted?)."
+                q.save(it)
+            continue
+        expected = as_utc(it.slot_utc) if it.slot_utc and (it.privacy or "scheduled") == "scheduled" else None
+        apply_state(it, v, expected, rep, now)

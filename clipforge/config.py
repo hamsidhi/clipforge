@@ -125,7 +125,10 @@ class PublishingConfig(_Section):
     peak_slots: list[str] = ["18:30", "21:00"]
     posts_per_day: int = Field(3, ge=1, le=20)
     min_gap_hours: float = 2.5  # default slots 18:30 and 21:00 are 2.5 h apart
-    upload_ahead_days: int = Field(5, ge=1, le=14)
+    upload_ahead_days: int = Field(0, ge=0, le=60)  # 0 = upload as soon as a clip is scheduled
+    late_policy: Literal["next_slot", "publish_now", "ask"] = "next_slot"  # api mode: slot <15 min away or passed
+    audit_status: Literal["not_applied", "applied", "approved", "rejected"] = "not_applied"
+    audit_applied_on: str = ""
     insert_calls_per_day: int = 100   # videos.insert has its own bucket (Data API, since 2026-06-01)
     units_per_day: int = 10_000       # all other Data API calls
     batch_max: int = 15
@@ -146,6 +149,55 @@ class YppConfig(_Section):
     new_ad_shorts_views_90d: int = 20_000_000
 
 
+class InstagramConfig(_Section):
+    """Instagram Reels publishing (Phase 13). Per-account slots live on the Accounts page."""
+
+    mode: Literal["api", "assisted"] = "api"   # assisted = an "Instagram kit" you post yourself
+    graph_version: str = "v26.0"
+    slots: list[str] = ["13:00", "19:00", "21:30"]
+    peak_slots: list[str] = ["19:00", "21:30"]
+    posts_per_day: int = Field(3, ge=1, le=20)
+    min_gap_hours: float = 2.0
+    upload_lead_minutes: int = Field(20, ge=5, le=600)  # create + upload the container this early, publish at the slot
+    max_late_minutes: int = Field(90, ge=0, le=1440)    # later than this → "missed", never published late
+    publish_limit: int = 100            # API-published posts per moving 24 h (Meta docs, checked 2026-11-04)
+    publish_limit_margin: int = 10      # stay this far below the limit
+    hours_after_youtube: float = 0      # "post to Instagram X hours after YouTube" (0 = same day, its own slot)
+    share_to_feed: bool = True
+
+
+class AuthConfig(_Section):
+    """Login for remote use (Phase 14). Localhost on the laptop can stay passwordless."""
+
+    trust_localhost: bool = True
+    session_days: int = Field(30, ge=1, le=365)
+    max_failures: int = Field(5, ge=3, le=20)     # wrong passwords before a lockout
+    lockout_minutes: int = Field(15, ge=1, le=1440)
+
+
+class PowerConfig(_Section):
+    keep_awake: Literal["always", "when_busy", "never"] = "when_busy"
+
+
+class TelegramConfig(_Section):
+    """Telegram bot (long polling from the laptop — no public server). Token lives in .env (TELEGRAM_BOT_TOKEN)."""
+
+    enabled: bool = False
+    notify_job_done: bool = True
+    notify_job_failed: bool = True
+    notify_published: bool = True
+    notify_publish_failed: bool = True
+    notify_reauth: bool = True
+    notify_quota: bool = True
+    daily_summary: bool = True
+    daily_summary_time: str = "22:00"   # IST
+
+
+class RemoteConfig(_Section):
+    watch_folder: str = ""              # `clipforge watch`: auto-start jobs for files dropped here (off when empty)
+    preview_proxy: bool = True          # also render a 540×960 ~1 Mbps preview per clip (phones / data saver)
+
+
 class Config(_Section):
     clips: ClipsConfig = ClipsConfig()
     whisper: WhisperConfig = WhisperConfig()
@@ -157,6 +209,11 @@ class Config(_Section):
     output: OutputConfig = OutputConfig()
     publishing: PublishingConfig = PublishingConfig()
     ypp: YppConfig = YppConfig()
+    instagram: InstagramConfig = InstagramConfig()
+    auth: AuthConfig = AuthConfig()
+    power: PowerConfig = PowerConfig()
+    telegram: TelegramConfig = TelegramConfig()
+    remote: RemoteConfig = RemoteConfig()
 
     @property
     def workspace(self) -> Path:
@@ -185,6 +242,11 @@ class Secrets(BaseSettings):
 
     gemini_api_key: str | None = None
     groq_api_key: str | None = None
+    meta_app_id: str | None = None          # Instagram (Phase 13): Meta app id + secret
+    meta_app_secret: str | None = None
+    telegram_bot_token: str | None = None   # Phase 14
+    telegram_chat_id: str | None = None     # paired Telegram user id (only this user may talk to the bot)
+    clipforge_password_hash: str | None = None  # Phase 14: login password (scrypt hash, never the password)
 
 
 class ConfigError(RuntimeError):

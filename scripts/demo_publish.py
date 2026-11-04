@@ -79,9 +79,15 @@ def main(source_id: str = "sdMHVIcPGwg") -> None:
     from clipforge.publish import reconcile
 
     reconcile.sync("UCdemoFiguring", cfg, fake)
-    if len(its) > 4:
-        its[4].status, its[4].error = "needs_manual", "The slot passed before the clip could be uploaded — pick a new time."
+    if len(its) > 5:  # what "needs attention" looks like now: a reason + one-click fixes
+        its[4].status, its[4].reason = "missed", "assisted_no_batch"
+        its[4].error = ("Assisted mode: ClipForge doesn't upload by itself, and this clip wasn't in a Studio batch, so "
+                        "nobody uploaded it. Reschedule it (then Prepare batch), or switch to API mode.")
         q.save(its[4])
+        its[5].status, its[5].reason, its[5].batch = "needs_manual", "assisted_unlinked", "batches/demo"
+        its[5].error = ("Assisted mode: this clip was in a Studio batch. If you uploaded it in YouTube Studio, it isn't "
+                        "linked yet → Sync with YouTube, or Link it to the video. If you didn't upload it, Reschedule.")
+        q.save(its[5])
 
     # 30 days of history: published Shorts with views at different hours, channel growth
     rng = random.Random(7)
@@ -116,12 +122,18 @@ def main(source_id: str = "sdMHVIcPGwg") -> None:
                       rate_per_1k=40, views=21_000, campaign_fee_pct=10, submission_status="submitted",
                       posted_at=(now - dt.timedelta(days=5)).date()))
         s.commit()
-    from clipforge.publish import batch
+    from clipforge.publish import batch, runner
 
     try:
         batch.prepare("UCdemoFiguring", 5, cfg)
     except Exception as exc:
         print("batch:", exc)
+    # a fake (non-working) saved login so the Health panel shows the normal state; never a real token
+    tok = yt.token_path("UCdemoFiguring", cfg)
+    tok.parent.mkdir(parents=True, exist_ok=True)
+    tok.write_text('{"token": "demo", "refresh_token": "demo-refresh-token", "client_id": "demo", "client_secret": "demo"}',
+                   encoding="utf-8")
+    runner._write_state(cfg, now_utc(), runner.RunReport(synced=["UCdemoFiguring"]), "app")
     yt.set_client_factory(None)
     print(f"Demo workspace ready: {DEMO}")
 

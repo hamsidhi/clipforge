@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
+import AuditChecklist from '@/components/AuditChecklist'
 
 type Cfg = Record<string, Record<string, unknown>>
 
@@ -43,8 +44,18 @@ export default function PublishingSettings({ cfg, set }: { cfg: Cfg; set: (secti
               </SelectContent>
             </Select>
             <p className="text-xs text-muted-foreground">
-              API mode uploads ahead of time with a publish date, so YouTube publishes on time even if this laptop is off.
+              API mode uploads as soon as a clip is scheduled (private + publish date), so YouTube publishes on time even if this
+              laptop is off. Assisted mode never uploads by itself: you upload the batch in Studio, then Sync.
             </p>
+            <Label className="pt-2">If a slot is &lt;15 min away or passed before the upload</Label>
+            <Select value={String(p.late_policy)} onValueChange={(v) => set('publishing', 'late_policy', v)}>
+              <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="next_slot">Move it to the next free slot (recommended)</SelectItem>
+                <SelectItem value="publish_now">Publish it right away</SelectItem>
+                <SelectItem value="ask">Ask me (shows Reschedule / Publish now)</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
           <div className="space-y-3">
             <div className="flex items-center justify-between gap-3 text-sm">
@@ -85,6 +96,8 @@ export default function PublishingSettings({ cfg, set }: { cfg: Cfg; set: (secti
           </div>
         </div>
 
+        <AuditChecklist />
+
         <div className="grid gap-5 md:grid-cols-4">
           <div className="space-y-2">
             <Label>Default slots (IST)</Label>
@@ -95,8 +108,8 @@ export default function PublishingSettings({ cfg, set }: { cfg: Cfg; set: (secti
             <Input type="number" min={1} max={20} value={String(p.posts_per_day)} onChange={(e) => set('publishing', 'posts_per_day', Number(e.target.value))} />
           </div>
           <div className="space-y-2">
-            <Label>Upload ahead (days)</Label>
-            <Input type="number" min={1} max={14} value={String(p.upload_ahead_days)} onChange={(e) => set('publishing', 'upload_ahead_days', Number(e.target.value))} />
+            <Label>Upload ahead (days, 0 = right away)</Label>
+            <Input type="number" min={0} max={60} value={String(p.upload_ahead_days)} onChange={(e) => set('publishing', 'upload_ahead_days', Number(e.target.value))} />
           </div>
           <div className="space-y-2">
             <Label>Uploads left today</Label>

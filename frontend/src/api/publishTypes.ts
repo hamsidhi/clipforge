@@ -1,6 +1,14 @@
 // Phase 12: publishing types
 
-export type QueueStatus = 'draft' | 'queued' | 'uploading' | 'scheduled' | 'published' | 'failed' | 'locked_private' | 'needs_manual'
+export type QueueStatus =
+  | 'draft' | 'queued' | 'uploading' | 'ready' | 'scheduled' | 'uploaded' | 'published'
+  | 'failed' | 'locked_private' | 'needs_manual' | 'missed'
+
+export type Platform = 'youtube' | 'instagram'
+export type Privacy = 'scheduled' | 'public' | 'unlisted' | 'private'
+export type FixAction =
+  | 'sync' | 'link' | 'open_batch' | 'reschedule' | 'publish_now' | 'retry' | 'reconnect' | 'audit_info'
+  | 'studio' | 'unbatch' | 'open_app' | 'edit' | 'confirm'
 
 export interface ChannelSettings {
   timezone: string
@@ -36,6 +44,8 @@ export interface Channel {
   counts: Record<string, number>
   last_sync_at: string | null
   token_present: boolean
+  platform: Platform
+  extra: { username?: string; page_name?: string; followers?: number; token_expires_at?: string; ig_user_id?: string; profile_picture_url?: string }
 }
 
 export interface TitleVariant {
@@ -71,13 +81,48 @@ export interface QueueItem {
   batch: string
   problems: string[]
   uploading_progress: number | null
+  platform: Platform
+  privacy: Privacy
+  reason: string
+  reason_label: string
+  actions: FixAction[]
+  yt_state: {
+    uploadStatus?: string; privacyStatus?: string; publishAt?: string; processingStatus?: string
+    failureReason?: string; rejectionReason?: string; checked_at?: string
+  }
+  url: string | null
+  permalink: string
+  ig_media_id: string
+  ig_thumb_offset_ms: number | null
+}
+
+export type AuditStatus = 'not_applied' | 'applied' | 'approved' | 'rejected'
+
+export interface Health {
+  last_run_at: string | null
+  last_source: string | null
+  last_result: Record<string, unknown>
+  runs: Record<string, string>
+  next_run_at: string | null
+  ticker: boolean
+  mode: 'assisted' | 'api'
+  quota: { inserts: number; units: number; inserts_limit: number; units_limit: number; day: string }
+  audit_status: AuditStatus
+  api_audited: boolean
+  accounts: { id: string; title: string; platform: Platform; paused: boolean; token: { ok: boolean; text: string }; attention: number }[]
+  keep_awake: { mode: string; holding: boolean; reason?: string; supported?: boolean }
+  tasks: { name: string; status: string; last_run: string; last_result: string; next_run: string }[]
+  server_time: string
 }
 
 export interface PublishingStatus {
+  audit_status: AuditStatus
+  audit_applied_on: string
+  late_policy: 'next_slot' | 'publish_now' | 'ask'
   mode: 'assisted' | 'api'
   api_audited: boolean
   unverified_lock: boolean
-  banner: { level: 'info' | 'warning'; text: string; link: string } | null
+  banner: { level: 'info' | 'warning'; text: string; link: string | null } | null
   audit_form: string
   quota: { inserts: number; units: number; inserts_limit: number; units_limit: number; day: string }
   uploads_left_today: number
@@ -99,9 +144,12 @@ export interface Batch {
 }
 
 export interface SyncResult {
-  matched: { queue_id: number; video_id: string; title: string; score: number }[]
+  matched: { queue_id: number; video_id: string; title: string; score: number; by: string }[]
   unmatched_items: { queue_id: number; title: string }[]
-  unmatched_videos: { video_id: string; title: string; duration: number }[]
+  unmatched_videos: {
+    video_id: string; title: string; duration: number; file_name: string
+    suggestions: { queue_id: number; title: string; score: number }[]
+  }[]
 }
 
 export interface YppTier {

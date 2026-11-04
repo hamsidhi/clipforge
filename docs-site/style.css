@@ -1,0 +1,25 @@
+:root { color-scheme: dark; --bg:#0f0f13; --card:#18181f; --line:#2a2a33; --fg:#ececf1; --muted:#a3a3ad; --accent:#ffe600; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header, main, footer { max-width: 860px; margin: 0 auto; padding: 0 20px; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 22px; padding-bottom: 22px; flex-wrap: wrap; }
+header .brand { font-weight: 800; font-size: 20px; color: var(--fg); text-decoration: none; }
+header .brand span { color: var(--accent); }
+nav a { color: var(--muted); margin-left: 18px; text-decoration: none; font-size: 15px; }
+nav a:hover, nav a[aria-current] { color: var(--fg); }
+h1 { font-size: 34px; line-height: 1.2; margin: 18px 0 12px; }
+h2 { font-size: 21px; margin: 34px 0 8px; }
+h3 { font-size: 17px; margin: 22px 0 6px; }
+a { color: var(--accent); }
+p, li { color: #d8d8de; }
+.muted { color: var(--muted); font-size: 14px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; margin: 18px 0; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+.badge { display: inline-block; border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; font-size: 13px; color: var(--muted); }
+.yt { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; }
+.yt svg { width: 28px; height: 20px; }
+code { background: #22222b; border-radius: 6px; padding: 1px 6px; font-size: 14px; }
+footer { border-top: 1px solid var(--line); margin-top: 48px; padding-top: 18px; padding-bottom: 40px; color: var(--muted); font-size: 14px; }
+footer a { color: var(--muted); margin-right: 16px; }
+table { border-collapse: collapse; width: 100%; font-size: 15px; }
+td, th { border-bottom: 1px solid var(--line); padding: 8px 6px; text-align: left; vertical-align: top; }

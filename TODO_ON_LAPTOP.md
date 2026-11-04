@@ -16,9 +16,15 @@ Everything is unit-tested with a fake YouTube client. The real OAuth flow, uploa
    - Check YouTube Studio: the clip is **Private, Scheduled** at the slot time.
    - If it shows "Locked private", turn on *Unaudited uploads get locked*.
 5. **Dashboard:** *Sync stats* fills subscribers, Shorts views (needs the YouTube Analytics API enabled in your project) and YPP bars.
-6. **Unattended:** run `clipforge schedule-task install` once.
-   - If Windows refuses the "at logon" task, run it from an *Administrator* terminal.
-   - Otherwise keep only the "every 2 h" task.
+6. **Unattended:** run `clipforge schedule-task install` once (one hidden task: every 30 min + at logon + on wake).
+   - If Windows refuses it, run it from an *Administrator* terminal. `clipforge schedule-task status` shows last/next run.
+7. **Phase 12.5 (Needs-you fix):**
+   - Restart `clipforge ui` (the old server process keeps old code).
+   - Optional lock check: `clipforge publish-test UCT5PqvmHmx8HldPvyZwRRTQ`. It uploads ONE 3-second *private* test video,
+     publishAt +30 days, and prints "Not locked" / "Locked". **Delete it in Studio afterwards.** I didn't run it for you:
+     a publish time of now + 2 h would make it public, and ClipForge's login can't cancel a schedule or delete videos.
+8. **Audit kit:** GitHub → Settings → Pages → Source **GitHub Actions**, then Actions → *Publish docs-site* → Run.
+   Check https://hamsidhi.github.io/clipforge/privacy.html. Then follow AUDIT_KIT.md.
 
 ## 2. Phone over Wi-Fi
 ```powershell

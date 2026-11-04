@@ -5,8 +5,8 @@ clips:
   count: 20          # how many clips to output (clamped to min_count..max_count)
   min_count: 15
   max_count: 25
-  min_sec: 20
-  max_sec: 59
+  min_sec: 20.0
+  max_sec: 59.0
   max_overlap: 0.3   # drop a candidate overlapping a better one by more than this fraction
 
 whisper:
@@ -20,8 +20,8 @@ llm:
   provider: ollama     # ollama | gemini | groq | mock
   model: auto          # auto -> best installed Ollama model / provider default
   temperature: 0.3
-  window_min: 8
-  overlap_min: 1
+  window_min: 8.0
+  overlap_min: 1.0
   max_retries: 3
   max_candidates_per_window: 6
   ollama_url: http://127.0.0.1:11434
@@ -37,7 +37,7 @@ scoring_weights:
 
 reframe:
   layout: auto         # auto | track | split | blur
-  sample_fps: 5
+  sample_fps: 5.0
   smoothing: 0.85      # EMA factor for the crop x-position (higher = smoother)
   deadzone: 0.04       # ignore face moves smaller than this fraction of frame width
   split_min_distance: 0.35  # faces further apart than this (fraction of width) -> split-screen
@@ -49,14 +49,14 @@ captions:
   max_chars_per_line: 18
   font: Montserrat-ExtraBold
   font_size: 82
-  text_color: "#FFFFFF"
-  highlight_color: "#FFE600"
-  keyword_color: "#00FF88"
+  text_color: '#FFFFFF'
+  highlight_color: '#FFE600'
+  keyword_color: '#00FF88'
   outline: 6
   shadow: 3
   position_pct: 0.65   # vertical centre of captions as a fraction of screen height
   hook_title: true
-  hook_seconds: 3
+  hook_seconds: 3.0
 
 render:
   width: 1080
@@ -64,7 +64,7 @@ render:
   fps: 30
   crf: 20
   preset: veryfast     # veryfast | fast | medium
-  loudness_lufs: -14
+  loudness_lufs: -14.0
   audio_bitrate: 192k
   use_nvenc: auto      # auto | true | false
   workers: auto
@@ -77,17 +77,20 @@ publishing:
   api_audited: false   # set true once Google approved your YouTube API compliance audit (raises quota)
   unverified_lock: false  # Google lifted the private-only lock for unverified API projects on 2026-11-02
   timezone: Asia/Kolkata
-  slots: ["12:30", "18:30", "21:00"]   # default publish times (IST) for new channels
-  peak_slots: ["18:30", "21:00"]       # best clips go here, weaker ones to the other slots
-  posts_per_day: 3
+  slots: ['12:30', '18:30', '21:00']   # default publish times (IST) for new channels
+  peak_slots: ['18:30', '21:00']       # best clips go here, weaker ones to the other slots
+  posts_per_day: 6
   min_gap_hours: 2.5   # 18:30 → 21:00 is 2.5 h; a larger gap would drop a default slot
-  upload_ahead_days: 5   # api mode: upload this many days ahead with publishAt (laptop needn't be on at publish time)
+  upload_ahead_days: 0   # api mode: 0 = upload as soon as a clip is scheduled (private + publishAt; YouTube publishes it on time)
+  late_policy: next_slot # api mode, slot <15 min away or passed before upload: next_slot | publish_now | ask
+  audit_status: not_applied  # YouTube API audit: not_applied | applied | approved | rejected (Settings → Publishing)
+  audit_applied_on: ''   # date you sent the audit form (YYYY-MM-DD)
   insert_calls_per_day: 100   # videos.insert quota bucket (official default)
   units_per_day: 10000        # all other YouTube Data API calls
   batch_max: 15        # assisted mode: files per Studio upload batch
-  category_id: "27"    # 27 Education, 22 People & Blogs
+  category_id: '27'    # 27 Education, 22 People & Blogs
   language: hi
-  sync_every_hours: 12 # how often stats are pulled while the app runs
+  sync_every_hours: 12.0 # how often stats are pulled while the app runs
 
 ypp:                   # YouTube Partner Program targets — edit if YouTube changes them
   ad_subs: 1000
@@ -95,5 +98,43 @@ ypp:                   # YouTube Partner Program targets — edit if YouTube cha
   fan_subs: 500
   fan_shorts_views_90d: 3000000
   fan_uploads_90d: 3
-  new_rule_date: "2027-02-01"
+  new_rule_date: '2027-02-01'
   new_ad_shorts_views_90d: 20000000
+
+instagram:             # Instagram Reels (Phase 13) — account + Meta app on the Accounts / Settings pages
+  mode: api            # api (ClipForge publishes at the slot; laptop must be on) | assisted (you post; ClipForge makes a kit)
+  graph_version: v26.0 # Meta Graph API version
+  slots: ['13:00', '19:00', '21:30']   # default IST post times for new Instagram accounts
+  peak_slots: ['19:00', '21:30']
+  posts_per_day: 3
+  min_gap_hours: 2.0
+  upload_lead_minutes: 20   # upload the video this many minutes before the slot, publish exactly at the slot
+  max_late_minutes: 90      # if the laptop was off longer than this past the slot → "missed" (never posted late)
+  publish_limit: 100        # Instagram: API-published posts per moving 24 h
+  publish_limit_margin: 10  # stay this far below the limit
+  hours_after_youtube: 0.0  # "both" platforms: Instagram at least this many hours after the YouTube slot
+  share_to_feed: true       # show the Reel in the main feed too
+
+auth:                  # login when used from your phone (Phase 14); password hash lives in .env
+  trust_localhost: true  # no password needed on the laptop itself (127.0.0.1)
+  session_days: 30     # "remember this device"
+  max_failures: 5      # wrong passwords before a lockout
+  lockout_minutes: 15
+
+power:
+  keep_awake: when_busy  # always | when_busy (a job runs or an Instagram post is due within 60 min) | never
+
+telegram:              # bot token lives in .env (TELEGRAM_BOT_TOKEN); pair it in Settings → Phone & Telegram
+  enabled: false
+  notify_job_done: true
+  notify_job_failed: true
+  notify_published: true
+  notify_publish_failed: true
+  notify_reauth: true
+  notify_quota: true
+  daily_summary: true
+  daily_summary_time: '22:00'  # IST
+
+remote:
+  watch_folder: ''     # `clipforge watch`: start a job for every video dropped in this folder ('' = off)
+  preview_proxy: true  # render a small 540×960 preview per clip for phones / data saver

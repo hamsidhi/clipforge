@@ -157,26 +157,77 @@ def sync(channel: str = typer.Option(..., "--channel")) -> None:
                   f"unmatched YouTube Shorts {len(res['unmatched_videos'])}")
 
 
-def scheduler(once: bool = typer.Option(True, "--once/--loop", help="Process due work and exit (default)")) -> None:
-    """Upload due clips (API mode), refresh statuses and sync stats. Task Scheduler runs this."""
+def scheduler(once: bool = typer.Option(True, "--once/--loop", help="Process due work and exit (default)"),
+              daemon: bool = typer.Option(False, "--daemon", help="Always-on: check every minute (Instagram needs it)")) -> None:
+    """Upload due clips (API mode), publish Instagram posts at their slot, refresh statuses, sync stats.
+    Task Scheduler runs `--once`; `--daemon` is the always-on mode (the web app runs the same loop itself)."""
     _db()
     import time
 
     from clipforge.publish import runner
 
+    loop = daemon or not once
     while True:
-        rep = runner.run_once()
-        console.print(f"uploaded {len(rep.uploaded)}, published {len(rep.published)}, failed {len(rep.failed)}, "
-                      f"locked {len(rep.locked)}, missed {len(rep.missed)}, synced {len(rep.synced)}"
-                      + (" — upload quota used up for today" if rep.quota_exhausted else ""))
+        rep = runner.run_once(source="daemon" if loop else "task")
+        if not loop or rep.uploaded or rep.published or rep.failed or rep.missed or rep.rescheduled:
+            console.print(f"uploaded {len(rep.uploaded)}, published {len(rep.published)}, failed {len(rep.failed)}, "
+                          f"locked {len(rep.locked)}, missed {len(rep.missed)}, moved {len(rep.rescheduled)}, "
+                          f"synced {len(rep.synced)}" + (" — upload quota used up for today" if rep.quota_exhausted else ""))
+        for msg in rep.messages:
+            console.print(f"  {msg}")
         for ch, why in rep.skipped_channels.items():
             console.print(f"  [yellow]skipped {ch}: {why}[/yellow]")
-        if once:
+        if not loop:
             return
-        time.sleep(600)
+        try:
+            from clipforge.utils import power
+
+            power.update()
+        except Exception:
+            pass
+        time.sleep(60)
 
 
-TASK_NAMES = ("ClipForge Scheduler (logon)", "ClipForge Scheduler (every 2h)")
+def publish_test(channel: str = typer.Argument(..., help="Channel id (UC…) — see `clipforge channels list`"),
+                 days: int = typer.Option(30, help="publishAt = now + this many days (you delete the video before that)")) -> None:
+    """Upload ONE tiny test video as private + publishAt and report what YouTube did with it (locked or scheduled).
+    Delete the test video in YouTube Studio afterwards — ClipForge's login can't delete or unschedule videos."""
+    _db()
+    import datetime as dt
+    import tempfile
+
+    from clipforge.config import load_config
+    from clipforge.publish import channels as chs, runner
+    from clipforge.publish import youtube as yt
+    from clipforge.publish.timez import iso_utc, now_utc
+    from clipforge.utils.ffmpeg import run_ffmpeg
+
+    ch = chs.get(channel)
+    if not ch:
+        raise typer.BadParameter("Unknown channel id")
+    cfg = load_config()
+    when = now_utc() + dt.timedelta(days=days)
+    tmp = Path(tempfile.mkdtemp()) / "clipforge-api-test.mp4"
+    run_ffmpeg(["-f", "lavfi", "-i", "color=black:s=1080x1920:d=3", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+                "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(tmp)])
+    client = yt.client_for(channel, cfg)
+    body = {"snippet": {"title": "ClipForge API test — delete me", "description": "Private test upload by ClipForge.",
+                        "categoryId": "22"},
+            "status": {"privacyStatus": "private", "publishAt": iso_utc(when), "selfDeclaredMadeForKids": False}}
+    console.print(f"Uploading a 3-second black test video to [bold]{ch.title}[/bold] as private, publishAt {iso_utc(when)} …")
+    vid = client.upload(tmp, body)
+    v = (client.videos([vid]) or [{}])[0]
+    status, _reason, msg = runner.classify_ex(v, when, "scheduled")
+    console.print({"video_id": vid, "status": v.get("status"), "result": status})
+    console.print("[green]Not locked: API mode can publish (YouTube keeps the schedule).[/green]" if status == "scheduled"
+                  else f"[yellow]{msg}[/yellow]")
+    console.print(f"Now delete it: https://studio.youtube.com/video/{vid}/edit → ⋮ → Delete forever "
+                  f"(otherwise it goes public on {when:%d %b %Y}).")
+
+
+TASK_NAME = "ClipForge Scheduler"
+DAEMON_TASK = "ClipForge Scheduler Daemon"
+OLD_TASK_NAMES = ("ClipForge Scheduler (logon)", "ClipForge Scheduler (every 2h)")
 
 
 def _exe() -> str:
@@ -184,40 +235,67 @@ def _exe() -> str:
     return exe
 
 
-def task_commands(exe: str) -> list[list[str]]:
-    action = f'"{exe}" scheduler --once'
-    return [
-        ["schtasks", "/Create", "/F", "/TN", TASK_NAMES[0], "/TR", action, "/SC", "ONLOGON", "/RL", "LIMITED"],
-        ["schtasks", "/Create", "/F", "/TN", TASK_NAMES[1], "/TR", action, "/SC", "HOURLY", "/MO", "2", "/RL", "LIMITED"],
-    ]
+def scheduler_task_xml(daemon: bool = False) -> str:
+    from clipforge.config import ROOT_DIR
+    from clipforge.utils import winsched
+
+    if daemon:
+        return winsched.task_xml("ClipForge: always-on publishing scheduler (checks every minute).", winsched.pythonw(),
+                                 "-m clipforge scheduler --daemon", str(ROOT_DIR), logon=True, restart_on_failure=True,
+                                 time_limit="PT0S")
+    return winsched.task_xml("ClipForge: upload due clips, publish/refresh statuses (every 30 min, at logon, on wake).",
+                             winsched.pythonw(), "-m clipforge scheduler --once", str(ROOT_DIR), logon=True,
+                             every_minutes=30, on_wake=True)
+
+
+def task_status() -> list[dict]:
+    from clipforge.utils import winsched
+
+    return [t for t in (winsched.query(TASK_NAME), winsched.query(DAEMON_TASK)) if t]
 
 
 @task_app.command("install")
-def task_install(dry_run: bool = typer.Option(False, "--dry-run", help="Only print the commands")) -> None:
-    """Register Windows Task Scheduler jobs: at login and every 2 hours (macOS/Linux: see README for cron)."""
-    if sys.platform != "win32":
-        console.print("Not Windows — add this to `crontab -e` instead:\n"
-                      f"  @reboot {_exe()} scheduler --once\n  0 */2 * * * {_exe()} scheduler --once")
+def task_install(dry_run: bool = typer.Option(False, "--dry-run", help="Only print the task definition"),
+                 daemon: bool = typer.Option(False, "--daemon", help="Also start the always-on scheduler at login "
+                                             "(hidden). Needed for Instagram if the web app isn't running.")) -> None:
+    """Register Windows Task Scheduler jobs: every 30 min + at login + when the laptop wakes (macOS/Linux: cron)."""
+    from clipforge.utils import winsched
+
+    if sys.platform != "win32" and not dry_run:
+        lines = ["Not Windows — add this to `crontab -e` instead:", f"  @reboot {_exe()} scheduler --once",
+                 f"  */30 * * * * {_exe()} scheduler --once"] + ([f"  @reboot {_exe()} scheduler --daemon"] if daemon else [])
+        console.print("\n".join(lines))
         return
-    for cmd in task_commands(_exe()):
-        console.print(" ".join(f'"{c}"' if " " in c else c for c in cmd))
-        if not dry_run:
-            res = subprocess.run(cmd, capture_output=True, text=True)
-            if res.returncode != 0:
-                msg = (res.stderr or res.stdout).strip()
-                hint = " (the 'at logon' task may need an elevated terminal)" if "denied" in msg.lower() else ""
-                console.print(f"[yellow]{msg}{hint}[/yellow]")
-            else:
-                console.print("[green]ok[/green]")
+    todo = [(TASK_NAME, scheduler_task_xml())] + ([(DAEMON_TASK, scheduler_task_xml(True))] if daemon else [])
+    for name, xml in todo:
+        console.print(f"[bold]{name}[/bold]")
+        if dry_run:
+            console.print(xml)
+            continue
+        ok, msg = winsched.install(name, xml)
+        console.print(f"[green]{msg}[/green]" if ok else f"[yellow]{msg}[/yellow]")
+    if not dry_run:
+        for old in OLD_TASK_NAMES:  # Phase 12 tasks (every 2 h) are replaced
+            winsched.remove(old)
 
 
 @task_app.command("remove")
 def task_remove(dry_run: bool = typer.Option(False, "--dry-run")) -> None:
-    for name in TASK_NAMES:
-        cmd = ["schtasks", "/Delete", "/F", "/TN", name]
-        console.print(" ".join(cmd))
-        if not dry_run and sys.platform == "win32":
-            subprocess.run(cmd, capture_output=True, text=True)
+    from clipforge.utils import winsched
+
+    for name in (TASK_NAME, DAEMON_TASK, *OLD_TASK_NAMES):
+        console.print(f"schtasks /Delete /F /TN \"{name}\"")
+        if not dry_run:
+            winsched.remove(name)
+
+
+@task_app.command("status")
+def task_show() -> None:
+    from clipforge.publish import runner
+
+    for t in task_status() or [{"name": "(no ClipForge tasks installed — run `clipforge schedule-task install`)"}]:
+        console.print(t)
+    console.print({"last scheduler run": runner.read_state()})
 
 
 def register(app: typer.Typer) -> None:
@@ -228,3 +306,4 @@ def register(app: typer.Typer) -> None:
     app.command(name="schedule")(schedule)
     app.command(name="sync")(sync)
     app.command(name="scheduler")(scheduler)
+    app.command(name="publish-test")(publish_test)

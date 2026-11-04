@@ -478,4 +478,4 @@ def test_batch_paths_and_missed_slots(env):
     with pytest.raises(q.QueueError):
         batch.prepare("UCtest", None, cfg, now=later)
     left = [it for it in q.items("UCtest") if not it.batch]
-    assert all(it.status == "needs_manual" for it in left)
+    assert all(it.status == "missed" and it.reason == "slot_passed" for it in left)
