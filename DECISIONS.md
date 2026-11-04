@@ -423,3 +423,65 @@ A security-review subagent found 9 issues (6 confirmed with scratch tests). All 
   "a worker never polls" are what prevent two pollers.
 - A pre-existing test (`test_e2e_queue_schedule_upload_batch_reconcile_dashboard`) failed on HEAD because it mixed a
   fixed clock (09:30 IST today) with the real clock in `batch.prepare`; it now passes its fixed `now`.
+
+### Part B — Always online (server + laptop worker)
+
+**Free always-on host, compared (2026-11-04):**
+
+| Option | Cost | RAM / CPU | Runs the pipeline? | Catches | Verdict |
+|---|---|---|---|---|---|
+| Oracle Cloud Always Free, Ampere A1 | free (card for identity check only) | **2 OCPU / 12 GB** (was 4/24 until 2026), 200 GB disk | yes, slowly (overnight) | home region fixed; "out of host capacity"; idle reclaim after 7 quiet days; datacenter IP → YouTube bot checks | **primary** |
+| Google Cloud e2-micro (Always Free, US regions) | free | 1 GB / 0.25–2 vCPU burst | no — bot + queue only | 30 GB disk, US latency | fallback "mini server" |
+| Old Android phone (Termux) / Raspberry Pi you own | free if owned | 2–8 GB | no — bot + queue only | home power/Wi-Fi, ffmpeg on Termux | fallback |
+| Free PaaS (Render, Fly, Railway…) | sleep / trial / card-billed | tiny | no | sleep kills long polling & the 60 s ticker; trials turn into bills | rejected |
+
+Fallback design: `deployment.prefer_worker_for` = all stages + `worker_grace_minutes: 1440` makes any small box a
+"bot + queue only" server whose jobs wait for the laptop.
+
+- **systemd installer, not Docker** (`deploy/install.sh`): 12 GB RAM is tight for Whisper + a 7B LLM + ffmpeg, and Docker
+  adds a daemon plus image layers for nothing; Ubuntu's ffmpeg has libass; Ollama has a native arm64 installer with its
+  own systemd unit; updates are `git pull` + pip (`clipforge server update`, with rollback). Re-runnable (every step
+  checks first).
+- **Server binds 127.0.0.1:8000; `tailscale serve` publishes HTTPS to the tailnet only**; ufw denies all inbound except
+  `tailscale0` (SSH too, once Tailscale is up); the user also deletes the Oracle security-list rule for port 22
+  (documented clicks). Workers reach `https://<server>.<tailnet>.ts.net`.
+- **Tailscale auth key**: read from the environment, written to a 0600 temp file for `tailscale up --auth-key=file:…`,
+  deleted; `set +x` so it never reaches a log. cloud-init variant documented with a one-off key.
+- **Granularity = pipeline stages, not whole jobs**: download / transcribe / select / render are separate leased tasks.
+  The server's job thread never blocks on a worker: it creates the task and returns; `on_task_done` submits the
+  pipeline again, the normal workspace cache skips finished stages, and the next stage is delegated. This reuses the
+  stage cache unchanged (the brief asked for that) and lets the laptop leave mid-job without losing finished stages.
+- **Same fingerprints on both machines**: the claim carries the job's full config; the worker only swaps in its own
+  `output.dir` and `llm.ollama_url` (both excluded from fingerprints). Stage state (`state.json` entries) travels with
+  the results; render.json fingerprints are re-stamped by the server (`adopt_renders`) so render settings that differ
+  per machine (NVENC on the laptop) never cause a second render on the server.
+- **Fencing tokens** on every claim, results only with the current fence, idempotent complete, all-or-nothing commit
+  after sha256 checks, staging per task+fence. Path allowlist (`artifacts.ALLOWED`) + resolved-parent check against
+  traversal.
+- **Exactly one publisher**: `publishing_allowed()` (never in worker mode; never on a fenced server) checked by the
+  scheduler, publish-now and publish-test; queue claims were already unique per item.
+- **Download routing**: a YouTube link goes to an online worker first (home IP). Without a worker the server tries;
+  `DownloadBlocked` (bot check / 429, 3 tries, 60 s → 120 s backoff, never faster) parks a `hold` task for the laptop
+  and Telegram lists the options. Cookies file: optional, server-only, documented with the account risk.
+- **Ollama on 12 GB**: `llm.keep_alive` (new, excluded from the select fingerprint so existing selections stay valid)
+  set to `2m` on the server so the model leaves RAM before Whisper / ffmpeg need it; default model `qwen2.5:7b` Q4
+  (~4.7 GB), `--model qwen2.5:3b` for speed. Whisper int8 uses one thread per core (Ampere has no SMT).
+- **Backups**: built-in X25519 + HKDF + ChaCha20-Poly1305 (chunked, last-chunk flag against truncation) because `age`
+  isn't on Windows by default and `cryptography` is already installed; real `age` is used when the recipient is an
+  `age1…` key and the tool exists. No key → no backup (they contain logins). 7 daily + 4 weekly. Restore tested.
+- **Housekeeping and the 90 % job pause only run in server mode** — standalone keeps exactly today's behaviour.
+- **Versioned DB migrations**: `PRAGMA user_version` = 15; an older database is copied to `clipforge.db.bak-v<n>`
+  before the additive migration runs. `server update` also copies it before pulling.
+- **`CLIPFORGE_ENV`** env var overrides the `.env` path (a second instance on one machine: deploy test, demo).
+- **Handover** streams `tar` into `ssh host tar -x` (Windows 10+ ships ssh.exe; no rsync needed), verifies with
+  `sha256sum -c` on the server, switches the laptop to worker mode *before* the DB snapshot (nothing can change after
+  it), moves token files off the laptop into the handover backup (for `--rollback`). Never run by ClipForge itself.
+- **Bugs found while building**: `save_config` could corrupt a YAML file it had itself written with block-style lists
+  (fallback path) on the next save — lists are now written in flow style and the in-place updater skips old `- item`
+  lines. `with sqlite3.connect()` doesn't close the file on Windows → `contextlib.closing` everywhere a copy is made.
+- **Arm64 wheels checked on PyPI**: mediapipe 1.2.0, ctranslate2 4.8.5 (cp312), opencv-contrib 5.0.0.93 all have
+  `manylinux aarch64` wheels; faster-whisper is pure Python. The installer still falls back to YuNet-only faces if
+  mediapipe ever fails to install.
+- **No Linux machine here** (no Docker, no WSL distro): the deploy end-to-end ran as two real processes on Windows
+  (`scripts/deploy_e2e.py`, log in docs/DEPLOY_TEST.md); `.github/workflows/deploy-test.yml` runs the same test on
+  GitHub's free `ubuntu-24.04-arm` runner. Server benchmarks on Ampere are estimates (scaled), labelled as such.

@@ -196,6 +196,11 @@ def publish_test(channel: str = typer.Argument(..., help="Channel id (UC…) —
     import datetime as dt
     import tempfile
 
+    from clipforge.server.dispatch import publishing_allowed
+
+    ok, why = publishing_allowed()
+    if not ok:
+        raise typer.BadParameter(f"Not publishing from this computer: {why}.")
     from clipforge.config import load_config
     from clipforge.publish import channels as chs, runner
     from clipforge.publish import youtube as yt

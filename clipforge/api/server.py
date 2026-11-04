@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from clipforge import __version__
-from clipforge.config import FRONTEND_DIST, ROOT_DIR
+from clipforge.config import FRONTEND_DIST, ROOT_DIR, load_config
 from clipforge.utils.log import log
 
 NOT_BUILT = """<!doctype html><html><body style="font-family:system-ui;background:#0b0b0f;color:#eee;padding:40px">
@@ -71,7 +71,20 @@ async def lifespan(app: FastAPI):
         from clipforge.notify import telegram
 
         telegram.bot().start()  # idles until a token is set and telegram.enabled is true
+    mode = load_config().deployment.mode
+    if mode == "server":
+        from clipforge.server import dispatch
+
+        dispatch.start_reaper()  # expired worker leases → queue; unclaimed tasks → the server does them
+    elif mode == "worker" and getattr(app.state, "publish_ticker", True) and os.environ.get("CLIPFORGE_NO_TICKER") != "1":
+        from clipforge.server import worker as worker_loop
+
+        worker_loop.start_background()  # take heavy work from the server while the UI runs
     yield
+    if mode == "server":
+        from clipforge.server import dispatch
+
+        dispatch.stop_reaper()
     from clipforge.notify import telegram as _tg
 
     if _tg._bot is not None:
@@ -98,6 +111,9 @@ def create_app() -> FastAPI:
 
     app.include_router(ig_router)
     app.include_router(remote_router)
+    from clipforge.server.worker_api import router as server_router
+
+    app.include_router(server_router)  # Phase 15b: worker protocol + server admin
 
     if (FRONTEND_DIST / "assets").exists():
         app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")

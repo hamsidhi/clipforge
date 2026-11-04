@@ -65,6 +65,21 @@ Your old pairing from Phase 14 is migrated automatically (you become the owner).
 7. **(optional)** Mini App: set `telegram.mini_app: true`, send `/app` → **Open app** inside Telegram (phone on
    Tailscale). Not tested on a real phone yet — tell me if the webview can't open the `ts.net` address.
 
+## 1e. Always online (Phase 15b) — optional, needs an Oracle account + your card for identity (~45 min)
+
+Everything is prepared; nothing moved by itself. Exact clicks: [deploy/README.md](deploy/README.md).
+1. **(10 min)** Oracle Free Tier sign-up (home region Hyderabad/Mumbai — permanent) + **₹1 budget alert**.
+2. **(2 min)** Tailscale one-off auth key.
+3. **(5 min + retries)** Create the A1 VM (2 OCPU / 12 GB, Ubuntu 24.04, 100 GB boot). "Out of host capacity" → other AD / later.
+4. **(5 min + ~20 min waiting)** `sudo TS_AUTHKEY=… bash install.sh` on the VM; then delete the port-22 rule in the
+   Oracle security list.
+5. **(5 min)** On the server: `clipforge auth set-password`, `clipforge server backup-keygen` → public key in config,
+   secret key to your password manager.
+6. **(10 min + copy time)** On the laptop: `clipforge server handover --to <server>.ts.net --dry-run`, then `--run`.
+7. **(2 min)** `clipforge worker install-task`; `clipforge worker status`.
+8. **(30 min)** The 3 acceptance scenarios in HANDOFF_PHASE15.md (laptop on, laptop off, laptop back mid-job).
+Undo anytime: `clipforge server handover --rollback --to <server>.ts.net`.
+
 ## 2. Phone over Wi-Fi
 ```powershell
 clipforge ui --host 0.0.0.0

@@ -126,6 +126,8 @@ class JobManager:
         # jobs that were running when the server stopped: mark them so the user can retry (resumes from cache)
         for job in db.list_jobs():
             if job.status in ("running", "queued"):
+                if _delegated(job.id):  # a worker still has it (server mode): it reports back by itself
+                    continue
                 db.update_job(job.id, status="failed", error="Interrupted (server restarted). Click Retry — finished stages are reused.")
         self.thread.start()
 
@@ -150,6 +152,13 @@ class JobManager:
                 self.cancelled_tasks.add(running.id)
         for t in queued:  # never started: report now (the running one reports when it stops)
             self._report_cancel(t)
+        if _delegated(job_id):  # server mode: a worker has a stage of it
+            from clipforge.server import leases
+
+            leases.cancel_job(job_id)
+            if not running and not queued:
+                db.update_job(job_id, status="cancelled", error="Cancelled by user", finished_at=db.now())
+                self.publish(job_id, {"type": "status", "status": "cancelled"})
 
     def _report_cancel(self, t: Task) -> None:
         if t.kind == "pipeline":
@@ -160,7 +169,8 @@ class JobManager:
 
     def busy(self, job_id: int) -> bool:
         with self.lock:
-            return (self.current is not None and self.current.job_id == job_id) or any(t.job_id == job_id for t in self.pending)
+            here = (self.current is not None and self.current.job_id == job_id) or any(t.job_id == job_id for t in self.pending)
+        return here or _delegated(job_id)
 
     # -------------------------------------------------------------- events
     def _notify(self, job_id: int, ev: dict) -> None:
@@ -241,6 +251,10 @@ class JobManager:
         self.publish(job_id, {"type": "status", "status": "running", "kind": task.kind})
         try:
             if task.kind == "pipeline":
+                from clipforge.server import dispatch
+
+                if dispatch.delegate(job, cfg, rep, task.payload):
+                    return  # a worker has the next stage; the job continues here when it reports back
                 section = tuple(job.settings["section"]) if job.settings.get("section") else None
                 ws = pipeline.prepare(job.source, cfg, rep, section, job.video_id)  # type: ignore[arg-type]
                 info = pipeline.load_info(ws)
@@ -260,6 +274,10 @@ class JobManager:
                     raise RuntimeError("This job has no video yet — run it first.")
                 ws = pipeline.open_workspace(job.video_id, cfg)
                 ranks = task.payload.get("ranks")
+                from clipforge.server import dispatch
+
+                if dispatch.delegate_render(job, ranks, bool(task.payload.get("force"))):
+                    return  # render_done is published when the worker reports back
                 pipeline.render(ws, cfg, rep, only=ranks, force=bool(task.payload.get("force")))
                 pipeline.metadata(ws, cfg, rep)
                 self.publish(job_id, {"type": "render_done", "ranks": ranks})
@@ -271,6 +289,18 @@ class JobManager:
             log.error(f"[job {job_id}] {task.kind} failed: {exc}\n{traceback.format_exc()}")
             self._fail(task, str(exc))
             rep.log(str(exc), "error")
+
+
+def _delegated(job_id: int) -> bool:
+    """Server mode: a worker holds (or will take) a stage of this job."""
+    if load_config().deployment.mode != "server":
+        return False
+    try:
+        from clipforge.server import leases
+
+        return leases.active(job_id) is not None
+    except Exception:
+        return False
 
 
 manager = JobManager()

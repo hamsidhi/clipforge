@@ -140,3 +140,20 @@ uploaded = private/unlisted by the user's choice (never goes public by itself)
 - One poller per token: `tg_store.acquire_poller` lease + 409 back-off; `deployment.mode: worker` never polls.
 - Every API route needs a row in the audit table of `docs/TELEGRAM.md` (`tests/test_telegram_audit.py`).
 - Tests: `tests/fake_telegram.py` (MockTransport; `msg()`, `press()`, `button(label)`, `transcript()`), `tests/test_telegram.py`.
+
+### Always online (Phase 15b, `server/`, `deployment.mode: standalone | server | worker`)
+- `standalone` (default) = everything as before. `server` = owns DB, logins, publishing, Telegram; leases heavy stages to
+  workers. `worker` = laptop: `server/worker.py` loop (or inside `clipforge ui`), never publishes, never polls Telegram.
+- `server/leases.py`: WorkerNode + StageTask (queued → leased(fence) → done); claim/heartbeat/complete/fail, `reap()`
+  re-queues expired leases and falls back unclaimed tasks to the server (`hold` tasks wait). Results only with the
+  current fence; complete is idempotent.
+- `server/dispatch.py`: `delegate()` is called by the job manager before a pipeline task runs (first undone stage →
+  worker if one is online, else local; blocked YouTube download → hold task); `on_task_done()` re-submits the job;
+  `publishing_allowed()` guards every publish path; reaper thread + nightly backup/cleanup in server mode.
+- `server/artifacts.py`: path allowlist, sha256 manifests (cached), staged chunked uploads, all-or-nothing commit.
+  `pipeline.py` exposes per-stage runners/fingerprints (`run_download/transcribe/analyze`, `*_done`, `render_todo`,
+  `adopt_renders`) so a worker runs exactly one stage with the job's config.
+- `server/{worker_api,handover,backup,housekeeping,status,updater}.py`, CLI `cli_server.py` (`clipforge server …`,
+  `clipforge worker`), deploy kit in `deploy/` (systemd, not Docker). `CLIPFORGE_ENV` overrides the .env path.
+- Tests: `tests/test_server.py` (two "machines" in one process); real two processes: `scripts/deploy_e2e.py`.
+- Spec: docs/WORKER_PROTOCOL.md; setup: deploy/README.md; guide: AUTOMATION_GUIDE Part I.

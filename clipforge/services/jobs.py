@@ -219,12 +219,13 @@ def create_job(body: JobCreate, remote: bool = False) -> dict:
 
 
 def _check_disk_for_new_job() -> None:
-    try:
-        from clipforge.server import housekeeping
+    """Server mode: refuse new jobs above server.disk_pause_pct (standalone keeps its old behaviour: warn only)."""
+    c = cfg()
+    if c.deployment.mode != "server":
+        return
+    from clipforge.server import housekeeping
 
-        housekeeping.refuse_if_disk_full(cfg())
-    except ImportError:
-        pass
+    housekeeping.refuse_if_disk_full(c)
 
 
 def jobs_for_video(video_id: str) -> list[db.Job]:

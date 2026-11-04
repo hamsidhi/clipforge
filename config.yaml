@@ -27,6 +27,7 @@ llm:
   ollama_url: http://127.0.0.1:11434
   timeout_sec: 600
   max_tokens: 2048     # cap per LLM reply (stops runaway generations on slow CPUs)
+  keep_alive: 30m      # Ollama unloads the model this long after the last request (server: 2m frees RAM for Whisper)
 
 scoring_weights:
   hook: 0.3

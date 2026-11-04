@@ -32,8 +32,9 @@ class OllamaProvider(LLMProvider):
     name = "ollama"
 
     def __init__(self, model: str = "auto", temperature: float = 0.3, timeout: int = 600,
-                 url: str = "http://127.0.0.1:11434", max_tokens: int = 2048) -> None:
+                 url: str = "http://127.0.0.1:11434", max_tokens: int = 2048, keep_alive: str = "30m") -> None:
         self.url = url.rstrip("/")
+        self.keep_alive = keep_alive
         if model == "auto":
             try:
                 installed = list_ollama_models(self.url)
@@ -62,7 +63,7 @@ class OllamaProvider(LLMProvider):
             # num_predict caps runaway generations (JSON mode can otherwise emit whitespace until the context
             # is full — minutes on a CPU); keep_alive avoids reloading the model between windows
             "options": {"temperature": self.temperature, "num_ctx": 16384, "num_predict": self.max_tokens},
-            "keep_alive": "30m",
+            "keep_alive": self.keep_alive,
         }
         if json_mode:
             body["format"] = json_schema or "json"  # a schema = Ollama structured outputs

@@ -48,6 +48,9 @@ PROXY_HEADERS = ("x-forwarded-for", "forwarded", "x-real-ip", "tailscale-user-lo
 # reachable without a session (health check, the login screen itself, OAuth callbacks which are localhost-only anyway)
 PUBLIC_API = ("/api/health", "/api/auth/status", "/api/auth/login", "/api/auth/setup")
 LOCAL_ONLY_PATHS = ("/docs", "/redoc", "/openapi.json")
+# Phase 15b: machine-to-machine endpoints. No browser session / CSRF: every route checks the worker's own key
+# (Authorization: Bearer cfw_…, only its SHA-256 is stored) — see clipforge/server/worker_api.py.
+WORKER_API = ("/api/worker/", "/api/server/fence")
 MIN_PASSWORD = 10
 
 
@@ -281,7 +284,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if path.startswith("/api/") and not path.startswith(CROSS_SITE_OK) and not _origin_ok(request):
             return JSONResponse({"detail": "Blocked: this request came from another website."}, 403)
         request.state.local = trusted(request)
-        if path.startswith("/api/") and not path.startswith(PUBLIC_API) and not request.state.local:
+        if path.startswith(WORKER_API):
+            request.state.local = False  # a worker is never "the laptop itself", even over loopback
+        elif path.startswith("/api/") and not path.startswith(PUBLIC_API) and not request.state.local:
             sess = session_for(request)
             if sess is None:
                 if not password_set():

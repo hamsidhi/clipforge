@@ -287,6 +287,18 @@ PIN. Every command and the security model: [docs/TELEGRAM.md](docs/TELEGRAM.md).
 clipforge telegram pair [--role viewer] | devices | unpair [chat_id] | set-pin | clear-pin | status
 ```
 
+### 5.11 Always online — laptop on or off (Phase 15b, optional)
+A free Oracle Cloud Arm VM (2 OCPU / 12 GB, Always Free) can keep the bot, the queue and publishing running when the
+laptop is off, and does jobs itself (slowly). When the laptop is on it becomes a worker and takes the heavy stages.
+Nothing changes until you run the handover. Setup: [deploy/README.md](deploy/README.md) · guide:
+[AUTOMATION_GUIDE Part I](AUTOMATION_GUIDE.md) · protocol: [docs/WORKER_PROTOCOL.md](docs/WORKER_PROTOCOL.md).
+
+```bash
+clipforge server handover --to <server>.ts.net --dry-run | --run | --rollback
+clipforge server status | logs -f | update | backup | restore | cleanup | add-worker | workers | import-token
+clipforge worker [--once] | status | install-task | --standalone-emergency
+```
+
 ## 6. How it works
 
 ```

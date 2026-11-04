@@ -1,0 +1,45 @@
+name: Deploy test (server + worker on linux/arm64)
+
+# Same two-process test as `python scripts/deploy_e2e.py`, on GitHub's free Arm runner (closest thing to the Oracle
+# Ampere A1 box available here): checks the Python wheels on aarch64 (mediapipe fallback), ffmpeg + libass, Whisper,
+# the worker protocol and a fake publish. install.sh itself is only linted here (it configures a firewall + Tailscale,
+# which a CI runner must not do).
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["deploy/**", "clipforge/server/**", "scripts/deploy_e2e*.py", ".github/workflows/deploy-test.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: System packages
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg espeak-ng shellcheck
+      - name: Lint installer
+        run: bash -n deploy/install.sh && bash -n deploy/telegram-bot-api.sh && shellcheck -S error deploy/*.sh
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (mediapipe may have no aarch64 wheel → YuNet only)
+        run: |
+          python -m pip install -q --upgrade pip wheel
+          pip install -q -r requirements.txt || (grep -v -i '^mediapipe' requirements.txt > /tmp/req.txt && pip install -q -r /tmp/req.txt)
+          pip install -q -e .
+          python -c "import ctranslate2, cv2; print('ctranslate2', ctranslate2.__version__, 'opencv', cv2.__version__)"
+          python -c "import mediapipe" && echo "mediapipe: available" || echo "mediapipe: not available on aarch64 → YuNet only"
+          ffmpeg -hide_banner -filters | grep -q " ass " && echo "ffmpeg libass: ok"
+      - name: Unit tests (server/worker/telegram)
+        run: python -m pytest -q tests/test_server.py tests/test_telegram.py tests/test_telegram_audit.py
+      - name: Server + worker end to end
+        run: python scripts/deploy_e2e.py --out deploy_test_arm64.md
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-test-arm64
+          path: deploy_test_arm64.md

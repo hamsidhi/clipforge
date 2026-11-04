@@ -274,6 +274,56 @@ class TgFile(SQLModel, table=True):
     created_at: dt.datetime = Field(default_factory=now)
 
 
+# ----------------------------------------------------------------------------- server + workers (Phase 15b)
+class WorkerNode(SQLModel, table=True):
+    """A laptop allowed to take heavy work from this server. Only the SHA-256 of its key is stored."""
+
+    id: str = Field(primary_key=True)          # w_<hex>
+    name: str = ""
+    key_hash: str = Field(index=True)
+    capabilities_json: str = "[]"
+    max_parallel: int = 1
+    gpu: bool = False
+    version: str = ""
+    created_at: dt.datetime = Field(default_factory=now)
+    last_seen: Optional[dt.datetime] = None
+    revoked: bool = False
+
+    @property
+    def capabilities(self) -> list[str]:
+        return json.loads(self.capabilities_json or "[]")
+
+
+class StageTask(SQLModel, table=True):
+    """One pipeline stage of one job, given to a worker under a lease.
+
+    queued → leased (worker_id, lease_until, fence) → done | failed | cancelled. A lease that isn't renewed goes back
+    to queued; every claim increments `fence`, and results are only accepted with the current fence — so a late,
+    stale worker can never overwrite newer results, and a job is never done twice."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    job_id: int = Field(index=True)
+    stage: str = ""                            # download | transcribe | select | render | import
+    status: str = Field(default="queued", index=True)
+    worker_id: str = ""
+    fence: int = 0
+    lease_until: Optional[dt.datetime] = None
+    attempts: int = 0
+    hold: bool = False                         # wait for a worker however long it takes (e.g. YouTube blocked the server)
+    local_fallback_at: Optional[dt.datetime] = None  # no worker took it by then → the server does it itself
+    progress: float = 0
+    eta_sec: Optional[float] = None
+    message: str = ""
+    error: str = ""
+    payload_json: str = "{}"
+    created_at: dt.datetime = Field(default_factory=now)
+    updated_at: dt.datetime = Field(default_factory=now)
+
+    @property
+    def payload(self) -> dict[str, Any]:
+        return json.loads(self.payload_json or "{}")
+
+
 def _migrate(conn) -> None:
     """create_all() doesn't add columns to existing tables: add missing ones (SQLite ALTER TABLE ADD COLUMN)."""
     for table in SQLModel.metadata.sorted_tables:
@@ -289,6 +339,25 @@ def _migrate(conn) -> None:
 
 
 _engine = None
+SCHEMA_VERSION = 15  # bump when tables/columns change: an older database is copied to clipforge.db.bak-v<old> first
+
+
+def _backup_before_migration(path) -> None:
+    """Versioned, safe migrations: before an older database is upgraded, keep a copy next to it."""
+    import shutil
+    import sqlite3
+    from contextlib import closing
+
+    if not path.exists():
+        return
+    with closing(sqlite3.connect(path)) as conn:
+        ver = conn.execute("PRAGMA user_version").fetchone()[0]
+    if ver >= SCHEMA_VERSION:
+        return
+    bak = path.with_name(f"clipforge.db.bak-v{ver}")
+    if not bak.exists():
+        with closing(sqlite3.connect(path)) as a, closing(sqlite3.connect(bak)) as b:
+            a.backup(b)
 
 
 def engine():
@@ -305,9 +374,11 @@ def engine():
             cur.execute("PRAGMA busy_timeout=5000")
             cur.close()
 
+        _backup_before_migration(cfg.workspace / "clipforge.db")
         SQLModel.metadata.create_all(_engine)
         with _engine.begin() as conn:
             _migrate(conn)
+            conn.exec_driver_sql(f"PRAGMA user_version={SCHEMA_VERSION}")
     return _engine
 
 

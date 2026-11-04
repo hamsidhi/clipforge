@@ -236,19 +236,21 @@ To go back: delete `api_base_url`, call `close` on the local server, wait 10 min
 | `POST /api/telegram/pin` | Settings / `clipforge telegram set-pin` | Laptop | |
 | `POST /api/telegram/test` | Settings | — | |
 | `POST /api/telegram/webapp` | — | Mini App check | |
-| `GET /api/server/status` | Settings → Server / `clipforge server status` | `/server` | |
-| `GET /api/server/workers` | Settings → Server | `/server`, `/health` | |
-| `POST /api/server/workers` | `clipforge server add-worker` | Laptop | creates a secret key |
-| `DELETE /api/server/workers/{worker_id}` | `clipforge server remove-worker` | Laptop | |
-| `POST /api/worker/hello` | (worker) | — | machine-to-machine |
+| `GET /api/server/status` | Settings → This computer / `clipforge server status` | `/server` | |
+| `GET /api/server/workers` | Settings → This computer / `clipforge server workers` | `/server`, `/health` | |
+| `POST /api/server/workers` | `clipforge server add-worker` | Laptop | creates a secret key (server itself only) |
+| `DELETE /api/server/workers/{worker_id}` | `clipforge server remove-worker` | Laptop | security setting |
+| `POST /api/server/fence` | `clipforge worker --standalone-emergency` | — | machine-to-machine (worker key) |
+| `GET /api/node/status` | Settings → This computer (laptop) | `/server` | |
+| `POST /api/worker/hello` | (worker) | worker joined / left messages | machine-to-machine |
 | `POST /api/worker/claim` | (worker) | — | machine-to-machine |
-| `POST /api/worker/heartbeat` | (worker) | — | machine-to-machine |
+| `POST /api/worker/heartbeat` | (worker) | progress message ("on laptop") | machine-to-machine |
 | `POST /api/worker/complete` | (worker) | — | machine-to-machine |
-| `POST /api/worker/fail` | (worker) | — | machine-to-machine |
-| `GET /api/worker/artifacts/{task_id}/{name}` | (worker) | — | machine-to-machine |
-| `HEAD /api/worker/artifacts/{task_id}/{name}` | (worker) | — | machine-to-machine |
-| `PUT /api/worker/artifacts/{task_id}/{name}` | (worker) | — | machine-to-machine |
-| `GET /api/worker/status` | laptop Settings → Worker | `/server` | |
+| `POST /api/worker/fail` | (worker) | job failed message | machine-to-machine |
+| `POST /api/worker/import` | (worker, offline jobs) | — | machine-to-machine |
+| `GET /api/worker/artifacts/{task_id}/{path:path}` | (worker pull) | — | machine-to-machine |
+| `PUT /api/worker/artifacts/{task_id}/{path:path}` | (worker push) | — | machine-to-machine |
+| `GET /api/worker/staged/{task_id}/{path:path}` | (worker resume) | — | machine-to-machine |
 
 ## Example chat (rendered from `tests/test_telegram.py::test_e2e…`)
 

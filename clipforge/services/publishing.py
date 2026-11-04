@@ -132,10 +132,12 @@ def fix(item_id: int, action: str) -> db.QueueItem:
 
 
 def require_publisher() -> None:
-    """Exactly one machine publishes: a laptop in worker mode never uploads (the server does)."""
-    mode = load_config().deployment.mode
-    if mode == "worker":
-        raise Conflict("This computer is a worker — the server publishes. Do this on the server (or in Telegram).")
+    """Exactly one machine publishes: a laptop in worker mode never uploads (the server does); a fenced server neither."""
+    from clipforge.server.dispatch import publishing_allowed
+
+    ok, why = publishing_allowed()
+    if not ok:
+        raise Conflict(f"Not publishing from this computer: {why}. Use the server's app or Telegram.")
 
 
 # ============================================================================ add + schedule

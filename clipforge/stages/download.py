@@ -12,6 +12,18 @@ from clipforge.utils.log import CancelledError, ProgressReporter, log
 from clipforge.workspace import Workspace, is_url
 
 YTDLP_FORMAT = "bv*[height<=1080]+ba/b[height<=1080]"
+# YouTube's anti-bot wall (common from cloud/datacenter IPs); matched case-insensitively on the yt-dlp message
+BLOCK_MARKERS = ("confirm you're not a bot", "confirm you’re not a bot", "sign in to confirm", "http error 429",
+                 "too many requests")
+
+
+class DownloadBlocked(RuntimeError):
+    """YouTube refused this machine (bot check / rate limit). On a server the download goes to the laptop instead."""
+
+
+def is_blocked(message: str) -> bool:
+    m = message.lower()
+    return any(k in m for k in BLOCK_MARKERS)
 # Prefer H.264 inside the ≤1080p limit: fastest to decode on CPU and plays in every browser.
 YTDLP_SORT = ["res:1080", "vcodec:h264", "acodec:m4a"]
 
@@ -51,14 +63,13 @@ def _download_youtube(url: str, ws: Workspace, reporter: ProgressReporter, secti
 
         opts["download_ranges"] = download_range_func(None, [section])
         opts["force_keyframes_at_cuts"] = True
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-    except yt_dlp.utils.DownloadError as exc:
-        raise RuntimeError(
-            f"yt-dlp could not download {url}:\n{exc}\n"
-            "Try: pip install -U yt-dlp  (YouTube changes often). Or download the video yourself and pass the file path."
-        ) from exc
+    from clipforge.config import load_config
+
+    scfg = load_config().server
+    cookies = Path(scfg.download_cookies_file).expanduser() if scfg.download_cookies_file else None
+    if cookies and cookies.exists():
+        opts["cookiefile"] = str(cookies)  # optional, server only — see AUTOMATION_GUIDE Part I (account risk)
+    info = _extract_with_backoff(yt_dlp, opts, url, scfg.download_max_attempts, reporter)
     # yt-dlp may have produced source.mp4 or source.mkv/webm depending on streams
     if not ws.source.exists():
         produced = sorted(ws.dir.glob("source.*"))
@@ -68,6 +79,36 @@ def _download_youtube(url: str, ws: Workspace, reporter: ProgressReporter, secti
         run_ffmpeg(["-i", str(produced[0]), "-c", "copy", "-movflags", "+faststart", str(ws.source)])
         produced[0].unlink(missing_ok=True)
     return info
+
+
+def _extract_with_backoff(yt_dlp, opts: dict, url: str, attempts: int, reporter: ProgressReporter,
+                          sleep=None) -> dict:
+    """A bot check is retried a few times with exponential backoff (60 s, 120 s, …) — never hammering YouTube —
+    then raised as DownloadBlocked so the caller can route the download elsewhere."""
+    import time
+
+    sleep = sleep or time.sleep
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                return ydl.extract_info(url, download=True)
+        except yt_dlp.utils.DownloadError as exc:
+            if not is_blocked(str(exc)):
+                raise RuntimeError(
+                    f"yt-dlp could not download {url}:\n{exc}\n"
+                    "Try: pip install -U yt-dlp  (YouTube changes often). Or download the video yourself and pass the file path."
+                ) from exc
+            if attempt >= attempts:
+                raise DownloadBlocked(
+                    f"YouTube asked this computer to sign in to confirm it's not a bot ({attempts} tries). "
+                    "Send the video file instead, or let the laptop download it.") from exc
+            wait = 60 * 2 ** (attempt - 1)
+            reporter.log(f"YouTube bot check — waiting {wait} s before try {attempt + 1}/{attempts}", "warning")
+            for _ in range(wait):
+                if reporter.cancelled():
+                    raise CancelledError("Job cancelled by user")
+                sleep(1)
+    raise DownloadBlocked("YouTube blocked the download.")
 
 
 def _link_or_copy(src: Path, dest: Path) -> None:

@@ -92,42 +92,134 @@ def _size(p: Path) -> int:
 def prepare(source: str, cfg: Config, reporter: ProgressReporter | None = None,
             section: tuple[float, float] | None = None, video_id: str | None = None) -> Workspace:
     """download → transcribe → analyze. Returns the workspace."""
-    from clipforge.stages import analyze_audio, download, transcribe
-
     reporter = reporter or NullReporter()
     ws = Workspace(cfg.workspace, video_id or video_id_for(source, section))
+    run_download(ws, source, cfg, reporter, section)
+    check_cancel(reporter)
+    run_transcribe(ws, cfg, reporter)
+    check_cancel(reporter)
+    run_analyze(ws, reporter)
+    return ws
 
+
+# Per-stage fingerprints + runners (Phase 15b: a worker runs exactly one stage; the server checks the same fingerprints)
+def fp_download(ws: Workspace, section: tuple[float, float] | None) -> str:
     # keyed on the video id, not the raw string: youtu.be/ID and watch?v=ID&si=… are the same video
-    fp = fingerprint(ws.video_id, section)
-    if ws.stage_done("download", fp, [ws.source, ws.info, ws.audio]):
+    return fingerprint(ws.video_id, section)
+
+
+def fp_transcribe(ws: Workspace, cfg: Config) -> str:
+    return fingerprint(cfg.whisper.model_dump(), _size(ws.audio))
+
+
+def fp_analyze(ws: Workspace) -> str:
+    return fingerprint("energy-v1", _size(ws.audio))
+
+
+def fp_select(ws: Workspace, cfg: Config) -> str:
+    # configured (not resolved) model: pulling a new Ollama model must not invalidate a finished selection
+    prompt_text = (PROMPTS_DIR / "clip_selection.md").read_text(encoding="utf-8")
+    return fingerprint(cfg.llm.model_dump(exclude={"timeout_sec", "ollama_url", "keep_alive"}), cfg.clips.model_dump(),
+                       cfg.scoring_weights.model_dump(), prompt_text, ws.stage_time("transcribe"))
+
+
+def download_done(ws: Workspace, section: tuple[float, float] | None) -> bool:
+    return ws.stage_done("download", fp_download(ws, section), [ws.source, ws.info, ws.audio])
+
+
+def transcribe_done(ws: Workspace, cfg: Config) -> bool:
+    return ws.stage_done("transcribe", fp_transcribe(ws, cfg), [ws.transcript])
+
+
+def select_done(ws: Workspace, cfg: Config) -> bool:
+    if ws.stage_done("select", fp_select(ws, cfg), [ws.candidates]):
+        return True
+    # hand-edited candidates.json counts as done (select keeps it)
+    return ws.candidates.exists() and ws.stage_time("select") > 0 and \
+        ws.candidates.stat().st_mtime > ws.stage_time("select") + 2
+
+
+def run_download(ws: Workspace, source: str, cfg: Config, reporter: ProgressReporter,
+                 section: tuple[float, float] | None = None) -> VideoInfo:
+    from clipforge.stages import download
+
+    if download_done(ws, section):
         reporter.stage("download", "skipped")
-        info = load_info(ws)
-    else:
-        reporter.stage("download", "running", source)
-        info = download.run(source, ws, reporter, section)
-        ws.mark_done("download", fp)
-        reporter.stage("download", "done", f"{info.title} ({info.duration / 60:.1f} min)")
-    check_cancel(reporter)
+        return load_info(ws)
+    reporter.stage("download", "running", source)
+    info = download.run(source, ws, reporter, section)
+    ws.mark_done("download", fp_download(ws, section))
+    reporter.stage("download", "done", f"{info.title} ({info.duration / 60:.1f} min)")
+    return info
 
-    fp = fingerprint(cfg.whisper.model_dump(), _size(ws.audio))
-    if ws.stage_done("transcribe", fp, [ws.transcript]):
+
+def run_transcribe(ws: Workspace, cfg: Config, reporter: ProgressReporter) -> None:
+    from clipforge.stages import transcribe
+
+    if transcribe_done(ws, cfg):
         reporter.stage("transcribe", "skipped")
-    else:
-        reporter.stage("transcribe", "running")
-        transcribe.run(ws, cfg.whisper, reporter, info.duration)
-        ws.mark_done("transcribe", fp)
-        reporter.stage("transcribe", "done")
-    check_cancel(reporter)
+        return
+    reporter.stage("transcribe", "running")
+    transcribe.run(ws, cfg.whisper, reporter, load_info(ws).duration)
+    ws.mark_done("transcribe", fp_transcribe(ws, cfg))
+    reporter.stage("transcribe", "done")
 
-    fp = fingerprint("energy-v1", _size(ws.audio))
+
+def run_analyze(ws: Workspace, reporter: ProgressReporter) -> None:
+    from clipforge.stages import analyze_audio
+
+    fp = fp_analyze(ws)
     if ws.stage_done("analyze", fp, [ws.energy]):
         reporter.stage("analyze", "skipped")
-    else:
-        reporter.stage("analyze", "running", "audio energy")
-        e = analyze_audio.run(ws)
-        ws.mark_done("analyze", fp)
-        reporter.stage("analyze", "done", f"{len(e.peaks)} energy peaks")
-    return ws
+        return
+    reporter.stage("analyze", "running", "audio energy")
+    e = analyze_audio.run(ws)
+    ws.mark_done("analyze", fp)
+    reporter.stage("analyze", "done", f"{len(e.peaks)} energy peaks")
+
+
+def render_todo(ws: Workspace) -> list[int]:
+    """Enabled clips whose render is missing or out of date (cheap check — no romanisation, no LLM)."""
+    out = []
+    for c in load_candidates(ws):
+        if not c.enabled:
+            continue
+        f = ws.find_clip(c.rank)
+        meta = ws.clips_dir / "_work" / f"{c.rank:02d}" / "render.json"
+        if not f or not meta.exists() or f.name != ws.clip_path(c.rank, c.title).name:
+            out.append(c.rank)
+            continue
+        prev = json.loads(meta.read_text(encoding="utf-8")).get("candidate", {})
+        keys = ("start", "end", "title", "hook", "layout", "caption_style", "word_edits", "crop_overrides")
+        if any(prev.get(k) != c.model_dump().get(k) for k in keys):
+            out.append(c.rank)
+    return out
+
+
+def adopt_renders(ws: Workspace, cfg: Config) -> int:
+    """After a worker rendered clips: re-stamp their render.json with THIS machine's fingerprint, so render() here
+    accepts them instead of rendering again (the clip content is what the job asked for: same candidate)."""
+    from clipforge.stages import captions
+
+    transcript = load_transcript(ws)
+    words = transcript.all_words()
+    n = 0
+    for c in load_candidates(ws):
+        meta = ws.clips_dir / "_work" / f"{c.rank:02d}" / "render.json"
+        f = ws.find_clip(c.rank)
+        if not f or not meta.exists():
+            continue
+        data = json.loads(meta.read_text(encoding="utf-8"))
+        if data.get("candidate", {}).get("start") != c.start or data.get("candidate", {}).get("end") != c.end:
+            continue
+        script = captions.resolve_style(cfg.captions, c.caption_style).script
+        cw = [w.display(script) for w in words if c.start <= (w.start + w.end) / 2 <= c.end]
+        fp = _clip_fp(c, cfg, fingerprint(cw))
+        if data.get("fingerprint") != fp:
+            data["fingerprint"] = fp
+            ws.write_json(meta, data)
+            n += 1
+    return n
 
 
 def select(ws: Workspace, cfg: Config, reporter: ProgressReporter | None = None, force: bool = False) -> list[ClipCandidate]:
@@ -135,10 +227,7 @@ def select(ws: Workspace, cfg: Config, reporter: ProgressReporter | None = None,
     from clipforge.stages import refine, select_clips
 
     reporter = reporter or NullReporter()
-    prompt_text = (PROMPTS_DIR / "clip_selection.md").read_text(encoding="utf-8")
-    # configured (not resolved) model: pulling a new Ollama model must not invalidate a finished selection
-    fp = fingerprint(cfg.llm.model_dump(exclude={"timeout_sec", "ollama_url"}), cfg.clips.model_dump(),
-                     cfg.scoring_weights.model_dump(), prompt_text, ws.stage_time("transcribe"))
+    fp = fp_select(ws, cfg)
     if not force and ws.stage_done("select", fp, [ws.candidates]):
         reporter.stage("select", "skipped")
         return load_candidates(ws)

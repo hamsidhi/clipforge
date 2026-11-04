@@ -441,6 +441,63 @@ ClipForge at e.g. `clipforge.yourdomain.com`.
 
 ---
 
+## Part I — Always online (laptop on or off, free)
+
+**The honest part:** when your laptop is switched off, nothing on it runs. "Always online" means a second, always-on
+computer that costs nothing — an Oracle Cloud *Always Free* Arm VM — which owns the database, your logins, the
+publishing queue and the Telegram bot. Your laptop becomes a **worker**: whenever it's on, it takes the heavy work
+(download, transcribe, pick clips, render) and sends the results back, so jobs finish much faster. When it's off, the
+server does everything itself, slowly (a 1-hour episode takes a few hours on 2 free Arm cores — overnight is fine).
+
+Nothing changes until you do the handover yourself: `deployment.mode` is `standalone` by default.
+
+### I.1 What you need (all free)
+* An Oracle Cloud account (card for identity verification only — add the ₹1 budget alert in step 1 of
+  [deploy/README.md](deploy/README.md)); the free Arm allowance is **2 OCPU / 12 GB** since 2026.
+* Tailscale on the laptop + phone (Part H) and an auth key for the server.
+* About 45 minutes, most of it waiting for installs.
+
+### I.2 Steps
+Follow [deploy/README.md](deploy/README.md) — the exact Oracle clicks, the installer (`deploy/install.sh`), closing
+the cloud firewall, the backup key, then on the laptop:
+```bash
+clipforge server handover --to clipforge-server.<tailnet>.ts.net --dry-run    # shows what moves; changes nothing
+clipforge server handover --to clipforge-server.<tailnet>.ts.net --run
+clipforge worker install-task                                                  # worker starts at logon / wake
+```
+Undo at any moment: `clipforge server handover --rollback --to clipforge-server.<tailnet>.ts.net` (stops the server,
+the laptop is standalone again with its logins).
+
+### I.3 How it behaves
+| Situation | What happens |
+|---|---|
+| Laptop on | Heavy stages are leased to the laptop (Telegram: "📍 on hamza-laptop"). The server keeps the queue and posts on time. |
+| Laptop off | The server does everything ("📍 on clipforge-server (server)"). A stage waiting for the laptop falls back to the server after 10 min (`deployment.worker_grace_minutes`). |
+| Laptop sleeps mid-job | Its lease expires (≤ 2 min) and the job continues on the next worker or the server — nothing is lost or done twice (fencing). |
+| YouTube blocks the server ("confirm you're not a bot") | 3 tries with growing pauses, then Telegram offers: wait for the laptop (automatic), send the file, or a cookies file. |
+| Server unreachable | The laptop retries; you can still run jobs on the laptop — they're uploaded to the server when it's back. The laptop never posts in worker mode. |
+| Server gone for good | `clipforge worker --standalone-emergency` (fences the server first), then the laptop does everything again. |
+| Disk filling up | Old sources and long-published clips are cleaned nightly; Telegram warns at 80 %, new jobs pause at 90 %. |
+
+### I.4 Accounts on a server without a browser
+Connect the account on the laptop as usual (Accounts → Add), then push the login:
+`clipforge server import-token --to clipforge-server.<tailnet>.ts.net` (removes it from the laptop afterwards). Token
+refresh happens on the server only. Alternative: `ssh -L 8000:127.0.0.1:8000 ubuntu@clipforge-server` and open
+<http://localhost:8000> on the laptop — Google's loopback redirect then reaches the server.
+
+### I.5 Backups and updates
+* Nightly encrypted backup of the database, your clip edits, logins, config and .env (videos aren't backed up — they
+  can be rebuilt). The key pair: `clipforge server backup-keygen`; the secret key stays with you, never on the server.
+  Optional off-site copy to your own Google Drive with an rclone **crypt** remote (`server.rclone_remote`).
+* `clipforge server update` pulls the new version, backs up and migrates the database, restarts and checks health —
+  and rolls back by itself if the new version doesn't come up.
+
+### I.6 Free alternatives (if Oracle won't give you an A1 VM)
+* A small free VM (e.g. Google Cloud e2-micro, 1 GB RAM): enough for **bot + publishing queue only**; jobs wait for the
+  laptop (`deployment.prefer_worker_for` = all stages, `worker_grace_minutes` = 1440).
+* An old Android phone (Termux) or a Raspberry Pi you already own: same "bot + queue" role.
+Details and the comparison: DECISIONS.md → Phase 15 → Part B.
+
 ## Part F — Troubleshooting
 
 | You see | Do this |

@@ -17,7 +17,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = ROOT_DIR / "config.yaml"
-ENV_PATH = ROOT_DIR / ".env"
+ENV_PATH = Path(os.environ["CLIPFORGE_ENV"]) if os.environ.get("CLIPFORGE_ENV") else ROOT_DIR / ".env"  # override: tests / a 2nd instance
 ASSETS_DIR = ROOT_DIR / "assets"
 FONTS_DIR = ASSETS_DIR / "fonts"
 MODELS_DIR = ASSETS_DIR / "models"
@@ -63,6 +63,7 @@ class LLMConfig(_Section):
     ollama_url: str = "http://127.0.0.1:11434"
     timeout_sec: int = 600
     max_tokens: int = 2048  # cap per LLM reply (6 candidates ≈ 900 tokens)
+    keep_alive: str = "30m"  # Ollama: unload the model this long after the last request (server: "2m" frees RAM for Whisper)
 
 
 class ScoringWeights(_Section):
@@ -336,7 +337,13 @@ def update_yaml_text(text: str, data: dict[str, dict[str, Any]]) -> tuple[str, b
     remaining = {(s, k) for s, vals in data.items() for k in vals}
     out: list[str] = []
     section = None
+    replaced_indent: int | None = None  # a replaced key whose old value was a block list ("- a" lines below it)
     for line in text.splitlines():
+        if replaced_indent is not None:
+            stripped = line.lstrip(" ")
+            if stripped.startswith("- ") and len(line) - len(stripped) >= replaced_indent:
+                continue  # the old block-style list items: the new value was written in flow style on the key line
+            replaced_indent = None
         m = _SECTION_LINE.match(line)
         if m:
             section = m.group("key")
@@ -348,6 +355,7 @@ def update_yaml_text(text: str, data: dict[str, dict[str, Any]]) -> tuple[str, b
             remaining.discard((section, key))
             new_val = _yaml_scalar(data[section][key])
             out.append(f"{m.group('indent')}{key}:{m.group('sp') or ' '}{new_val}{m.group('comment') or ''}")
+            replaced_indent = len(m.group("indent"))
             continue
         out.append(line)
     return "\n".join(out) + "\n", not remaining
@@ -362,7 +370,8 @@ def save_config(cfg: Config, path: Path | str | None = None) -> None:
         if complete:
             path.write_text(text, encoding="utf-8")
             return
-    path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    # flow style for lists of scalars (slots: ['12:30', …]) — the in-place updater above edits one line per key
+    path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True, default_flow_style=None), encoding="utf-8")
 
 
 def load_secrets() -> Secrets:

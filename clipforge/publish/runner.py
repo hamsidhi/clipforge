@@ -208,6 +208,13 @@ def run_once(cfg: Config | None = None, now: dt.datetime | None = None, progress
     global _current_lock
     cfg = cfg or load_config()
     now = as_utc(now or now_utc())
+    from clipforge.server.dispatch import publishing_allowed
+
+    allowed, why = publishing_allowed()  # exactly one machine publishes (Phase 15b): never a worker, never a fenced server
+    if not allowed:
+        rep = RunReport()
+        rep.messages.append(f"Not publishing here: {why}.")
+        return rep
     lock = _ProcessLock(cfg)
     with lock as got:
         if not got:

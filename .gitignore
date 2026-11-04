@@ -12,6 +12,12 @@ dist/
 
 # Secrets
 .env
+*.env.before-handover
+clipforge-backup.key
+*.key
+*.cfbk
+*.age
+restore/
 client_secret*.json
 youtube_token.json
 
