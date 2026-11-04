@@ -164,13 +164,15 @@ class JobManager:
 
     # -------------------------------------------------------------- events
     def _notify(self, job_id: int, ev: dict) -> None:
+        """Telegram hooks run on their own thread: a slow network never slows the pipeline."""
+        from clipforge.notify import telegram
+
         if ev.get("type") == "status" and ev.get("status") in ("done", "failed"):
-            import threading
-
-            from clipforge.notify import telegram
-
             threading.Thread(target=telegram.on_job_status, args=(job_id, ev["status"], ev.get("error", "")),
                              daemon=True).start()
+        elif ev.get("type") in ("render_done", "render_failed"):
+            threading.Thread(target=telegram.on_render, args=(job_id, ev.get("ranks"), ev["type"] == "render_done",
+                                                              ev.get("error", "")), daemon=True).start()
 
     def publish(self, job_id: int, ev: dict) -> None:
         self._notify(job_id, ev)
@@ -243,7 +245,7 @@ class JobManager:
                 ws = pipeline.prepare(job.source, cfg, rep, section, job.video_id)  # type: ignore[arg-type]
                 info = pipeline.load_info(ws)
                 db.update_job(job_id, video_id=ws.video_id, title=info.title, channel=info.channel, duration=info.duration)
-                cands = pipeline.select(ws, cfg, rep)
+                cands = pipeline.select(ws, cfg, rep, force=bool(task.payload.get("force_select")))
                 db.update_job(job_id, n_clips=len(cands))
                 self.publish(job_id, {"type": "clips", "count": len(cands)})
                 pipeline.render(ws, cfg, rep)

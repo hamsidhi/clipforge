@@ -275,6 +275,18 @@ clipforge watch <folder>          # auto-start jobs for videos dropped into a (s
 clipforge telegram test
 ```
 
+### 5.10 Telegram as a full remote control (Phase 15)
+Paste a YouTube link (or send a video) to your bot → pick options in a little wizard (or **Start with my defaults**) →
+watch one progress message update → get the clips as cards: **Preview · Approve · Reject · Edit · Schedule · Full
+quality**. Edit titles/hooks, trim with buttons or `/trim 3 0:12-0:47`, fix a caption word with `/word 3 "galti" "galat"`,
+re-render (with Undo), schedule to YouTube + Instagram (next free slot or `today 21:00`), and fix anything in
+`/needsyou` with one tap. Only paired chats get any answer; viewers are read-only; publishing publicly needs "YES" + your
+PIN. Every command and the security model: [docs/TELEGRAM.md](docs/TELEGRAM.md).
+
+```bash
+clipforge telegram pair [--role viewer] | devices | unpair [chat_id] | set-pin | clear-pin | status
+```
+
 ## 6. How it works
 
 ```

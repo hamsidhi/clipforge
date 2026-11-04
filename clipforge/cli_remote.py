@@ -13,7 +13,7 @@ from clipforge.utils.log import console
 auth_app = typer.Typer(help="Password + logged-in devices (for using ClipForge from your phone).", no_args_is_help=True)
 remote_app = typer.Typer(help="Private remote access from your phone via Tailscale.", no_args_is_help=True)
 service_app = typer.Typer(help="Keep ClipForge running at login (Windows Task Scheduler + watchdog).", no_args_is_help=True)
-telegram_app = typer.Typer(help="Telegram bot: notifications + quick commands.", no_args_is_help=True)
+telegram_app = typer.Typer(help="Telegram bot: pairing, devices, PIN, status (the bot itself runs inside `clipforge ui`/the server).", no_args_is_help=True)
 
 
 def _db() -> None:
@@ -168,6 +168,92 @@ def telegram_test() -> None:
     from clipforge.notify import telegram as tg
 
     console.print(tg.bot().send_text("✅ ClipForge test message") and "sent" or "not paired / no token")
+
+
+@telegram_app.command("pair")
+def telegram_pair(role: str = typer.Option("owner", "--role", help="owner (everything) or viewer (read-only)"),
+                  group: bool = typer.Option(False, "--group", help="allow pairing a group chat with this code")) -> None:
+    """Make a one-time pairing code (10 minutes). Send `/pair <code>` to your bot from the phone."""
+    _db()
+    if role not in ("owner", "viewer"):
+        raise typer.BadParameter("role must be owner or viewer")
+    from clipforge.notify import tg_store as st
+
+    code = st.new_pair_code(role, group)
+    console.print(f"Send this to your bot within 10 minutes:  [bold]/pair {code}[/bold]  (role: {role})")
+
+
+@telegram_app.command("devices")
+def telegram_devices() -> None:
+    """List paired Telegram chats."""
+    _db()
+    from clipforge.notify import tg_store as st
+
+    rows = st.chats()
+    if not rows:
+        console.print("No paired chats.")
+    for c in rows:
+        console.print(f"{c.chat_id}  {c.role:6}  {c.kind:10}  {c.name}  paired {c.paired_at:%Y-%m-%d}"
+                      + (f"  last used {c.last_seen:%Y-%m-%d %H:%M}" if c.last_seen else ""))
+
+
+@telegram_app.command("unpair")
+def telegram_unpair(chat_id: Optional[int] = typer.Argument(None, help="chat id from `telegram devices`; empty = all")) -> None:
+    """Unpair one chat (or every chat)."""
+    _db()
+    from clipforge.api.auth import audit
+    from clipforge.notify import tg_store as st
+
+    if chat_id is None:
+        st.remove_all_chats()
+        audit("telegram", "Unpaired every Telegram chat (CLI)")
+        console.print("Unpaired every chat.")
+        return
+    console.print("Unpaired." if st.remove_chat(chat_id) else "Not a paired chat.")
+    audit("telegram", f"Unpaired Telegram chat {chat_id} (CLI)")
+
+
+@telegram_app.command("set-pin")
+def telegram_set_pin() -> None:
+    """Set the PIN Telegram asks before publish now / make public / delete / resume (4–8 digits, stored hashed)."""
+    _db()
+    from clipforge.api.auth import audit
+    from clipforge.config import load_config, save_config
+    from clipforge.notify import tg_core
+
+    pin = typer.prompt("New PIN (4–8 digits)", hide_input=True, confirmation_prompt=True)
+    try:
+        tg_core.set_pin(pin)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc))
+    save_config(load_config().with_overrides({"telegram.pin_required": True}))
+    audit("telegram", "Telegram PIN set (CLI)")
+    console.print("PIN set — dangerous Telegram actions now ask for it.")
+
+
+@telegram_app.command("clear-pin")
+def telegram_clear_pin() -> None:
+    """Remove the Telegram PIN."""
+    _db()
+    from clipforge.config import load_config, save_config
+    from clipforge.notify import tg_core
+
+    tg_core.clear_pin()
+    save_config(load_config().with_overrides({"telegram.pin_required": False}))
+    console.print("PIN removed.")
+
+
+@telegram_app.command("status")
+def telegram_status() -> None:
+    """Bot token (masked), paired chats, who holds the poller lease."""
+    _db()
+    from clipforge.config import Secrets, load_config, mask_secret
+    from clipforge.notify import tg_store as st
+
+    cfg = load_config()
+    console.print(f"enabled: {cfg.telegram.enabled} · token: {mask_secret(Secrets().telegram_bot_token) or 'none'} · "
+                  f"paired chats: {len(st.chats())} · PIN: {'on' if cfg.telegram.pin_required else 'off'} · "
+                  f"mode: {cfg.deployment.mode} · poller: {(st.poller_owner() or {}).get('owner', 'nobody')}")
 
 
 def register(app: typer.Typer) -> None:

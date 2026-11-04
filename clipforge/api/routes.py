@@ -9,174 +9,47 @@ import io
 import json
 import math
 import queue
-import re
-import shutil
 import uuid
 import zipfile
-from pathlib import Path
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlmodel import select
 from starlette.background import BackgroundTask
 
 from clipforge import pipeline
 from clipforge.api import db
-from clipforge.api.jobs import event_json, job_config, manager
-from clipforge.config import (Config, ConfigError, load_config, load_secrets, mask_secret, save_config, save_secret)
-from clipforge.models import CaptionStyle, ClipCandidate, ClipMetadata, CropOverride, CropPlan
+from clipforge.api.jobs import event_json, job_config, manager  # noqa: F401
+from clipforge.config import Config, load_secrets, mask_secret, save_config, save_secret  # noqa: F401
+from clipforge.models import ClipMetadata, CropPlan
 from clipforge.utils.log import log
-from clipforge.workspace import Workspace, is_url, video_id_for
+from clipforge.workspace import is_url
 
 router = APIRouter(prefix="/api")
 
 
-# ============================================================================ helpers
-def _cfg() -> Config:
-    try:
-        return load_config()
-    except ConfigError as exc:
-        raise HTTPException(500, str(exc))
+# ============================================================================ helpers (implementation: clipforge/services)
+from clipforge.services import clips as clip_svc  # noqa: E402
+from clipforge.services import jobs as job_svc  # noqa: E402
+from clipforge.services.jobs import JobCreate, JobSettings  # noqa: E402,F401  (re-exported: older imports)
 
-
-def _job_or_404(job_id: int) -> db.Job:
-    job = db.get_job(job_id)
-    if not job:
-        raise HTTPException(404, f"Job {job_id} not found")
-    return job
-
-
-def _ws(job: db.Job) -> Workspace:
-    if not job.video_id:
-        raise HTTPException(409, "This job has not downloaded its video yet.")
-    try:
-        return pipeline.open_workspace(job.video_id, _cfg())
-    except FileNotFoundError as exc:
-        raise HTTPException(404, str(exc))
-
-
-def _parse_clip_id(clip_id: str) -> tuple[db.Job, int]:
-    try:
-        job_part, rank_part = clip_id.split("-", 1)
-        job_id, rank = int(job_part), int(rank_part)
-    except ValueError:
-        raise HTTPException(400, "Clip id must look like '<job_id>-<rank>', e.g. 3-7")
-    return _job_or_404(job_id), rank
-
-
-def _find_cand(ws: Workspace, rank: int) -> tuple[list[ClipCandidate], ClipCandidate]:
-    cands = pipeline.load_candidates(ws)
-    for c in cands:
-        if c.rank == rank:
-            return cands, c
-    raise HTTPException(404, f"Clip {rank} not found")
-
-
-def _metas(ws: Workspace) -> dict[int, ClipMetadata]:
-    if not ws.metadata_json.exists():
-        return {}
-    return {m["rank"]: ClipMetadata.model_validate(m) for m in json.loads(ws.metadata_json.read_text(encoding="utf-8"))}
-
-
-def _clip_out(job: db.Job, ws: Workspace, c: ClipCandidate, metas: dict[int, ClipMetadata]) -> dict:
-    f = ws.find_clip(c.rank)
-    work = ws.clips_dir / "_work" / f"{c.rank:02d}"
-    rendered_at = f.stat().st_mtime if f else None
-    stale = False
-    rj = work / "render.json"
-    if f and rj.exists():
-        prev = json.loads(rj.read_text(encoding="utf-8")).get("candidate", {})
-        keys = ("start", "end", "title", "hook", "layout", "caption_style", "word_edits", "crop_overrides")
-        stale = any(prev.get(k) != c.model_dump().get(k) for k in keys)
-    cid = f"{job.id}-{c.rank}"
-    v = int(rendered_at or 0)
-    return {
-        "id": cid, "job_id": job.id, "rank": c.rank, "start": c.start, "end": c.end, "duration": c.duration,
-        "title": c.title, "hook": c.hook, "topic": c.topic, "why": c.why, "score": c.score, "scores": c.scores.model_dump(),
-        "enabled": c.enabled, "approved": c.approved, "layout": c.layout, "caption_style": c.caption_style.model_dump(),
-        "word_edits": c.word_edits, "crop_overrides": [o.model_dump() for o in c.crop_overrides],
-        "rendered": f is not None, "stale": stale, "file": f.name if f else None,
-        "video_url": f"/api/clips/{cid}/video?v={v}" if f else None,
-        "thumbnail_url": f"/api/clips/{cid}/thumbnail?v={v}" if (work / "thumb.jpg").exists() else None,
-        "has_previous": (work / "previous.mp4").exists(),
-        "metadata": metas[c.rank].model_dump() if c.rank in metas else None,
-    }
-
-
-def _job_out(job: db.Job) -> dict:
-    d = job.model_dump()
-    d["settings"] = job.settings
-    d.pop("settings_json", None)
-    d["busy"] = manager.busy(job.id)  # type: ignore[arg-type]
-    d["thumbnail_url"] = f"/api/jobs/{job.id}/thumbnail" if job.video_id else None
-    if job.video_id:
-        cfg = _cfg()
-        clips_dir = cfg.workspace / job.video_id / "clips"
-        d["n_rendered"] = len(list(clips_dir.glob("*.mp4"))) if clips_dir.exists() else 0
-    else:
-        d["n_rendered"] = 0
-    return d
+_cfg = job_svc.cfg
+_job_or_404 = job_svc.job_or_404
+_ws = job_svc.ws_for
+_parse_clip_id = job_svc.parse_clip_id
+_find_cand = job_svc.find_cand
+_metas = job_svc.metas
+_clip_out = job_svc.clip_out
+_job_out = job_svc.job_out
 
 
 # ============================================================================ jobs
-class JobSettings(BaseModel):
-    clips: Optional[int] = Field(None, ge=1, le=50)
-    min_sec: Optional[float] = None
-    max_sec: Optional[float] = None
-    caption_script: Optional[Literal["roman", "devanagari"]] = None
-    caption_preset: Optional[str] = None
-    layout: Optional[Literal["auto", "track", "split", "blur"]] = None
-    provider: Optional[Literal["ollama", "gemini", "groq", "mock"]] = None
-    model: Optional[str] = None
-    whisper_model: Optional[str] = None
-    language: Optional[str] = None
-    section: Optional[tuple[float, float]] = None
-
-
-class JobCreate(BaseModel):
-    url: Optional[str] = None
-    upload_id: Optional[str] = None
-    settings: JobSettings = JobSettings()
-
-
 @router.post("/jobs", summary="Create a clip job from a YouTube URL or an uploaded file")
 def create_job(body: JobCreate, request: Request = None) -> dict:  # type: ignore[assignment]
-    settings = body.settings.model_dump(exclude_none=True)
-    try:
-        job_config(settings)  # validate before touching the upload, so a bad setting doesn't consume it
-    except Exception as exc:
-        raise HTTPException(400, f"Invalid settings: {exc}")
-    if body.upload_id:
-        path = _upload_path(body.upload_id)
-        meta = path.with_suffix(".json")
-        if not path.exists() or not meta.exists() or not json.loads(meta.read_text())["complete"]:
-            raise HTTPException(400, "Upload not found or not complete")
-        name = json.loads(meta.read_text())["filename"]
-        final = path.with_name(f"{body.upload_id}_{Path(name).name}")
-        if not final.exists():
-            path.replace(final)
-        source = str(final)
-        title = Path(name).stem
-    elif body.url and body.url.strip():
-        source = body.url.strip()
-        remote = request is not None and not getattr(request.state, "local", True)
-        if not is_url(source) and (remote or not Path(source).exists()):
-            # a file path on the laptop is only accepted from the laptop itself; phones upload the file instead
-            raise HTTPException(400, "Paste a YouTube link (https://…) or upload a video file.")
-        title = ""
-    else:
-        raise HTTPException(400, "Provide a YouTube URL or upload a file.")
-    section =tuple(settings["section"]) if settings.get("section") else None
-    with db.session() as s:
-        job = db.Job(source=source, title=title, settings_json=json.dumps(settings),
-                     video_id=video_id_for(source, section))  # type: ignore[arg-type]
-        s.add(job)
-        s.commit()
-        s.refresh(job)
-    manager.submit("pipeline", job.id)  # type: ignore[arg-type]
-    return _job_out(job)
+    remote = request is not None and not getattr(request.state, "local", True)
+    return job_svc.create_job(body, remote=remote)
 
 
 @router.get("/jobs")
@@ -191,35 +64,22 @@ def get_job(job_id: int) -> dict:
 
 @router.delete("/jobs/{job_id}")
 def delete_job(job_id: int, delete_files: bool = False) -> dict:
-    job = _job_or_404(job_id)
-    if manager.busy(job_id):
-        manager.cancel(job_id)
-    with db.session() as s:
-        obj = s.get(db.Job, job_id)
-        if obj:
-            s.delete(obj)
-            s.commit()
-    if delete_files and job.video_id:
-        others = [j for j in db.list_jobs() if j.video_id == job.video_id]
-        if not others:
-            shutil.rmtree(_cfg().workspace / job.video_id, ignore_errors=True)
-    return {"ok": True}
+    return job_svc.delete_job(job_id, delete_files)
 
 
 @router.post("/jobs/{job_id}/cancel")
 def cancel_job(job_id: int) -> dict:
-    _job_or_404(job_id)
-    manager.cancel(job_id)
-    return {"ok": True}
+    return job_svc.cancel_job(job_id)
 
 
 @router.post("/jobs/{job_id}/retry", summary="Re-run a failed/cancelled job (finished stages are reused)")
 def retry_job(job_id: int) -> dict:
-    job = _job_or_404(job_id)
-    if manager.busy(job_id):
-        raise HTTPException(409, "Job is already running or queued")
-    manager.submit("pipeline", job_id)
-    return _job_out(db.get_job(job_id) or job)
+    return job_svc.retry_job(job_id)
+
+
+@router.post("/jobs/{job_id}/rerun/{stage}", summary="Forget one stage's cache and run the job again from there")
+def rerun_stage(job_id: int, stage: str) -> dict:
+    return job_svc.rerun_stage(job_id, stage)
 
 
 @router.get("/jobs/{job_id}/events", summary="Server-Sent Events: stage, progress, ETA, logs")
@@ -271,12 +131,7 @@ def job_thumbnail(job_id: int) -> FileResponse:
 
 @router.get("/jobs/{job_id}/clips")
 def job_clips(job_id: int) -> list[dict]:
-    job = _job_or_404(job_id)
-    if not job.video_id or not (_cfg().workspace / job.video_id / "candidates.json").exists():
-        return []
-    ws = _ws(job)
-    metas = _metas(ws)
-    return [_clip_out(job, ws, c, metas) for c in pipeline.load_candidates(ws)]
+    return clip_svc.list_clips(job_id)
 
 
 class RenderRequest(BaseModel):
@@ -288,22 +143,8 @@ class RenderRequest(BaseModel):
 
 @router.post("/jobs/{job_id}/render-all")
 def render_all(job_id: int, body: RenderRequest = RenderRequest()) -> dict:
-    job = _job_or_404(job_id)
-    ws = _ws(job)
-    cands = pipeline.load_candidates(ws)
-    ranks = body.ranks
-    if body.only_approved:
-        ranks = [c.rank for c in cands if c.approved]
-        if not ranks:
-            raise HTTPException(400, "No approved clips to render")
-    if body.only_stale:
-        metas = _metas(ws)
-        ranks = [c.rank for c in cands if c.enabled and (lambda o: o["stale"] or not o["rendered"])(_clip_out(job, ws, c, metas))
-                 and (ranks is None or c.rank in ranks)]
-        if not ranks:
-            return {"ok": True, "queued": []}
-    manager.submit("render", job_id, {"ranks": ranks, "force": body.force})
-    return {"ok": True, "queued": ranks or "all"}
+    queued = clip_svc.render(job_id, body.ranks, body.force, body.only_approved, body.only_stale)
+    return {"ok": True, "queued": queued}
 
 
 class BulkApprove(BaseModel):
@@ -313,16 +154,7 @@ class BulkApprove(BaseModel):
 
 @router.post("/jobs/{job_id}/approve", summary="Approve every clip with score ≥ min_score")
 def bulk_approve(job_id: int, body: BulkApprove) -> dict:
-    ws = _ws(_job_or_404(job_id))
-    with pipeline.candidates_lock(ws.video_id):
-        cands = pipeline.load_candidates(ws)
-        n = 0
-        for c in cands:
-            if c.score >= body.min_score:
-                c.approved = body.approve
-                n += 1
-        pipeline.save_candidates(ws, cands)
-    return {"ok": True, "changed": n}
+    return {"ok": True, "changed": clip_svc.approve_above(job_id, body.min_score, body.approve)}
 
 
 @router.get("/jobs/{job_id}/source-waveform", summary="Waveform peaks for [start, end] of the source audio")
@@ -386,147 +218,25 @@ def export_zip(job_id: int, all_clips: bool = False) -> FileResponse:
 # ============================================================================ clips
 @router.get("/clips/{clip_id}")
 def get_clip(clip_id: str) -> dict:
-    job, rank = _parse_clip_id(clip_id)
-    ws = _ws(job)
-    cands, c = _find_cand(ws, rank)
-    out = _clip_out(job, ws, c, _metas(ws))
-    from clipforge.stages.captions import resolve_style
-    from clipforge.utils.timecode import words_in_range
-
-    cfg = job_config(job.settings)
-    script = resolve_style(cfg.captions, c.caption_style).script
-    tr = pipeline.load_transcript(ws)
-    inside = words_in_range(tr.all_words(), c.start, c.end)
-    out["words"] = [{"index": i, "start": w.start, "end": w.end, "text": w.display(script),
-                     "edited": c.word_edits.get(str(i))} for i, w in enumerate(inside)]
-    out["script"] = script
-    info = pipeline.load_info(ws)
-    out["source"] = {"duration": info.duration, "width": info.width, "height": info.height, "title": info.title}
-    plan_file = ws.clips_dir / "_work" / f"{rank:02d}" / "crop_plan.json"
-    out["crop_plan"] = json.loads(plan_file.read_text(encoding="utf-8")) if plan_file.exists() else None
-    return out
+    return clip_svc.get_clip(clip_id)
 
 
-class ClipPatch(BaseModel):
-    start: Optional[float] = None
-    end: Optional[float] = None
-    title: Optional[str] = None
-    hook: Optional[str] = None
-    approved: Optional[bool] = None
-    enabled: Optional[bool] = None
-    layout: Optional[Literal["auto", "track", "split", "blur"]] = None
-    clear_layout: bool = False
-    caption_style: Optional[CaptionStyle] = None
-    word_edits: Optional[dict[str, str]] = None
-    crop_overrides: Optional[list[CropOverride]] = None
-    snap: bool = True
-
-
-def _patch_clip(clip_id: str, body: ClipPatch) -> dict:
-    from clipforge.utils.timecode import snap_to_words
-
-    job, rank = _parse_clip_id(clip_id)
-    ws = _ws(job)
-    cands, c = _find_cand(ws, rank)
-    data = body.model_dump(exclude_unset=True, exclude={"snap", "clear_layout"})
-    if data.get("start", c.start) == c.start and data.get("end", c.end) == c.end:
-        data.pop("start", None)  # unchanged times: don't re-snap (that could drop a word and reset edits)
-        data.pop("end", None)
-    if "start" in data or "end" in data:
-        start = data.get("start", c.start)
-        end = data.get("end", c.end)
-        info = pipeline.load_info(ws)
-        start, end = max(0.0, start), min(info.duration, end)
-        if end - start < 3:
-            raise HTTPException(400, "A clip must be at least 3 seconds long")
-        if body.snap:
-            tr = pipeline.load_transcript(ws)
-            starts, ends = tr.boundaries()
-            start, end, _ = snap_to_words(tr.all_words(), start, end, pad_start=0.15, pad_end=0.3, search=1.5,
-                                          seg_starts=starts, seg_ends=ends)
-        if (start, end) != (c.start, c.end):
-            # word edits are keyed by index inside the clip: carry them over by word start time
-            from clipforge.utils.timecode import words_in_range
-
-            all_words = pipeline.load_transcript(ws).all_words()
-            edits = data.pop("word_edits", None) or c.word_edits
-            old = words_in_range(all_words, c.start, c.end)
-            by_time = {old[int(k)].start: v for k, v in edits.items() if k.isdigit() and int(k) < len(old)}
-            new = words_in_range(all_words, start, end)
-            c.word_edits = {str(i): by_time[w.start] for i, w in enumerate(new) if w.start in by_time}
-            c.crop_overrides = []  # shot indices change with the range
-        c.start, c.end = round(start, 3), round(end, 3)
-        data.pop("start", None)
-        data.pop("end", None)
-    for k, v in data.items():
-        if k == "caption_style" and v is not None:
-            c.caption_style = CaptionStyle.model_validate(v)
-        elif k == "crop_overrides" and v is not None:
-            c.crop_overrides = [CropOverride.model_validate(o) for o in v]
-        elif v is not None or k == "approved":  # approved=null means "back to review"
-            setattr(c, k, v)
-    if body.clear_layout:
-        c.layout = None
-    pipeline.save_candidates(ws, cands)
-    return _clip_out(job, ws, c, _metas(ws))
+ClipPatch = clip_svc.ClipPatch
 
 
 @router.patch("/clips/{clip_id}", summary="Edit a clip (times snap to word boundaries; re-render to apply)")
 def patch_clip(clip_id: str, body: ClipPatch) -> dict:
-    job, _ = _parse_clip_id(clip_id)
-    with pipeline.candidates_lock(job.video_id or ""):  # serialise read-modify-write of candidates.json
-        return _patch_clip(clip_id, body)
+    return clip_svc.patch_clip(clip_id, body)
 
 
 @router.post("/clips/{clip_id}/render", summary="Re-render one clip (queued; progress on the job's SSE stream)")
 def render_clip(clip_id: str) -> dict:
-    job, rank = _parse_clip_id(clip_id)
-    _find_cand(_ws(job), rank)
-    manager.submit("render", job.id, {"ranks": [rank]})  # type: ignore[arg-type]
-    return {"ok": True}
+    return clip_svc.render_clip(clip_id)
 
 
 @router.post("/clips/{clip_id}/undo", summary="Restore the previous render and its settings")
 def undo_clip(clip_id: str) -> dict:
-    job, rank = _parse_clip_id(clip_id)
-    with pipeline.candidates_lock(job.video_id or ""):
-        return _undo_clip(job, rank)
-
-
-def _undo_clip(job: db.Job, rank: int) -> dict:
-    from clipforge.workspace import safe_replace
-
-    ws = _ws(job)
-    cands, c = _find_cand(ws, rank)
-    work = ws.work_dir(rank)
-    prev_mp4, prev_json = work / "previous.mp4", work / "previous.json"
-    if not prev_mp4.exists() or not prev_json.exists():
-        raise HTTPException(404, "No previous version to restore")
-    prev = json.loads(prev_json.read_text(encoding="utf-8"))
-    old = ClipCandidate.model_validate(prev["candidate"])
-    old.rank, old.approved, old.score = c.rank, c.approved, c.score
-    cur = ws.find_clip(rank)
-    swap_mp4, swap_json = work / "swap.mp4", work / "swap.json"
-    # safe_replace retries: on Windows a file a browser is still streaming can't be renamed for a moment
-    if cur:
-        safe_replace(cur, swap_mp4)
-        shutil.copy2(work / "render.json", swap_json)
-    target = ws.clip_path(rank, old.title)
-    safe_replace(prev_mp4, target)
-    shutil.copy2(prev_json, work / "render.json")
-    if swap_mp4.exists():  # current becomes "previous" so undo can be undone
-        safe_replace(swap_mp4, prev_mp4)
-        safe_replace(swap_json, prev_json)
-    else:
-        prev_json.unlink(missing_ok=True)
-    idx = cands.index(c)
-    cands[idx] = old
-    pipeline.save_candidates(ws, cands)
-    try:
-        pipeline.metadata(ws, job_config(job.settings))
-    except Exception as exc:  # metadata refresh is cosmetic here; the restore itself succeeded
-        log.warning(f"Metadata refresh after undo failed: {exc}")
-    return _clip_out(job, ws, old, _metas(ws))
+    return clip_svc.undo(clip_id)
 
 
 @router.get("/clips/{clip_id}/video", summary="Rendered clip (supports HTTP Range); ?preview=1 = 540×960 low-data copy")
@@ -598,10 +308,7 @@ def clip_frame(clip_id: str, t: float) -> FileResponse:
 
 
 # ============================================================================ uploads (chunked)
-def _uploads_dir() -> Path:
-    p = _cfg().workspace / "uploads"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
+_uploads_dir = job_svc.uploads_dir
 
 
 class UploadInit(BaseModel):
@@ -611,20 +318,10 @@ class UploadInit(BaseModel):
 
 @router.post("/uploads", summary="Start a chunked upload of a local video file")
 def upload_init(body: UploadInit) -> dict:
-    uid = uuid.uuid4().hex[:12]
-    d = _uploads_dir()
-    (d / uid).write_bytes(b"")
-    (d / f"{uid}.json").write_text(json.dumps({"filename": body.filename, "size": body.size, "complete": False}))
-    return {"upload_id": uid}
+    return {"upload_id": job_svc.new_upload(body.filename, body.size)}
 
 
-UPLOAD_ID_RE = re.compile(r"^[0-9a-f]{12}$")
-
-
-def _upload_path(upload_id: str) -> Path:
-    if not UPLOAD_ID_RE.match(upload_id):  # ids are generated by us; anything else could be a path
-        raise HTTPException(404, "Unknown upload")
-    return _uploads_dir() / upload_id
+_upload_path = job_svc.upload_path
 
 
 @router.put("/uploads/{upload_id}", summary="Write a chunk (raw body) at ?offset= (re-sending a chunk is safe)")
@@ -661,16 +358,7 @@ def upload_state(upload_id: str) -> dict:
 
 @router.post("/uploads/{upload_id}/complete")
 def upload_complete(upload_id: str) -> dict:
-    path = _upload_path(upload_id)
-    meta_p = path.with_suffix(".json")
-    if not meta_p.exists():
-        raise HTTPException(404, "Unknown upload")
-    meta = json.loads(meta_p.read_text())
-    size = path.stat().st_size
-    if size != meta["size"]:
-        raise HTTPException(400, f"Upload incomplete: {size}/{meta['size']} bytes")
-    meta["complete"] = True
-    meta_p.write_text(json.dumps(meta))
+    job_svc.finish_upload(upload_id)
     return {"ok": True, "upload_id": upload_id}
 
 

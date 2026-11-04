@@ -223,6 +223,57 @@ class ChannelDaily(SQLModel, table=True):
     uploads_90d: Optional[int] = None
 
 
+# ----------------------------------------------------------------------------- Telegram (Phase 15)
+class TgChat(SQLModel, table=True):
+    """A paired Telegram chat. Only these chats (and in groups only the user who paired) can use the bot."""
+
+    chat_id: int = Field(primary_key=True)
+    user_id: int = Field(index=True)          # the person; in a private chat equal to chat_id
+    role: str = "owner"                       # owner = everything | viewer = read-only, receives clips/stats
+    kind: str = "private"                     # private | group | supergroup
+    name: str = ""
+    paired_at: dt.datetime = Field(default_factory=now)
+    last_seen: Optional[dt.datetime] = None
+
+
+class TgCallback(SQLModel, table=True):
+    """Inline-button action: callback_data is only 'c:<id>' (≤ 64 bytes); the real action lives here."""
+
+    id: str = Field(primary_key=True)
+    chat_id: int = Field(index=True)
+    user_id: Optional[int] = None             # set = only this user may press it (confirmations)
+    action: str = ""
+    payload_json: str = "{}"
+    one_shot: bool = False                    # confirmations: never re-usable (idempotency)
+    used_at: Optional[dt.datetime] = None
+    expires_at: dt.datetime = Field(default_factory=now, index=True)
+
+
+class TgConversation(SQLModel, table=True):
+    """Waiting for typed input (ForceReply): one per chat, expires after 10 minutes, /cancel ends it."""
+
+    chat_id: int = Field(primary_key=True)
+    step: str = ""
+    payload_json: str = "{}"
+    expires_at: dt.datetime = Field(default_factory=now)
+
+
+class TgKV(SQLModel, table=True):
+    """Small durable bot state: getUpdates offset, poller lease, progress messages, wizards, PIN lockout…"""
+
+    key: str = Field(primary_key=True)
+    value: str = ""
+    expires_at: Optional[dt.datetime] = Field(default=None, index=True)
+
+
+class TgFile(SQLModel, table=True):
+    """Telegram file_id of a file we already sent (re-sending by id is instant and costs no upload)."""
+
+    key: str = Field(primary_key=True)        # path|size|mtime|method
+    file_id: str = ""
+    created_at: dt.datetime = Field(default_factory=now)
+
+
 def _migrate(conn) -> None:
     """create_all() doesn't add columns to existing tables: add missing ones (SQLite ALTER TABLE ADD COLUMN)."""
     for table in SQLModel.metadata.sorted_tables:

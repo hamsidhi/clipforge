@@ -1,76 +1,58 @@
-"""Telegram bot (Phase 14): notifications + quick control, with no public server.
+"""Telegram bot: a full remote control for ClipForge (Phase 15; basic bot since Phase 14), with no public server.
 
-The laptop long-polls the Bot API (`getUpdates`), so nothing needs to reach the laptop from the internet. Only the paired
-Telegram user can talk to it. Pairing: Settings shows a one-time code (valid 10 min); you send `/pair <code>` to your
-bot; ClipForge stores your user id in .env (TELEGRAM_CHAT_ID). Messages from anyone else are ignored and audit-logged.
-
-Plain httpx against https://api.telegram.org (free). Tests swap the transport (httpx.MockTransport).
+The machine that owns the database long-polls the Bot API (`getUpdates`) — nothing needs to reach it from the internet.
+  * One poller per bot token: a DB lease (tg_store.acquire_poller) + backing off on HTTP 409; a `worker` never polls.
+  * `last_update_id` is stored durably, so a restart neither replays nor skips updates.
+  * Paired chats only (tg_core); unknown chats get no reply at all. Commands live in tg_jobs / tg_clips / tg_publish /
+    tg_admin and call clipforge.services — the same code as the web app and the CLI.
+Tests swap the HTTP transport (tests/fake_telegram.py, httpx.MockTransport).
 """
 
 from __future__ import annotations
 
 import datetime as dt
-import json
 import re
-import secrets
 import threading
 import time
-from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 import httpx
 
-from clipforge.config import Secrets, load_config, save_secret
+from clipforge.config import Secrets, load_config
+from clipforge.notify import tg_store as st
+from clipforge.notify.tg_api import CLOUD_API, BotAPI, Limiter, TgError, esc  # noqa: F401  (re-exported)
+from clipforge.notify.tg_core import (ALIASES, CALLBACKS, COMMANDS, MENU_TEXT, ROLE_RANK, STEPS, Ctx, Denied,
+                                      InboundLimiter, audit, error_reply)
 from clipforge.utils.log import log
 
-API = "https://api.telegram.org"
+# importing the handler modules registers their commands / buttons / steps
+from clipforge.notify import tg_admin, tg_clips, tg_jobs, tg_publish  # noqa: E402,F401  isort: skip
+
+API = CLOUD_API
 VIDEO_LIMIT = 50 * 1024 * 1024
 URL_RE = re.compile(r"https?://\S+")
-HELP = """ClipForge bot — commands:
-/new <youtube link> — start a job (or just send a link)
-/status — what's running now
-/queue — next 5 posts
-/approve <job> <ranks> — e.g. /approve 12 1,3,5
-/schedule <job> [youtube|instagram|both] — add approved clips + auto-schedule
-/pause <account> · /resume <account>
-/dashboard — followers, views, YPP progress
-/help — this list"""
+PAIR_RE = re.compile(r"^/(?:pair|start)(?:@\w+)?\s+(\d{6})\s*$")
+HELP = tg_admin.INTRO
 
 
-class TgError(RuntimeError):
-    pass
-
-
-class BotAPI:
-    def __init__(self, token: str, transport: httpx.BaseTransport | None = None) -> None:
-        self.token = token
-        self.http = httpx.Client(base_url=f"{API}/bot{token}/", timeout=httpx.Timeout(70, connect=15), transport=transport)
-
-    def call(self, method: str, files: dict | None = None, **params: Any) -> Any:
-        data = {k: (json.dumps(v) if isinstance(v, (dict, list)) else v) for k, v in params.items() if v is not None}
-        try:
-            r = self.http.post(method, data=data, files=files) if files else self.http.post(method, json=params)
-        except httpx.HTTPError as exc:
-            raise TgError(f"network: {exc}") from exc
-        body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
-        if not body.get("ok"):
-            raise TgError(body.get("description") or f"HTTP {r.status_code}")
-        return body["result"]
-
-
-# ----------------------------------------------------------------------------- the bot
 class Bot:
-    def __init__(self, transport: httpx.BaseTransport | None = None) -> None:
+    def __init__(self, transport: httpx.BaseTransport | None = None, sleep: Callable[[float], None] = time.sleep) -> None:
         self.transport = transport
-        self.pair_code: tuple[str, float] | None = None
-        self.pair_failures = 0
-        self.offset = 0
+        self.sleep = sleep
         self.stop = threading.Event()
         self.thread: threading.Thread | None = None
-        self.pending_confirm: dict[str, tuple[Callable[[], str], float]] = {}
+        self.ticker: threading.Thread | None = None
+        self.inbound = InboundLimiter()
         self.ignored_logged: dict[int, float] = {}
         self.sent_keys: set[str] = set()  # de-duplicate repeated alerts (e.g. re-login every minute)
         self.lock = threading.Lock()
+        self._api: BotAPI | None = None
+        self._api_key: tuple[str, str] | None = None
+        self.limiter = Limiter(sleep=sleep)
+        self.conflict_logged = 0.0
+        self.commands_registered = ""
+        self.last_purge = 0.0
+        self.polling = False
 
     # ---- config
     @property
@@ -78,65 +60,70 @@ class Bot:
         return Secrets().telegram_bot_token or ""
 
     @property
-    def chat_id(self) -> str:
-        return Secrets().telegram_chat_id or ""
+    def chat_id(self) -> str:  # Phase 14 compatibility: the first private owner chat
+        owners = [c for c in st.chats() if c.role == "owner" and c.kind == "private"]
+        return str(owners[0].chat_id) if owners else ""
 
     def api(self) -> BotAPI:
         if not self.token:
             raise TgError("No bot token — paste it in Settings → Phone & Telegram.")
-        return BotAPI(self.token, self.transport)
+        base = load_config().telegram.api_base_url or CLOUD_API
+        key = (self.token, base)
+        if self._api is None or self._api_key != key:
+            self._api = BotAPI(self.token, self.transport, base, self.limiter, self.sleep)
+            self._api_key = key
+        return self._api
 
     def enabled(self) -> bool:
         return bool(load_config().telegram.enabled and self.token)
 
-    # ---- pairing
-    def new_pair_code(self) -> str:
-        code = f"{secrets.randbelow(10 ** 6):06d}"
-        self.pair_code = (code, time.time() + 600)
-        self.pair_failures = 0
-        return code
+    # ---- pairing (codes live in the DB: the CLI, the web app and the bot share them)
+    def new_pair_code(self, role: str = "owner", allow_group: bool = False) -> str:
+        return st.new_pair_code(role, allow_group)
 
-    def _try_pair(self, user_id: int, text: str) -> bool:
-        m = re.match(r"^/(?:pair|start)\s+(\d{6})\s*$", text.strip())
-        if not m or not self.pair_code:
+    @property
+    def pair_code(self) -> bool | None:  # Phase 14 tests: "is a code active?"
+        return True if st.pair_code_active() else None
+
+    def _try_pair(self, msg: dict, text: str) -> bool:
+        m = PAIR_RE.match(text.strip())
+        if not m:
             return False
-        code, until = self.pair_code
-        if time.time() > until or not secrets.compare_digest(m.group(1), code):
-            self.pair_failures += 1
-            _audit("telegram", f"Wrong pairing code from Telegram user {user_id}")
-            if self.pair_failures >= 5:  # guessing: the code is burnt, make a new one in Settings
-                self.pair_code = None
-                _audit("telegram", "Pairing code cancelled after 5 wrong attempts")
+        chat = msg["chat"]
+        user = msg["from"]["id"]
+        ok, rec = st.check_pair_code(m.group(1))
+        if not ok or not rec:
+            if rec is not None:
+                audit(f"Wrong pairing code from Telegram user {user}" + (" — code cancelled after 5 tries" if rec.get("failures", 0) >= 5 else ""))
             return False
-        save_secret("TELEGRAM_CHAT_ID", str(user_id))
-        self.pair_code = None
-        _audit("telegram", f"Paired Telegram user {user_id}")
+        kind = chat.get("type", "private")
+        if kind != "private" and not rec.get("group"):
+            audit(f"Pairing refused for {kind} chat {chat['id']} (code not made for groups)")
+            return False
+        name = " ".join(x for x in (msg["from"].get("first_name"), msg["from"].get("username")) if x) if kind == "private" \
+            else chat.get("title", kind)
+        st.add_chat(chat["id"], user, rec.get("role", "owner"), kind, name or str(user))
+        audit(f"Paired Telegram {kind} chat {chat['id']} as {rec.get('role', 'owner')}")
+        ctx = Ctx(self, chat["id"], user, rec.get("role", "owner"))
+        ctx.send(f"✅ Paired with ClipForge as <b>{rec.get('role', 'owner')}</b>. Send /help to see everything, /menu for buttons.")
+        self.register_commands(force=True)
         return True
 
-    # ---- sending
-    def send_text(self, text: str, buttons: list[list[dict]] | None = None) -> bool:
-        if not self.chat_id or not self.token:
+    # ---- sending (broadcast to paired chats)
+    def send_text(self, text: str, buttons: list[list[dict]] | None = None, html: bool = False,
+                  roles: tuple[str, ...] = ("owner", "viewer")) -> bool:
+        if not self.token:
             return False
-        try:
-            self.api().call("sendMessage", chat_id=self.chat_id, text=text[:4000], disable_web_page_preview=True,
-                            reply_markup={"inline_keyboard": buttons} if buttons else None)
-            return True
-        except TgError as exc:
-            log.warning(f"[telegram] send failed: {exc}")
-            return False
-
-    def send_video(self, path: Path, caption: str, buttons: list[list[dict]] | None = None) -> bool:
-        if not self.chat_id or not path.exists() or path.stat().st_size > VIDEO_LIMIT:
-            return self.send_text(caption, buttons)
-        try:
-            with open(path, "rb") as f:
-                self.api().call("sendVideo", files={"video": (path.name, f, "video/mp4")}, chat_id=self.chat_id,
-                                caption=caption[:1000], supports_streaming="true",
-                                reply_markup={"inline_keyboard": buttons} if buttons else None)
-            return True
-        except TgError as exc:
-            log.warning(f"[telegram] video failed ({exc}); sending text")
-            return self.send_text(caption, buttons)
+        sent = False
+        for c in st.chats():
+            if c.role not in roles:
+                continue
+            try:
+                Ctx(self, c.chat_id, c.user_id, c.role).send(text if html else esc(text), buttons if c.role == "owner" else None)
+                sent = True
+            except TgError as exc:
+                log.warning(f"[telegram] send to {c.chat_id} failed: {exc}")
+        return sent
 
     def notify(self, kind: str, text: str, key: str | None = None, buttons: list[list[dict]] | None = None) -> bool:
         """kind = config toggle name without 'notify_' (job_done, published, …). key de-duplicates repeats."""
@@ -150,155 +137,248 @@ class Bot:
                 self.sent_keys.add(key)
         return self.send_text(text, buttons)
 
+    def register_commands(self, force: bool = False) -> None:
+        """setMyCommands: the menu Telegram shows when you type '/'."""
+        if self.commands_registered == self.token and not force:
+            return
+        cmds = [{"command": c.name, "description": c.help[:256] or c.name} for c in COMMANDS.values() if c.menu][:100]
+        try:
+            self.api().call("setMyCommands", commands=cmds, scope={"type": "all_private_chats"})
+            self.commands_registered = self.token
+        except TgError as exc:
+            log.debug(f"[telegram] setMyCommands failed: {exc}")
+
     # ---- receiving
     def handle(self, upd: dict) -> None:
         if "callback_query" in upd:
-            return self._handle_callback(upd["callback_query"])
+            return self._on_callback(upd["callback_query"])
         msg = upd.get("message") or {}
-        user = (msg.get("from") or {}).get("id")
+        if not msg or "chat" not in msg or "from" not in msg:
+            return
+        chat_id, user = msg["chat"]["id"], msg["from"]["id"]
+        kind = msg["chat"].get("type", "private")
         text = (msg.get("text") or "").strip()
-        if not user or not text:
+        row = st.chat(chat_id)
+        if not row or (kind != "private" and row.user_id != user):
+            if not self._try_pair(msg, text):
+                self._ignore(user, chat_id)
             return
-        if not self.chat_id:
-            if self._try_pair(user, text):
-                self.api().call("sendMessage", chat_id=user, text="✅ Paired with ClipForge. Send /help for commands.")
+        per_min = load_config().telegram.commands_per_minute
+        allowed, warn = self.inbound.allow(chat_id, per_min)
+        if not allowed:
+            if warn:
+                Ctx(self, chat_id, user, row.role).send("🐢 Too many messages — I'll answer again in a minute.")
+                audit(f"chat {chat_id}: rate limited")
             return
-        if str(user) != self.chat_id:  # anybody else: ignore (log at most once an hour per user)
-            if time.time() - self.ignored_logged.get(user, 0) > 3600:
-                self.ignored_logged[user] = time.time()
-                _audit("telegram", f"Ignored a message from unknown Telegram user {user}")
-            return
+        st.touch(chat_id)
+        ctx = Ctx(self, chat_id, user, row.role, message_id=msg.get("message_id"))
+        what = "?"
         try:
-            reply = self.command(text)
+            what = self._dispatch(ctx, msg, text)
+            audit(f"chat {chat_id}: {what} ok")
         except Exception as exc:  # a bad command must never kill the bot
-            reply = f"⚠️ {exc}"
-        if isinstance(reply, tuple):
-            self.send_text(*reply)
-        elif reply:
-            self.send_text(reply)
+            audit(f"chat {chat_id}: {what} failed")
+            try:
+                ctx.send(error_reply(exc))
+            except TgError as send_exc:
+                log.warning(f"[telegram] couldn't send the error reply: {send_exc}")
 
-    def _handle_callback(self, cq: dict) -> None:
-        user = str((cq.get("from") or {}).get("id"))
-        data = cq.get("data") or ""
-        api = self.api()
-        if user != self.chat_id:
-            api.call("answerCallbackQuery", callback_query_id=cq.get("id"), text="Not allowed")
+    def _ignore(self, user: int, chat_id: int) -> None:
+        """Unknown chats get no reply at all — just an audit entry, at most once an hour per user."""
+        if time.time() - self.ignored_logged.get(user, 0) > 3600:
+            self.ignored_logged[user] = time.time()
+            audit(f"Ignored a message from unknown Telegram user {user} (chat {chat_id})")
+
+    def _dispatch(self, ctx: Ctx, msg: dict, text: str) -> str:
+        if text.startswith("/"):
+            head, _, rest = text.partition(" ")
+            name = head[1:].split("@")[0].lower()
+            return self._run_command(ctx, name, rest.strip())
+        if text in MENU_TEXT:
+            return self._run_command(ctx, MENU_TEXT[text], "")
+        conv = st.get_conversation(ctx.chat_id)
+        if conv and text:
+            step_name, payload = conv
+            st.clear_conversation(ctx.chat_id)
+            if step_name not in ("type_yes", "pin") and not ctx.owner:
+                raise Denied("👀 Your access is read-only (viewer).")
+            STEPS[step_name](ctx, text, payload)
+            return f"reply to {step_name}"  # never log what was typed (could be a PIN)
+        if tg_jobs.handle_file(ctx, msg):
+            return "file → new job"
+        m = URL_RE.search(text)
+        if m:
+            tg_jobs.start_wizard(ctx, url=m.group(0))
+            return "link → new job"
+        ctx.send("Send me a YouTube link or a video to start a job — or /help, /menu.")
+        return "text"
+
+    def _run_command(self, ctx: Ctx, name: str, args: str) -> str:
+        name = ALIASES.get(name, name)
+        cmd = COMMANDS.get(name)
+        if not cmd:
+            ctx.send("I don't know that command — /help lists them.")
+            return f"/{name} (unknown)"
+        if ROLE_RANK.get(ctx.role, 0) < ROLE_RANK[cmd.role]:
+            ctx.send("👀 Your access is read-only (viewer).")
+            return f"/{name} (denied: viewer)"
+        if name != "cancel":
+            st.clear_conversation(ctx.chat_id)  # a new command ends any half-finished question
+        cmd.fn(ctx, args)
+        return f"/{name}" + (" …" if args else "")
+
+    def _on_callback(self, cq: dict) -> None:
+        user = (cq.get("from") or {}).get("id")
+        message = cq.get("message") or {}
+        chat_id = (message.get("chat") or {}).get("id")
+        kind = (message.get("chat") or {}).get("type", "private")
+        row = st.chat(chat_id) if chat_id is not None else None
+        if not row or (kind != "private" and row.user_id != user):
+            self._ignore(user or 0, chat_id or 0)
             return
-        text = "?"
+        api = self.api()
+        action, payload, err = st.take_callback(cq.get("data") or "", chat_id, user)
+        ctx = Ctx(self, chat_id, user, row.role, message_id=message.get("message_id"), callback_id=cq.get("id"))
+        if err:
+            ctx.toast(err)
+        else:
+            fn, role = CALLBACKS.get(action or "", (None, "owner"))
+            if fn is None:
+                ctx.toast("This button is from an older version.")
+            elif ROLE_RANK.get(ctx.role, 0) < ROLE_RANK[role]:
+                ctx.toast("Read-only access (viewer).")
+                audit(f"chat {chat_id}: button {action} denied (viewer)")
+            else:
+                try:
+                    fn(ctx, payload)
+                    audit(f"chat {chat_id}: button {action} ok")
+                except Exception as exc:
+                    audit(f"chat {chat_id}: button {action} failed")
+                    ctx.toast("⚠️ That didn't work")
+                    try:
+                        ctx.send(error_reply(exc))
+                    except TgError:
+                        pass
         try:
-            if data.startswith(("ap:", "rj:")):
-                _, job, rank = data.split(":")
-                n = commands.set_approved(int(job), [int(rank)], data.startswith("ap:"))
-                text = ("Approved" if data.startswith("ap:") else "Rejected") + f" clip #{rank}" if n else "Clip not found"
-            elif data.startswith("ok:"):
-                item = self.pending_confirm.pop(data[3:], None)
-                text = item[0]() if item and time.time() - item[1] < 600 else "That confirmation expired — send the command again."
-                self.send_text(text)
-            elif data.startswith("no:"):
-                self.pending_confirm.pop(data[3:], None)
-                text = "Cancelled"
-        except Exception as exc:
-            text = f"⚠️ {exc}"
-        api.call("answerCallbackQuery", callback_query_id=cq.get("id"), text=text[:190])
-
-    def confirm(self, question: str, action: Callable[[], str]) -> tuple[str, list[list[dict]]]:
-        tok = secrets.token_hex(6)
-        self.pending_confirm[tok] = (action, time.time())
-        return question, [[{"text": "✅ Yes", "callback_data": f"ok:{tok}"}, {"text": "✖ No", "callback_data": f"no:{tok}"}]]
-
-    def command(self, text: str) -> str | tuple | None:
-        parts = text.split()
-        cmd = parts[0].lower().split("@")[0] if parts else ""
-        args = parts[1:]
-        if not cmd.startswith("/") and URL_RE.search(text):
-            return commands.new_job(URL_RE.search(text).group(0))  # type: ignore[union-attr]
-        if cmd in ("/help", "/start"):
-            return HELP
-        if cmd == "/new":
-            if not args:
-                return "Usage: /new <youtube link>"
-            return commands.new_job(args[0])
-        if cmd == "/status":
-            return commands.status()
-        if cmd == "/queue":
-            return commands.queue_next(5)
-        if cmd == "/approve":
-            if len(args) < 2:
-                return "Usage: /approve <job id> <ranks, e.g. 1,3,5>"
-            ranks = [int(x) for x in re.split(r"[,\s]+", " ".join(args[1:])) if x.isdigit()]
-            n = commands.set_approved(int(args[0]), ranks, True)
-            return f"Approved {n} clip(s) of job {args[0]}."
-        if cmd == "/schedule":
-            if not args or not args[0].isdigit():
-                return "Usage: /schedule <job id> [youtube|instagram|both]"
-            job, plat = int(args[0]), (args[1].lower() if len(args) > 1 else "both")
-            if plat not in ("youtube", "instagram", "both"):
-                return "Platform must be youtube, instagram or both."
-            return self.confirm(f"Add the approved clips of job {job} to {plat} and auto-schedule them?",
-                                lambda: commands.schedule_job(job, plat))
-        if cmd in ("/pause", "/resume"):
-            if not args:
-                return f"Usage: {cmd} <account name>"
-            name = " ".join(args)
-            if cmd == "/pause":
-                return self.confirm(f"Pause {name}? Nothing will be posted there until you /resume.",
-                                    lambda: commands.set_paused(name, True))
-            return commands.set_paused(name, False)
-        if cmd == "/dashboard":
-            return commands.dashboard()
-        return "Unknown command. " + HELP
+            api.call("answerCallbackQuery", callback_query_id=cq.get("id"), text=ctx.toast_text[:190] or None)
+        except TgError:
+            pass
 
     # ---- loop
     def start(self) -> None:
+        cfg = load_config()
+        if cfg.deployment.mode == "worker":  # the server owns the bot; a worker must never poll (HTTP 409 / duplicates)
+            log.info("[telegram] worker mode: the server runs the Telegram bot")
+            return
         if self.thread and self.thread.is_alive():
             return
         self.stop.clear()
         self.thread = threading.Thread(target=self._loop, name="clipforge-telegram", daemon=True)
         self.thread.start()
+        self.ticker = threading.Thread(target=self._tick_loop, name="clipforge-telegram-tick", daemon=True)
+        self.ticker.start()
+
+    def shutdown(self, wait: float = 2.0) -> None:
+        self.stop.set()
+        for t in (self.thread, self.ticker):
+            if t and t.is_alive() and t is not threading.current_thread():
+                t.join(wait)
+        try:
+            st.release_poller()
+        except Exception:
+            pass
+
+    def poll_once(self, timeout: int = 50) -> int:
+        """One getUpdates round (holding the poller lease). Returns the number of updates handled, -1 = not our turn."""
+        if not st.acquire_poller(max(120, timeout + 60)):
+            return -1
+        offset = int(st.kv_get("offset", 0) or 0)
+        try:
+            updates = self.api().call("getUpdates", offset=offset, timeout=timeout, allowed_updates=["message", "callback_query"])
+        except TgError as exc:
+            if exc.code == 409:  # another process polls this token (or a webhook is set)
+                if time.time() - self.conflict_logged > 3600:
+                    self.conflict_logged = time.time()
+                    log.warning("[telegram] another program is reading this bot's messages (HTTP 409). Only one ClipForge "
+                                "may run the bot — stop the other one (on a worker laptop set deployment.mode: worker).")
+                    audit("Telegram poll conflict (HTTP 409): another poller is running")
+                st.release_poller()
+                return -1
+            raise
+        for u in updates:
+            st.kv_set("offset", u["update_id"] + 1)  # durable: a crash right here never replays this update
+            try:
+                self.handle(u)
+            except Exception as exc:
+                log.warning(f"[telegram] update {u.get('update_id')} failed: {exc}")
+        return len(updates)
 
     def _loop(self) -> None:
         backoff = 1.0
         while not self.stop.is_set():
             if not self.enabled():
+                self.polling = False
                 self.stop.wait(30)
                 continue
             try:
-                self.daily_summary_if_due()
-                updates = self.api().call("getUpdates", offset=self.offset, timeout=50, allowed_updates=["message", "callback_query"])
-                for u in updates:
-                    self.offset = max(self.offset, u["update_id"] + 1)
-                    self.handle(u)
+                self.register_commands()
+                n = self.poll_once()
+                self.polling = n >= 0
+                if n < 0:
+                    self.stop.wait(60)
+                    continue
                 backoff = 1.0
             except Exception as exc:  # network drops, bad token, Telegram hiccups → back off, never die
                 log.debug(f"[telegram] poll failed: {exc}")
                 self.stop.wait(backoff)
                 backoff = min(backoff * 2, 60)
+        st.release_poller()
+
+    def _tick_loop(self) -> None:
+        while not self.stop.is_set():
+            try:
+                if self.enabled():
+                    self.tick()
+            except Exception as exc:
+                log.debug(f"[telegram] tick failed: {exc}")
+            self.stop.wait(2)
+
+    def tick(self, now: dt.datetime | None = None) -> None:
+        tg_jobs.tick_progress(self)
+        self.daily_summary_if_due(now)
+        if time.time() - self.last_purge > 3600:
+            self.last_purge = time.time()
+            st.purge_expired()
+            self.disk_check()
+
+    def disk_check(self) -> None:
+        from clipforge.services.publishing import disk_usage
+
+        cfg = load_config().server
+        d = disk_usage()
+        if d["pct"] >= cfg.disk_warn_pct:
+            paused = d["pct"] >= cfg.disk_pause_pct
+            self.notify("job_failed", f"💾 Disk {d['pct']}% full" + (" — new jobs are paused until you free space." if paused
+                                                                       else " — clean up soon (old sources are deleted automatically)."),
+                        key=f"disk:{dt.date.today()}:{paused}")
 
     def daily_summary_if_due(self, now: dt.datetime | None = None) -> bool:
         from clipforge.publish.timez import now_utc, utc_to_local
 
         cfg = load_config()
-        if not cfg.telegram.daily_summary or not self.chat_id:
+        if not cfg.telegram.daily_summary or not st.chats():
             return False
         local = utc_to_local(now or now_utc(), cfg.publishing.timezone)
         hh, mm = (int(x) for x in cfg.telegram.daily_summary_time.split(":"))
-        state_p = cfg.workspace / "telegram_state.json"
-        state = json.loads(state_p.read_text(encoding="utf-8")) if state_p.exists() else {}
         today = local.date().isoformat()
-        if state.get("summary_day") == today or (local.hour, local.minute) < (hh, mm):
+        if st.kv_get("summary_day") == today or (local.hour, local.minute) < (hh, mm):
             return False
-        state["summary_day"] = today
-        state_p.write_text(json.dumps(state), encoding="utf-8")
+        st.kv_set("summary_day", today)
         return self.send_text(commands.daily_summary(local.date()))
 
 
-def _audit(kind: str, detail: str) -> None:
-    try:
-        from clipforge.api.auth import audit
-
-        audit(kind, detail)
-    except Exception:
-        pass
+def _audit(kind: str, detail: str) -> None:  # Phase 14 name, kept for imports
+    audit(detail)
 
 
 _bot: Bot | None = None
@@ -312,8 +392,10 @@ def bot() -> Bot:
 
 
 def set_bot(b: Bot | None) -> None:
-    """Tests install a bot with a fake transport."""
+    """Tests install a bot with a fake transport (the previous one is stopped first)."""
     global _bot
+    if _bot is not None and _bot is not b:
+        _bot.shutdown()
     _bot = b
 
 
@@ -324,24 +406,41 @@ def on_job_status(job_id: int, status: str, error: str = "") -> None:
         b = bot()
         if not b.enabled():
             return
+        t = load_config().telegram
+        tracked = st.kv_get(f"prog:{job_id}")  # the chat that started it sees the result in its progress message
         if status == "failed":
-            b.notify("job_failed", f"❌ Job {job_id} failed: {error[:300]}")
-            return
-        if status != "done" or not load_config().telegram.notify_job_done:
-            return
-        from clipforge.notify import commands as c
+            if not t.notify_job_failed:
+                return
+            from clipforge.api import db
 
-        title, top = c.top_clips(job_id, 3)
-        b.send_text(f"✅ Job {job_id} finished: {title}\nTop clips below — approve or reject, or open the app.")
-        for clip in top:
-            buttons = [[{"text": "✅ Approve", "callback_data": f"ap:{job_id}:{clip['rank']}"},
-                        {"text": "❌ Reject", "callback_data": f"rj:{job_id}:{clip['rank']}"}]]
-            url = c.app_url(f"/clips/{job_id}-{clip['rank']}/edit")
-            if url:
-                buttons[0].append({"text": "✏️ Open", "url": url})
-            b.send_video(clip["preview"], f"#{clip['rank']} · {clip['title']} · score {clip['score']:.1f}", buttons)
+            job = db.get_job(job_id)
+            text, _ = tg_jobs.explain_failure(error)
+            for c in st.chats():
+                if tracked and tracked["chat"] == c.chat_id:
+                    continue
+                ctx = Ctx(b, c.chat_id, c.user_id, c.role)
+                ctx.send(f"❌ <b>Job {job_id} failed</b> · {esc((job.title if job else '')[:60])}\n{text}",
+                         [[ctx.btn("🔁 Retry", "job.retry", j=job_id)]] if ctx.owner else None)
+            return
+        if status != "done" or not t.notify_job_done:
+            return
+        for c in st.chats():
+            try:
+                tg_clips.deliver_job(b, c, job_id)
+            except TgError as exc:
+                log.warning(f"[telegram] clip delivery to {c.chat_id} failed: {exc}")
     except Exception as exc:
         log.warning(f"[telegram] job notification failed: {exc}")
+
+
+def on_render(job_id: int, ranks: list[int] | None, ok: bool, error: str = "") -> None:
+    """Called after a re-render task: send new versions to the chats that asked for them."""
+    try:
+        b = bot()
+        if b.enabled():
+            tg_clips.on_render_done(b, job_id, ranks, ok, error)
+    except Exception as exc:
+        log.warning(f"[telegram] render notification failed: {exc}")
 
 
 def on_run_report(rep) -> None:
@@ -355,12 +454,12 @@ def on_run_report(rep) -> None:
         for iid in rep.published:
             it = q.get(iid)
             if it:
-                b.notify("published", f"🚀 Published on {it.platform.title()}: {it.title}\n{it.permalink or it.youtube_video_id and f'https://youtube.com/shorts/{it.youtube_video_id}' or ''}",
-                         key=f"pub:{iid}")
+                link = it.permalink or (f"https://youtube.com/shorts/{it.youtube_video_id}" if it.youtube_video_id else "")
+                b.notify("published", f"🚀 Published on {it.platform.title()}: {it.title}\n{link}", key=f"pub:{iid}")
         for iid in [*rep.failed, *rep.missed]:
             it = q.get(iid)
             if it:
-                b.notify("publish_failed", f"⚠️ {it.platform.title()} — {it.title}: {it.error[:300]}",
+                b.notify("publish_failed", f"⚠️ {it.platform.title()} — {it.title}: {it.error[:300]}\nSend /needsyou for one-tap fixes.",
                          key=f"fail:{iid}:{it.status}:{it.reason}")
         for ch_id, why in rep.skipped_channels.items():
             if why == "needs re-login":
@@ -373,4 +472,4 @@ def on_run_report(rep) -> None:
         log.warning(f"[telegram] report notification failed: {exc}")
 
 
-from clipforge.notify import commands  # noqa: E402  (commands imports nothing from here at module level)
+from clipforge.notify import commands  # noqa: E402,F401  (commands imports nothing from here at module level)

@@ -134,7 +134,38 @@ telegram:              # bot token lives in .env (TELEGRAM_BOT_TOKEN); pair it i
   notify_quota: true
   daily_summary: true
   daily_summary_time: '22:00'  # IST
+  api_base_url: https://api.telegram.org  # self-hosted Bot API server for 2 GB files, e.g. http://127.0.0.1:8081
+  clips_to_send: 5     # clip cards sent when a job finishes (thumbnail album + one card per clip)
+  progress_every_sec: 8  # live job progress message: edited at most this often
+  pin_required: false  # ask a PIN (clipforge telegram set-pin) before publish now / make public / delete / unpause
+  commands_per_minute: 30  # per chat; extra commands are ignored
+  mini_app: false      # "Open app" buttons as a Telegram Mini App (needs Tailscale HTTPS; see docs/TELEGRAM.md)
 
 remote:
   watch_folder: ''     # `clipforge watch`: start a job for every video dropped in this folder ('' = off)
   preview_proxy: true  # render a small 540×960 preview per clip for phones / data saver
+
+deployment:            # Phase 15b — where things run (see AUTOMATION_GUIDE Part I)
+  mode: standalone     # standalone (everything here, default) | server (always-on box: DB, tokens, publishing, Telegram) | worker (laptop: heavy jobs only)
+  node_name: ''        # shown in Telegram ("on laptop"); '' = computer name
+  server_url: ''       # worker: the server over Tailscale, e.g. http://clipforge-server:8000
+  capabilities: [download, transcribe, select, render]  # worker: stages this computer accepts
+  max_parallel: 1
+  prefer_worker_for: [download, transcribe, select, render]  # server: give these to a worker when one is online
+  worker_grace_minutes: 10   # server: a stage waits this long for a worker before running it itself
+  lease_seconds: 120   # a claimed task goes back to the queue if its worker stops renewing it
+  heartbeat_seconds: 30
+
+server:                # Phase 15b housekeeping + backups (server or standalone)
+  keep_sources_days: 14          # delete source video/audio of finished jobs after this many days
+  keep_clips_days_after_publish: 14  # delete rendered clips this long after all their posts went out
+  disk_warn_pct: 80    # Telegram warning
+  disk_pause_pct: 90   # new jobs are refused above this
+  backup_dir: ''       # '' = workspace/backups
+  backup_recipient: '' # age public key (age1…): backups are encrypted to it, the private key stays with you
+  backup_keep_daily: 7
+  backup_keep_weekly: 4
+  backup_time: '03:30' # IST
+  rclone_remote: ''    # optional off-site copy, e.g. gdrive-crypt:clipforge (an rclone crypt remote on your Drive)
+  download_cookies_file: ''  # optional yt-dlp cookies.txt (server only; use a throwaway Google account)
+  download_max_attempts: 3   # YouTube bot-check retries (with backoff) before asking you

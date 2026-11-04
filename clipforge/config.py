@@ -191,11 +191,51 @@ class TelegramConfig(_Section):
     notify_quota: bool = True
     daily_summary: bool = True
     daily_summary_time: str = "22:00"   # IST
+    # Phase 15: full remote control
+    api_base_url: str = "https://api.telegram.org"   # self-hosted Bot API server (2 GB files), e.g. http://127.0.0.1:8081
+    clips_to_send: int = Field(5, ge=0, le=25)       # clip cards sent when a job finishes (album + one card each)
+    progress_every_sec: int = Field(8, ge=5, le=60)  # live progress message: edit at most this often
+    pin_required: bool = False          # ask the PIN (hash in .env TELEGRAM_PIN_HASH) for publish now / public / delete / unpause
+    commands_per_minute: int = Field(30, ge=5, le=300)  # per chat; more are ignored
+    mini_app: bool = False              # "Open app" buttons as a Telegram Mini App (needs Tailscale HTTPS; see docs/TELEGRAM.md)
 
 
 class RemoteConfig(_Section):
     watch_folder: str = ""              # `clipforge watch`: auto-start jobs for files dropped here (off when empty)
     preview_proxy: bool = True          # also render a 540×960 ~1 Mbps preview per clip (phones / data saver)
+
+
+class DeploymentConfig(_Section):
+    """Phase 15b: where things run. standalone = everything on this computer (default, as before).
+    server = the always-on machine: owns the database, tokens, publishing and the Telegram poller.
+    worker = a laptop that takes heavy jobs from the server and never publishes or polls Telegram."""
+
+    mode: Literal["standalone", "server", "worker"] = "standalone"
+    node_name: str = ""                 # shown in Telegram ("on laptop"); empty = computer name
+    server_url: str = ""                # worker: the server over Tailscale, e.g. http://clipforge-server:8000
+    capabilities: list[str] = ["download", "transcribe", "select", "render"]  # worker: stages it accepts
+    max_parallel: int = Field(1, ge=1, le=4)
+    prefer_worker_for: list[str] = ["download", "transcribe", "select", "render"]  # server: wait for a worker for these
+    worker_grace_minutes: int = Field(10, ge=0, le=1440)  # server: how long a stage waits for a worker before doing it itself
+    lease_seconds: int = Field(120, ge=30, le=3600)       # a claimed task is re-queued if not renewed in time
+    heartbeat_seconds: int = Field(30, ge=5, le=600)
+
+
+class ServerConfig(_Section):
+    """Phase 15b housekeeping + backups (server or standalone)."""
+
+    keep_sources_days: int = Field(14, ge=1)          # delete source video/audio of finished jobs after N days
+    keep_clips_days_after_publish: int = Field(14, ge=0)  # delete rendered clips N days after all their posts went out
+    disk_warn_pct: int = Field(80, ge=50, le=99)
+    disk_pause_pct: int = Field(90, ge=50, le=99)      # new jobs are refused above this
+    backup_dir: str = ""                # where nightly backups go ('' = workspace/backups)
+    backup_recipient: str = ""          # age public key (age1…) — backups are encrypted to it; the private key stays with you
+    backup_keep_daily: int = Field(7, ge=1)
+    backup_keep_weekly: int = Field(4, ge=0)
+    backup_time: str = "03:30"          # IST
+    rclone_remote: str = ""             # optional copy to e.g. gdrive-crypt:clipforge (an rclone crypt remote)
+    download_cookies_file: str = ""     # optional yt-dlp cookies.txt (server only; use a throwaway Google account)
+    download_max_attempts: int = Field(3, ge=1, le=6)  # bot-check retries with backoff before asking you
 
 
 class Config(_Section):
@@ -214,6 +254,8 @@ class Config(_Section):
     power: PowerConfig = PowerConfig()
     telegram: TelegramConfig = TelegramConfig()
     remote: RemoteConfig = RemoteConfig()
+    deployment: DeploymentConfig = DeploymentConfig()
+    server: ServerConfig = ServerConfig()
 
     @property
     def workspace(self) -> Path:
@@ -248,6 +290,8 @@ class Secrets(BaseSettings):
     telegram_bot_token: str | None = None   # Phase 14
     telegram_chat_id: str | None = None     # paired Telegram user id (only this user may talk to the bot)
     clipforge_password_hash: str | None = None  # Phase 14: login password (scrypt hash, never the password)
+    telegram_pin_hash: str | None = None    # Phase 15: PIN for dangerous Telegram actions (scrypt hash)
+    clipforge_worker_key: str | None = None  # Phase 15b, worker side: this laptop's key for the server
 
 
 class ConfigError(RuntimeError):

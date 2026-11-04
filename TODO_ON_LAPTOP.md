@@ -49,6 +49,22 @@ Tested with fakes; the real setup is AUTOMATION_GUIDE.md → Part H:
 5. Power: plugged in → never sleep; lid close → do nothing (if you want it closed). Tailscale → Run unattended.
 6. If anything in the remote setup differs from the guide (Tailscale CLI output, Chrome install prompt), note it.
 
+## 1d. Telegram full remote control (Phase 15a): needs your phone + Telegram (~15 min)
+
+Your old pairing from Phase 14 is migrated automatically (you become the owner). After pulling, restart `clipforge ui`.
+1. **(1 min)** In the bot send `/help` — you should see the full command list; `/menu` shows quick-action buttons.
+2. **(2 min)** Set a PIN: `clipforge telegram set-pin` (or Settings → Phone & remote → PIN). Then `/resume <account>` on a
+   paused account → Yes → it asks the PIN and deletes your message.
+3. **(5 min)** Paste a short YouTube link → change "Clips" to 10 → **Start** → watch the progress message update →
+   clip cards arrive → **▶ Preview**, **✅ Approve**, **✏️ Edit** → **+0.3** (end) → **🔁 Re-render** → **↩ Undo**.
+4. **(3 min)** **📅 Schedule** on an approved card → Both → **Pick a time** → `tomorrow 9pm` → **Schedule**. Check
+   `/queue`, then in YouTube Studio that the upload is **private + scheduled** (never public before the slot).
+5. **(2 min)** Optional: `clipforge telegram pair --role viewer` → pair a second Telegram account → it can preview and
+   see stats but every edit button is missing / refused.
+6. **(optional, 15 min)** Local Bot API server for 2 GB files: docs/TELEGRAM.md → "Optional: local Bot API server".
+7. **(optional)** Mini App: set `telegram.mini_app: true`, send `/app` → **Open app** inside Telegram (phone on
+   Tailscale). Not tested on a real phone yet — tell me if the webview can't open the `ts.net` address.
+
 ## 2. Phone over Wi-Fi
 ```powershell
 clipforge ui --host 0.0.0.0

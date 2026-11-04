@@ -15,12 +15,16 @@ interface Remote {
   installed: boolean; running: boolean; dns_name: string; magic_dns: boolean; https_certs: boolean; serving: boolean; url: string
   problems: string[]; steps: string[]; local: boolean; password_set: boolean; here: string
 }
-interface Tg { token: string | null; paired: boolean; enabled: boolean; running: boolean; bot_username?: string }
+interface TgDevice { chat_id: number; name: string; role: 'owner' | 'viewer'; kind: string; paired_at: string; last_seen: string | null }
+interface Tg {
+  token: string | null; paired: boolean; enabled: boolean; running: boolean; polling?: boolean; bot_username?: string
+  pin_set?: boolean; pin_required?: boolean; devices?: TgDevice[]; mode?: string
+}
 interface Sess { id: number; device: string; ip: string; last_seen: string; expires_at: string; current: boolean }
 interface Ev { at: string; kind: string; detail: string; ip: string }
 
 const TOGGLES: [string, string][] = [
-  ['notify_job_done', 'Job finished (top 3 clips with Approve / Reject buttons)'], ['notify_job_failed', 'Job failed'],
+  ['notify_job_done', 'Job finished (clip cards: preview, approve, edit, schedule)'], ['notify_job_failed', 'Job failed'],
   ['notify_published', 'Posted on YouTube / Instagram'], ['notify_publish_failed', 'Upload failed or Instagram slot missed'],
   ['notify_reauth', 'An account needs re-login'], ['notify_quota', 'YouTube quota used up'], ['daily_summary', 'Daily summary'],
 ]
@@ -44,6 +48,8 @@ export default function RemoteSettings({ cfg, set }: { cfg: Cfg; set: (section: 
   const [cur, setCur] = useState('')
   const [token, setToken] = useState('')
   const [code, setCode] = useState<string | null>(null)
+  const [codeRole, setCodeRole] = useState<'owner' | 'viewer'>('owner')
+  const [pin, setPin] = useState('')
   const [saver, setSaver] = useState(dataSaver())
   const r = remote.data
   const post = (path: string, body?: unknown) => request<Record<string, unknown>>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined })
@@ -71,7 +77,21 @@ export default function RemoteSettings({ cfg, set }: { cfg: Cfg; set: (section: 
     },
     onError: (e) => toast.error(e.message),
   })
-  const pair = useMutation({ mutationFn: () => post('/api/telegram/pair'), onSuccess: (d) => setCode(String(d.code)), onError: (e) => toast.error(e.message) })
+  const pair = useMutation({
+    mutationFn: (role: 'owner' | 'viewer') => post('/api/telegram/pair', { role }),
+    onSuccess: (d) => { setCode(String(d.code)); setCodeRole(d.role === 'viewer' ? 'viewer' : 'owner') },
+    onError: (e) => toast.error(e.message),
+  })
+  const savePin = useMutation({
+    mutationFn: (body: { pin?: string; required?: boolean }) => post('/api/telegram/pin', body),
+    onSuccess: () => { setPin(''); toast.success('Saved'); qc.invalidateQueries({ queryKey: ['tg'] }) },
+    onError: (e) => toast.error(e.message),
+  })
+  const unpairOne = useMutation({
+    mutationFn: (chat_id: number) => post('/api/telegram/unpair', { chat_id }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['tg'] }),
+    onError: (e) => toast.error(e.message),
+  })
   const test = useMutation({ mutationFn: () => post('/api/telegram/test'), onSuccess: () => toast.success('Sent — check Telegram'), onError: (e) => toast.error(e.message) })
   const unpair = useMutation({ mutationFn: () => post('/api/telegram/unpair'), onSuccess: () => qc.invalidateQueries({ queryKey: ['tg'] }) })
   const revoke = useMutation({
@@ -132,7 +152,7 @@ export default function RemoteSettings({ cfg, set }: { cfg: Cfg; set: (section: 
           )}
         </Section>
 
-        <Section icon={Bot} title="Telegram bot (notifications + quick commands)">
+        <Section icon={Bot} title="Telegram bot (full remote control)">
           <ol className="list-decimal space-y-1 pl-5 text-sm text-muted-foreground">
             <li>In Telegram, message <a className="text-primary underline" href="https://t.me/BotFather" target="_blank" rel="noreferrer">@BotFather</a> → <code>/newbot</code> → copy the token.</li>
             <li>Paste it here → Save. Then <b>Pair</b> and send <code>/pair &lt;code&gt;</code> to your bot. Only you can use it afterwards.</li>
@@ -140,12 +160,33 @@ export default function RemoteSettings({ cfg, set }: { cfg: Cfg; set: (section: 
           <div className="flex flex-wrap gap-2">
             <Input type="password" className="max-w-sm" placeholder={tg.data?.token ?? '123456:ABC…'} value={token} onChange={(e) => setToken(e.target.value)} />
             <Button onClick={() => saveToken.mutate()} disabled={!token || saveToken.isPending}>Save token</Button>
-            <Button variant="outline" onClick={() => pair.mutate()} disabled={!tg.data?.token}>Pair</Button>
+            <Button variant="outline" onClick={() => pair.mutate('owner')} disabled={!tg.data?.token || isRemote()}>Pair my phone</Button>
+            <Button variant="ghost" onClick={() => pair.mutate('viewer')} disabled={!tg.data?.token || isRemote()}>Add a viewer (read-only)</Button>
             {tg.data?.paired && <Button variant="outline" onClick={() => test.mutate()}>Send test</Button>}
-            {tg.data?.paired && <Button variant="ghost" onClick={() => unpair.mutate()}>Unpair</Button>}
+            {tg.data?.paired && <Button variant="ghost" onClick={() => unpair.mutate()} disabled={isRemote()}>Unpair all</Button>}
           </div>
-          {code && <div className="rounded-lg border bg-muted/30 p-3 text-sm">Send this to your bot within 10 minutes: <code className="text-base font-semibold">/pair {code}</code></div>}
-          <div className="text-sm">{tg.data?.paired ? '✅ Paired.' : 'Not paired yet.'} {tg.data?.running ? '' : 'Bot loop starts with the app.'}</div>
+          {isRemote() && <p className="text-xs text-muted-foreground">Token, pairing and the PIN can only be changed on the laptop itself.</p>}
+          {code && <div className="rounded-lg border bg-muted/30 p-3 text-sm">Send this to your bot within 10 minutes ({codeRole}): <code className="text-base font-semibold">/pair {code}</code></div>}
+          <div className="text-sm">{tg.data?.paired ? '✅ Paired.' : 'Not paired yet.'} {tg.data?.running ? (tg.data?.polling ? 'Bot is listening.' : 'Bot is waiting (another computer may be running it).') : tg.data?.mode === 'worker' ? 'Worker mode: the server runs the bot.' : 'Bot loop starts with the app.'}</div>
+          {(tg.data?.devices?.length ?? 0) > 0 && (
+            <div className="space-y-1">
+              {tg.data!.devices!.map((d) => (
+                <div key={d.chat_id} className="flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm">
+                  <span className="min-w-0 truncate"><b>{d.name || d.kind}</b> · {d.role} · {d.kind}{d.last_seen ? ` · last used ${new Date(d.last_seen).toLocaleString()}` : ''}</span>
+                  <Button size="sm" variant="ghost" onClick={() => unpairOne.mutate(d.chat_id)} disabled={isRemote()}>Unpair</Button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="space-y-2 rounded-md border p-3 text-sm">
+            <div className="font-medium">PIN for dangerous actions {tg.data?.pin_required ? '(on)' : '(off)'}</div>
+            <p className="text-xs text-muted-foreground">Asked in Telegram before publish now, make public, delete and resume. Stored hashed; the bot deletes the message with your PIN right away; 5 wrong tries lock it for 15 minutes.</p>
+            <div className="flex flex-wrap gap-2">
+              <Input type="password" inputMode="numeric" className="w-40" placeholder="4–8 digits" value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 8))} disabled={isRemote()} />
+              <Button variant="outline" onClick={() => savePin.mutate({ pin })} disabled={pin.length < 4 || isRemote()}>{tg.data?.pin_set ? 'Change PIN' : 'Set PIN'}</Button>
+              {tg.data?.pin_set && <Button variant="ghost" onClick={() => savePin.mutate({})} disabled={isRemote()}>Remove PIN</Button>}
+            </div>
+          </div>
           <div className="flex items-center justify-between gap-3 text-sm">
             <Label htmlFor="tg-on">Bot enabled</Label>
             <Switch id="tg-on" checked={Boolean(t.enabled)} onCheckedChange={(v) => set('telegram', 'enabled', v)} />
@@ -162,7 +203,7 @@ export default function RemoteSettings({ cfg, set }: { cfg: Cfg; set: (section: 
             <Label>Daily summary at (IST)</Label>
             <Input className="w-28" value={String(t.daily_summary_time)} onChange={(e) => set('telegram', 'daily_summary_time', e.target.value)} />
           </div>
-          <p className="text-xs text-muted-foreground">Commands: /new &lt;link&gt; (or just send a link), /status, /queue, /approve, /schedule, /pause, /resume, /dashboard, /help.</p>
+          <p className="text-xs text-muted-foreground">Send a link or a video to start a job; clips arrive as cards you can preview, approve, edit, trim and schedule. /help in the bot lists everything (docs/TELEGRAM.md).</p>
         </Section>
 
         <Section icon={Laptop} title="Laptop & data">

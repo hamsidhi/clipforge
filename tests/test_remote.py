@@ -185,7 +185,7 @@ class FakeTelegram:
 
 
 def _msg(uid: int, text: str, n: int = 1) -> dict:
-    return {"update_id": n, "message": {"from": {"id": uid}, "chat": {"id": uid}, "text": text}}
+    return {"update_id": n, "message": {"message_id": n, "from": {"id": uid}, "chat": {"id": uid, "type": "private"}, "text": text}}
 
 
 @pytest.fixture
@@ -221,35 +221,34 @@ def test_pairing_only_my_user(tg):
 
 
 def test_commands_and_confirm_buttons(tg, monkeypatch):
+    """Phase 14 commands still work on the Phase 15 bot: link → options wizard, /queue, /pause with a confirmation."""
     from clipforge.api import db
     from clipforge.config import save_secret
-    from clipforge.notify import commands
 
     b, fake, app = tg
-    save_secret("TELEGRAM_CHAT_ID", "42")
-    started = []
-    monkeypatch.setattr(commands, "new_job", lambda url: started.append(url) or f"🎬 Job 7 started for {url}")
+    save_secret("TELEGRAM_CHAT_ID", "42")  # a Phase 14 pairing is migrated to an owner chat
     with TestClient(app):
         b.handle(_msg(42, "check this https://youtu.be/abc123"))
-        assert started == ["https://youtu.be/abc123"]
-        b.handle(_msg(42, "/queue"))
+        assert any("New job" in t for t in fake.texts())
+        b.handle(_msg(42, "/queue", 2))
         assert "Nothing scheduled" in fake.texts()[-1]
         with db.session() as s:
             s.add(db.Channel(id="UCx", title="Figuring Clips", uploads_playlist="UUx"))
             s.commit()
-        b.handle(_msg(42, "/pause figuring"))
+        b.handle(_msg(42, "/pause figuring", 3))
         last = [x for x in fake.sent if x[0] == "sendMessage"][-1][1]
         kb = last["reply_markup"]["inline_keyboard"][0]
-        assert "Pause" in last["text"] and kb[0]["callback_data"].startswith("ok:")
+        assert "Pause" in last["text"] and kb[0]["callback_data"].startswith("c:") and len(kb[0]["callback_data"]) <= 64
         from clipforge.publish import channels as chs
 
         assert not chs.get("UCx").paused  # not before the confirmation
-        b.handle({"update_id": 9, "callback_query": {"id": "q1", "from": {"id": 42}, "data": kb[0]["callback_data"]}})
+        cq = {"id": "q1", "from": {"id": 42}, "data": kb[0]["callback_data"], "message": {"message_id": 5, "chat": {"id": 42, "type": "private"}}}
+        b.handle({"update_id": 9, "callback_query": cq})
         assert chs.get("UCx").paused
-        b.handle({"update_id": 10, "callback_query": {"id": "q2", "from": {"id": 7}, "data": "ok:whatever"}})
-        assert fake.sent[-1][0] == "answerCallbackQuery" and fake.sent[-1][1]["text"] == "Not allowed"
-        b.handle(_msg(42, "/resume figuring"))
-        assert not chs.get("UCx").paused
+        n = len(fake.sent)
+        b.handle({"update_id": 10, "callback_query": {**cq, "id": "q2", "from": {"id": 7},
+                                                       "message": {"message_id": 5, "chat": {"id": 7, "type": "private"}}}})
+        assert len(fake.sent) == n  # a stranger's button press: no answer at all
 
 
 def test_notifications_toggles_dedupe_and_daily_summary(tg):

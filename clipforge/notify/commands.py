@@ -27,11 +27,11 @@ def app_url(path: str) -> str | None:
 
 
 def new_job(url: str) -> str:
-    from clipforge.api.routes import JobCreate, create_job
+    from clipforge.services.jobs import JobCreate, create_job
 
     if "youtu" not in url:
         return "Send a YouTube link (youtube.com / youtu.be)."
-    job = create_job(JobCreate(url=url))
+    job = create_job(JobCreate(url=url), remote=True)
     return f"🎬 Job {job['id']} started for {url}\nI'll message you when the clips are ready."
 
 
@@ -65,38 +65,15 @@ def _job(job_id: int) -> db.Job:
 
 
 def set_approved(job_id: int, ranks: list[int], approved: bool) -> int:
-    job = _job(job_id)
-    ws = pipeline.open_workspace(job.video_id, load_config())  # type: ignore[arg-type]
-    n = 0
-    with pipeline.candidates_lock(ws.video_id):
-        cands = pipeline.load_candidates(ws)
-        for c in cands:
-            if c.rank in ranks:
-                c.approved = approved
-                n += 1
-        pipeline.save_candidates(ws, cands)
-    return n
+    from clipforge.services.clips import set_approved as _set
+
+    return _set(job_id, ranks, approved)
 
 
 def schedule_job(job_id: int, platform: str) -> str:
-    job = _job(job_id)
-    cfg = load_config()
-    targets = [c for c in chs.all_channels() if not c.paused and (platform == "both" or (c.platform or "youtube") == platform)]
-    if not targets:
-        return f"No active {platform} account."
-    targets.sort(key=lambda c: c.platform == "instagram")  # YouTube first ("Instagram X hours after YouTube")
-    out = []
-    for ch in targets:
-        try:
-            added = q.add_clips(ch.id, job.video_id, None, cfg)  # type: ignore[arg-type]
-        except q.QueueError as exc:
-            out.append(f"{ch.title}: {exc}")
-            continue
-        for it in added:
-            q.generate_metadata(it.id, cfg)  # type: ignore[arg-type]
-        done = q.autoschedule(ch.id, [it.id for it in added], cfg)  # type: ignore[misc]
-        out.append(f"{ch.title}: {len(done)} scheduled")
-    return "📅 " + "; ".join(out)
+    from clipforge.notify.tg_publish import _schedule_job
+
+    return _schedule_job(job_id, platform)
 
 
 def _find_account(name: str) -> db.Channel:
@@ -135,7 +112,19 @@ def daily_summary(day: dt.date) -> str:
     head = f"🌙 ClipForge — {day:%a %d %b}\nPosted today: {len(posted)} " \
            f"({sum(1 for i in posted if i.platform == 'youtube')} YouTube, {sum(1 for i in posted if i.platform == 'instagram')} Instagram)"
     earn = _earnings()
-    return "\n".join([head, dashboard(), queue_next(3), f"Campaign earnings (est.): ₹{earn:,.0f}"])
+    return "\n".join([head, dashboard(), queue_next(3), f"Campaign earnings (est.): ₹{earn:,.0f}", bot_activity(day)])
+
+
+def bot_activity(day: dt.date) -> str:
+    """"What the bot did today" — from the audit log (every command and button press is logged)."""
+    start = dt.datetime.combine(day, dt.time(0), tzinfo=dt.timezone.utc) - dt.timedelta(hours=5, minutes=30)  # IST midnight
+    with db.session() as s:
+        rows = s.exec(select(db.AuditEvent).where(db.AuditEvent.kind == "telegram", db.AuditEvent.at >= start)).all()
+    ok = [r for r in rows if r.detail.endswith(" ok")]
+    confirmed = [r for r in rows if ": confirmed " in r.detail]
+    failed = [r for r in rows if r.detail.endswith(" failed")]
+    return (f"🤖 Bot today: {len(ok)} commands/buttons, {len(confirmed)} confirmed actions"
+            + (f", {len(failed)} errors" if failed else "") + ".")
 
 
 def _earnings() -> float:

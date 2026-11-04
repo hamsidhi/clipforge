@@ -287,7 +287,7 @@ def test_e2e_queue_schedule_upload_batch_reconcile_dashboard(env):
     for it in two:
         q.generate_metadata(it.id, cfg)
     q.autoschedule("UCtwo", now=NOW)
-    b = batch.prepare("UCtwo", cfg=cfg.with_overrides({"publishing.mode": "assisted"}))
+    b = batch.prepare("UCtwo", cfg=cfg.with_overrides({"publishing.mode": "assisted"}), now=NOW)
     assert b["count"] == 2 and (tmp / "ws" / b["relative"] / "batch.html").exists()
     for it in q.items("UCtwo", ("queued",)):  # "I uploaded them in Studio"
         fake2.add_video(f"s{it.id}", it.title, int(it.duration), privacy="private",

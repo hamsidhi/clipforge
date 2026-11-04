@@ -25,44 +25,13 @@ router = APIRouter(prefix="/api", tags=["publishing"])
 AUDIT_FORM = "https://support.google.com/youtube/contact/yt_api_form"
 
 
-def _ch_or_404(channel_id: str) -> db.Channel:
-    ch = chs.get(channel_id)
-    if not ch:
-        raise HTTPException(404, "Unknown channel")
-    return ch
+from clipforge.services import publishing as pub  # noqa: E402  (shared with Telegram + CLI)
 
-
-def _item_or_404(item_id: int) -> db.QueueItem:
-    it = q.get(item_id)
-    if not it:
-        raise HTTPException(404, "Unknown queue item")
-    return it
-
-
-def _zone(channel_id: str | None = None) -> str:
-    if channel_id:
-        ch = chs.get(channel_id)
-        if ch:
-            return chs.settings_of(ch)["timezone"]
-    return load_config().publishing.timezone
-
-
-def _item_out(it: db.QueueItem) -> dict:
-    d = q.public(it, _zone(it.channel_id))
-    d["problems"] = q.problems(it) if it.status in ("draft", "queued", "needs_manual") and it.meta_status == "ready" else []
-    d["uploading_progress"] = worker.upload_progress.get(it.id or -1)
-    return d
-
-
-def _wrap(fn, *a, **kw):
-    try:
-        return fn(*a, **kw)
-    except q.QueueError as exc:
-        raise HTTPException(400, str(exc))
-    except FileNotFoundError as exc:
-        raise HTTPException(400, str(exc))
-    except yt.NeedsReauth as exc:
-        raise HTTPException(409, str(exc))
+_ch_or_404 = pub.ch_or_404
+_item_or_404 = pub.item_or_404
+_zone = pub.zone
+_item_out = pub.item_out
+_wrap = pub.wrap
 
 
 # ============================================================================ status
@@ -111,61 +80,12 @@ def run_now() -> dict:
     return {"queued": worker.submit("run", "Scheduler run", run_scheduler)}
 
 
-def _token_health(ch: db.Channel) -> dict:
-    """Read-only look at the saved token (no network): present, refresh token, expiry."""
-    import json as _json
-
-    if ch.platform == "instagram":
-        from clipforge.publish import instagram as ig
-
-        return ig.token_health(ch)
-    p = yt.token_path(ch.id)
-    if not p.exists():
-        return {"ok": False, "text": "No saved login — Reconnect."}
-    try:
-        data = _json.loads(p.read_text(encoding="utf-8"))
-    except ValueError:
-        return {"ok": False, "text": "Saved login is unreadable — Reconnect."}
-    if ch.auth_status != "ok":
-        return {"ok": False, "text": ch.auth_error or "Needs re-login."}
-    if not data.get("refresh_token"):
-        return {"ok": False, "text": "No refresh token — Reconnect."}
-    return {"ok": True, "text": "Login OK (refreshes automatically)."}
+_token_health = pub.token_health
 
 
 @router.get("/publishing/health", summary="Scheduler + accounts health for the Dashboard")
 def publishing_health() -> dict:
-    from clipforge.publish import runner, states
-
-    cfg = load_config()
-    st = runner.read_state(cfg)
-    rem = quota.remaining(cfg)
-    accounts = []
-    for ch in chs.all_channels():
-        attention = [it for it in q.items(ch.id, states.ATTENTION)]
-        accounts.append({"id": ch.id, "title": ch.title, "platform": ch.platform, "paused": ch.paused,
-                         "token": _token_health(ch), "attention": len(attention)})
-    try:
-        from clipforge.utils import power
-
-        awake = power.status()
-    except Exception:
-        awake = {"mode": "unknown", "holding": False}
-    tasks = []
-    try:
-        from clipforge.cli_publish import task_status
-
-        tasks = task_status()
-    except Exception:
-        pass
-    next_tick = worker.next_tick_at
-    return {
-        "last_run_at": st.get("last_run_at"), "last_source": st.get("last_source"), "last_result": st.get("last_result", {}),
-        "runs": st.get("runs", {}), "next_run_at": next_tick, "ticker": worker.ticker_on,
-        "mode": cfg.publishing.mode, "quota": rem, "audit_status": cfg.publishing.audit_status,
-        "api_audited": cfg.publishing.api_audited, "accounts": accounts, "keep_awake": awake, "tasks": tasks,
-        "server_time": now_utc().isoformat(),
-    }
+    return pub.health()
 
 
 class AuditIn(BaseModel):
@@ -363,11 +283,6 @@ class QueueAdd(BaseModel):
     ranks: Optional[list[int]] = None  # None = all approved clips
 
 
-def _queue_metadata(ids: list[int]) -> None:
-    for i in ids:
-        worker.submit(f"meta:{i}", f"Metadata for queue item {i}", lambda i=i: q.generate_metadata(i).title)
-
-
 @router.post("/queue", summary="Add clips (default: all approved) to a channel's queue; metadata is generated in the background")
 def queue_add(body: QueueAdd) -> dict:
     video_id = body.video_id
@@ -379,16 +294,14 @@ def queue_add(body: QueueAdd) -> dict:
     if not video_id:
         raise HTTPException(400, "Give a job_id or video_id")
     targets = list(dict.fromkeys([*(body.channel_ids or []), *([body.channel_id] if body.channel_id else [])]))
-    if not targets:
-        raise HTTPException(400, "Pick at least one account")
-    for cid in targets:
-        _ch_or_404(cid)
-    added: list[db.QueueItem] = []
-    for cid in targets:
-        added += _wrap(q.add_clips, cid, video_id, body.ranks)
-    _queue_metadata([it.id for it in added])  # type: ignore[misc]
+    added = pub.queue_add(targets, video_id, body.ranks)
     return {"added": [_item_out(it) for it in added],
             "skipped_duplicates": (len(body.ranks) * len(targets) - len(added)) if body.ranks else None}
+
+
+def _queue_metadata(ids: list[int]) -> None:
+    for i in ids:
+        worker.submit(f"meta:{i}", f"Metadata for queue item {i}", lambda i=i: q.generate_metadata(i).title)
 
 
 @router.get("/queue")
@@ -475,52 +388,11 @@ def queue_delete(item_id: int) -> dict:
     return {"ok": True}
 
 
-UNSAFE_BULK = ("interrupted", "batched_in_api", "assisted_unlinked", "not_scheduled_in_studio")
-
-
-def _do_reschedule(item_id: int) -> db.QueueItem:
-    return q.reschedule_next(item_id)
-
-
-def _do_retry(item_id: int) -> db.QueueItem:
-    it = _item_or_404(item_id)
-    if it.status not in ("failed", "missed", "needs_manual", "queued") or it.youtube_video_id or it.ig_media_id:
-        raise q.QueueError("Only failed or missed clips that aren't on the platform yet can be retried.")
-    if it.slot_utc and as_utc(it.slot_utc) < now_utc() + slots.LEAD:
-        return q.reschedule_next(item_id)  # the old time is gone: next free slot
-    it.status, it.reason, it.error, it.attempts, it.next_attempt_at = "queued", "", "", 0, None
-    it.ig_container_id, it.ig_container_at = "", None
-    return q.save(it)
-
-
-def _do_unbatch(item_id: int) -> db.QueueItem:
-    it = _item_or_404(item_id)
-    if it.youtube_video_id or it.ig_media_id or it.status in q.ON_PLATFORM:
-        raise q.QueueError("Already uploaded — nothing to change.")
-    it.batch, it.reason, it.error = "", "", ""
-    if it.status in ("needs_manual", "missed"):
-        if it.slot_utc and as_utc(it.slot_utc) < now_utc() + slots.LEAD:
-            q.save(it)
-            return q.reschedule_next(item_id)
-        it.status = "queued"
-    return q.save(it)
-
-
-def _do_publish_now(item_id: int) -> db.QueueItem:
-    it = _item_or_404(item_id)
-    if it.youtube_video_id or it.ig_media_id or it.status in q.ON_PLATFORM:
-        raise q.QueueError("Already uploaded — publish it on the platform (YouTube Studio / Instagram).")
-    if it.platform == "youtube" and load_config().publishing.mode != "api":
-        raise q.QueueError("Publish now uploads with the API — switch to API mode, or upload it in YouTube Studio.")
-    now = now_utc()
-    it.slot_utc, it.status, it.reason, it.error, it.batch = now, "queued", "", "", ""
-    it.attempts, it.next_attempt_at = 0, None
-    it.ig_container_id, it.ig_container_at = "", None  # a fresh Instagram container (the old one may be stale)
-    if it.platform == "youtube":
-        it.privacy = "public"
-    q.save(it)
-    worker.submit("run", "Scheduler run", run_scheduler)
-    return it
+UNSAFE_BULK = pub.UNSAFE_BULK
+_do_reschedule = pub.do_reschedule
+_do_retry = pub.do_retry
+_do_unbatch = pub.do_unbatch
+_do_publish_now = pub.do_publish_now
 
 
 @router.post("/queue/{item_id}/reschedule", summary="Move to the channel's next free slot")
@@ -652,11 +524,7 @@ class BatchIn(BaseModel):
 
 @router.post("/channels/{channel_id}/batch", summary="Assisted mode: build an upload folder + checklist for YouTube Studio")
 def make_batch(channel_id: str, body: BatchIn = BatchIn()) -> dict:
-    _ch_or_404(channel_id)
-    res = _wrap(batch.prepare, channel_id, body.n)
-    res["url"] = f"/api/batches/files/{res['relative']}/batch.html"
-    return res
-
+    return pub.make_batch(channel_id, body.n)
 
 @router.get("/batches")
 def batches() -> list[dict]:
@@ -742,16 +610,7 @@ def apply_slots(channel_id: str, body: SlotsIn) -> dict:
 
 @router.get("/posts/reminders", summary="Published Shorts not yet logged/submitted to a campaign")
 def reminders(channel_id: Optional[str] = None) -> list[dict]:
-    with db.session() as s:
-        posts = list(s.exec(select(db.Post)).all())
-    submitted = {p.queue_id for p in posts if p.queue_id and p.submission_status != "not_submitted"}
-    out = []
-    for it in q.items(channel_id, ("published",)):
-        if it.id not in submitted:
-            url = it.permalink if it.platform == "instagram" else f"https://youtube.com/shorts/{it.youtube_video_id}"
-            out.append({"queue_id": it.id, "title": it.title, "channel_id": it.channel_id, "platform": it.platform,
-                        "youtube_url": url, "url": url, "published_at": it.published_at})
-    return out
+    return pub.reminders(channel_id)
 
 
 @router.get("/channels/{channel_id}/stats.csv")

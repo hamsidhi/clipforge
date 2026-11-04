@@ -72,6 +72,10 @@ async def lifespan(app: FastAPI):
 
         telegram.bot().start()  # idles until a token is set and telegram.enabled is true
     yield
+    from clipforge.notify import telegram as _tg
+
+    if _tg._bot is not None:
+        _tg._bot.shutdown(wait=1.0)  # hand the poller lease back so the next start (or the server) gets it at once
 
 
 def create_app() -> FastAPI:

@@ -20,6 +20,9 @@ api/ (FastAPI) ─┴─> pipeline.py ──> stages/{download, transcribe, anal
                    llm/{ollama,gemini,groq,mock}_provider.py   utils/{ffmpeg,timecode,text,gpu,assets,log}.py
 ```
 - `pipeline.py` is the ONLY orchestrator. CLI and API both call `prepare / select / render / metadata / run_all`.
+- `services/{jobs,clips,publishing}.py` (Phase 15) is the ONLY implementation of user actions (create/cancel/retry/rerun/
+  delete jobs, clip edits/trim/words/approve/render/undo, queue fixes/schedule/health/stats). Web routes, the Telegram
+  bot and the CLI all call it; it raises `services.errors.ServiceError` (an HTTPException subclass, `.detail` = sentence).
 - Progress goes through a `ProgressReporter` (utils/log.py): `NullReporter` for CLI, the API's reporter streams SSE.
 - Stage cache: `Workspace.stage_done(stage, fingerprint, outputs)`; fingerprints hash the relevant config.
 - `candidates.json` is human-editable (start/end/title/hook/enabled/layout/caption_style/word_edits/crop_overrides).
@@ -123,3 +126,17 @@ uploaded = private/unlisted by the user's choice (never goes public by itself)
 - `workspace/scheduler_state.json` = last run (source app/task/daemon) for the Health panel (`/api/publishing/health`).
 - Worker ticks every 60 s (first tick 5 s after start = catch-up); YouTube status refresh is throttled to 10 min.
 - Task Scheduler: one XML task (`utils/winsched.py`): every 30 min + logon + wake event, StartWhenAvailable, hidden (pythonw).
+
+### Telegram (Phase 15a, `notify/`)
+- `telegram.py` = Bot (dispatch, pairing, poll loop, ticker, notification hooks `on_job_status / on_render / on_run_report`).
+  `tg_core.py` = Ctx, registries (`@command`, `@callback`, `@step`, `@danger`), roles, PIN, scrub, error ids.
+  Handlers: `tg_jobs.py` (link/file → wizard, progress, /jobs…), `tg_clips.py` (cards, edit, trim, words, render, undo),
+  `tg_publish.py` (schedule, queue, needs-you, health, stats), `tg_admin.py` (help, menu, devices, /app, /server,
+  confirmation chain). `tg_api.py` (client: limiter, 429, split), `tg_store.py` (SQLite state), `tg_media.py` (file
+  fallback chain), `webapp.py` (Mini App initData).
+- State lives in SQLite tables `tgchat / tgcallback / tgconversation / tgkv / tgfile` — never in memory only.
+- callback_data is always `c:<id>` (≤ 64 bytes); dangerous actions go through `ctx.ask_danger` (Yes → type YES → PIN).
+- Only paired chats get replies; unknown chats are silent. Token, pairing and PIN are laptop-only (403 remotely).
+- One poller per token: `tg_store.acquire_poller` lease + 409 back-off; `deployment.mode: worker` never polls.
+- Every API route needs a row in the audit table of `docs/TELEGRAM.md` (`tests/test_telegram_audit.py`).
+- Tests: `tests/fake_telegram.py` (MockTransport; `msg()`, `press()`, `button(label)`, `transcript()`), `tests/test_telegram.py`.

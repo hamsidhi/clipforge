@@ -367,3 +367,59 @@ A security-review subagent found 9 issues (6 confirmed with scratch tests). All 
    - uploads can't exceed their declared size;
    - remote sessions can't start jobs on arbitrary laptop file paths;
    - the `auth` / `output` / `remote` settings can only be changed on the laptop.
+
+## Phase 15 — Full Telegram control + always online (2026-11-04)
+
+### Facts checked against the official docs on 2026-11-04 (differences from the brief)
+- **Telegram Bot API 10.3** (24 Aug 2026): text 1–4,096 chars, captions 0–1,024, `callback_data` 1–64 bytes,
+  `sendMediaGroup` 2–10 items, `sendVideo`/`sendDocument` ≤ 50 MB, `getFile` ≤ 20 MB, local `telegram-bot-api` server:
+  uploads ≤ 2,000 MB, downloads unlimited. FAQ: ~1 msg/s per chat, 20/min in groups, ~30/s overall (paid broadcasts
+  raise it — not used, it costs Stars). 429 carries `parameters.retry_after`. All as in the brief.
+- **Mini Apps**: `WebAppInfo.url` must be HTTPS; the docs don't require public reachability — the phone's webview loads
+  it. initData: secret = HMAC_SHA256(key "WebAppData", msg bot token); there's also an Ed25519 `signature` for third
+  parties (not needed: we have the token).
+- **Oracle Cloud Always Free changed**: the official page now says Ampere A1 = **1,500 OCPU-hours + 9,000 GB-hours a
+  month ≈ 2 OCPU / 12 GB** (the brief said 4 OCPU / 24 GB — that was the old allowance; community reports say accounts
+  above the new cap had A1 instances disabled in Aug 2026). 200 GB block storage, home region only. Idle reclaim:
+  95th-percentile CPU < 20 %, network < 20 % and (A1) memory < 20 % over 7 days. Everything in Part B is sized for
+  2 OCPU / 12 GB.
+- **yt-dlp** (since 2025.11) wants a JavaScript runtime (Deno recommended) + the yt-dlp-ejs component for YouTube; the
+  installer adds Deno.
+
+### Part A — Telegram as a full remote control
+- **Service layer first** (`clipforge/services/{jobs,clips,publishing}.py`): the bodies of the job / clip / queue routes
+  moved there; routes, Telegram and the CLI call the same functions. `ServiceError` subclasses `HTTPException`, so the
+  web layer needed no translation and Telegram shows `.detail` (always a sentence).
+- **State in SQLite, not memory** (`tgchat`, `tgcallback`, `tgconversation`, `tgkv`, `tgfile`): pairing codes made by
+  the CLI work in the running bot, buttons survive restarts, the update offset is durable. The Phase 14 single
+  `TELEGRAM_CHAT_ID` is migrated to an owner row automatically.
+- **callback_data = `c:<8 random chars>`** → the real action + payload in `tgcallback` (bound to the chat; confirmations
+  also bound to the user, 2-minute expiry, one-shot via an atomic `UPDATE … WHERE used_at IS NULL`).
+- **Wizard state and progress messages in `tgkv`** (`wiz:<id>`, `prog:<job>`, `render:<clip>`), so a restart mid-job
+  keeps editing the same message. Progress is a 2-second ticker reading the job row (no event plumbing into the
+  pipeline thread); edits only when the text changed and at most every `progress_every_sec` (default 8 s; the
+  per-chat edit bucket allows 20/min).
+- **Outbound limiter** in the API client (token buckets: 1/s per chat with burst 3, 25/s overall, 20 edits/min per
+  chat); a 429 pauses every sender for `retry_after` (capped at 60 s, 3 retries). Simpler than a separate outbox thread
+  and enough for one owner + a few viewers.
+- **Splitting**: paragraph → line → word boundaries; a `<pre>` block that must be split is closed and reopened, never
+  cut inside a tag. Captions > 1,024 chars go on the media cut cleanly + follow-up messages.
+- **`/schedule` without arguments is the 7-day calendar** (the brief's A5); `/schedule <job> [platform]` keeps the Phase 14
+  meaning (approved clips → next free slots). Both kept, no conflict.
+- **`/trim` times are relative to the clip** (what you see in the preview); `@` prefix = episode time. **Nudge buttons**
+  move to the next word boundary in that direction (never a no-op that snaps back), padded like the refine step.
+- **Caption script** = the `hindi-devanagari` preset (that's how the existing code decides the script per clip).
+- **Bot token, pairing, PIN are laptop-only** in the web API too (403 from a phone), plus `clipforge telegram …` for a
+  headless server over SSH. Unpairing a chat is also possible from `/devices` (owner).
+- **PIN** = scrypt hash in `.env` (`TELEGRAM_PIN_HASH`), 4–8 digits, 5 wrong → 15-minute lockout, the PIN message is
+  deleted via `deleteMessage` right after reading. Required for: publish now/public, delete job, resume account.
+  "Unpair" only asks Yes/No (it can only reduce access).
+- **Mini App ships off by default** (`telegram.mini_app`): no public URL is needed (Tailscale `*.ts.net` has a real
+  certificate and only the phone loads it), initData is checked server-side, and the password session is still
+  required. Not tried on a real phone in this environment — documented as unverified.
+- **Unknown chats are silent**, also for button presses (we don't even answer the callback query).
+- **One poller**: DB lease (`tgkv['poller']`, `BEGIN IMMEDIATE`, 120 s, renewed every poll) + HTTP 409 → release and
+  back off 60 s with one warning per hour. Across machines the DB isn't shared, so the 409 back-off and
+  "a worker never polls" are what prevent two pollers.
+- A pre-existing test (`test_e2e_queue_schedule_upload_batch_reconcile_dashboard`) failed on HEAD because it mixed a
+  fixed clock (09:30 IST today) with the real clock in `batch.prepare`; it now passes its fixed `now`.
