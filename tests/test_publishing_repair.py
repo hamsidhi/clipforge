@@ -608,3 +608,19 @@ def test_api_routes_smoke(api):
         assert h["heartbeat"]["text"] and h["accounts"][0]["mode"] == "auto"
         assert c.get("/api/publishing/status").status_code == 200
         assert c.post(f"/api/queue/{it.id}/link", json={"video_id": "https://www.youtube.com/watch"}).status_code == 400
+
+
+def test_existing_titles_with_undated_video(api):
+    """Regression (5 Nov 2026): a synced video without publishedAt (a private upload) next to dated ones crashed
+    the queue list and the scheduler: naive datetime.min vs UTC-aware DB datetimes."""
+    from clipforge.api import db
+    from clipforge.publish import queue as q
+
+    _channel()
+    it = _schedule(1, now=NOW + dt.timedelta(days=2))[0]
+    with db.session() as s:
+        s.add(db.VideoPerf(youtube_video_id="a1", channel_id="UCtest", title="Dated", published_at=NOW))
+        s.add(db.VideoPerf(youtube_video_id="a2", channel_id="UCtest", title="Private test", published_at=None))
+        s.commit()
+    assert {"Dated", "Private test"} <= set(q.existing_titles("UCtest", it.id))
+    q.problems(q.get(it.id))  # what the queue list and the uploader call

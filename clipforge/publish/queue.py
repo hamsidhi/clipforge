@@ -124,18 +124,21 @@ def delete(item_id: int) -> None:
             s.commit()
 
 
+_EPOCH = dt.datetime(1970, 1, 1, tzinfo=dt.timezone.utc)  # aware: DB datetimes load as UTC-aware
+
+
 def existing_titles(channel_id: str, exclude_id: int | None = None) -> list[str]:
     """Titles of the channel's last 100 uploads/plans (local DB + synced YouTube videos)."""
     with db.session() as s:
         q = s.exec(select(db.QueueItem).where(db.QueueItem.channel_id == channel_id)).all()
         perf = s.exec(select(db.VideoPerf).where(db.VideoPerf.channel_id == channel_id)).all()
     planned = [it for it in q if it.id != exclude_id and it.status != "draft" and it.title]
-    planned.sort(key=lambda it: it.updated_at, reverse=True)
+    planned.sort(key=lambda it: as_utc(it.updated_at) if it.updated_at else _EPOCH, reverse=True)
     titles = [it.title for it in planned[:100]]
     own_vid = next((it.youtube_video_id for it in q if it.id == exclude_id), "")
     # the item's own YouTube upload (synced into VideoPerf) is not a "duplicate"
     others = [p for p in perf if p.queue_id != exclude_id and (not own_vid or p.youtube_video_id != own_vid)]
-    titles += [p.title for p in sorted(others, key=lambda p: p.published_at or dt.datetime.min, reverse=True)[:100]]
+    titles += [p.title for p in sorted(others, key=lambda p: as_utc(p.published_at) if p.published_at else _EPOCH, reverse=True)[:100]]
     return titles
 
 
