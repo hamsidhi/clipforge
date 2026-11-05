@@ -785,3 +785,18 @@ Runs unattended; every decision is logged here. Final write-up: `PUBLISHING_REPA
 - Sync matching unchanged (file name, then title + duration). Upload time isn't used as a signal: Studio times are
   user-edited, so it would add false matches.
 
+
+### Follow-up after going live (5 Nov 2026, 17:20–17:45 IST)
+- **Crash:** `/api/queue`, autoschedule and the channel's scheduler run failed with "can't compare offset-naive and
+  offset-aware datetimes". DB datetimes load UTC-aware; the private test video (no `publishedAt`) fell back to a
+  naive `datetime.min` in `queue.existing_titles`. Fixed (aware epoch + `as_utc`), regression test, app restarted.
+- **YouTube's per-channel upload limit is real:** after ~10 uploads in a day (the test + 9 scheduled clips, all
+  private + publishAt and verified), `videos.insert` answered `400 uploadLimitExceeded` ("The user has exceeded the
+  number of videos they may upload"). The first version marked each clip FAILED and kept calling (29 calls in
+  19 s). Now the first refusal pauses that channel's uploads for 6 h (`runner.UPLOAD_LIMIT_PAUSE`), every waiting
+  clip says so with its next try, attempts aren't counted, and the label clears once an upload works.
+  → With `posts_per_day: 10` this channel's limit is roughly one day of posts per day; uploads catch up daily.
+- The 29 refused clips were deleted from the queue by a user action (Delete) between 17:34 and 17:39 IST (no code
+  path deletes queue items by itself); not re-added.
+- The 15 clips still in an old Studio batch were moved to auto upload (`unbatch`) after Sync confirmed none of them
+  is on YouTube (the only unlinked channel video is the private test). They wait for the upload limit like the rest.
