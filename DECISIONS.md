@@ -557,3 +557,140 @@ old server from publishing when it comes back is on you (stop it; the fence is s
 - The transcribe fingerprint only changes when a pasted transcript or a non-auto source is set, so jobs that Whisper
   already transcribed keep their cache. Sanity checks (end time >10% off the duration, wrong script) only warn; the
   job keeps going and "Use Whisper instead" (web / Telegram) switches the job's source and re-runs from transcribe.
+
+## Faster selection (2026-11-05)
+Goal: a much faster `select` stage with local models only, without lower clip quality. Measured on two cached Figuring
+Out episodes — TjPPIf-M6KE (Sam Altman, 68 min, 10 windows) and 67AUqNeRf6U (Bryson DeChambeau, 150 min, 22
+windows) — with qwen2.5:7b (Q4_K_M) on the laptop CPU (AMD Ryzen 7 255, 8 cores / 16 threads, Radeon 780M iGPU), Ollama 0.40.13.
+
+### Method
+- `scripts/bench_select.py` runs `pipeline.select(force=True)` on a COPY of an episode (info/transcript/energy only,
+  in `workspace/_bench/<label>/`) — real candidates.json and rendered clips are never touched, no window cache is
+  reused. It records wall time, Ollama's own counters per call (prompt/output tokens + seconds) and the final clips.
+- `scripts/bench_commit.sh <commit> <label>` runs that from a throw-away git worktree pinned to a commit, so editing
+  the main checkout during a 40-minute run can't change the code under test; then runs the quality check.
+- `scripts/compare_selection.py` (quality check): top-20 overlap (same moment = >50 % of the shorter clip), average
+  pipeline score, a **judge score**, boundary % (starts on a sentence boundary — punctuation, ≥0.6 s pause or Whisper
+  segment start, the definition refine snaps to — and lasts 20–59 s ±0.5 s), new/dropped clips.
+- **Judge score instead of the pipeline score for the pass rule**: the pipeline score is the selection LLM grading its
+  own picks, and its scale changes with the prompt (A replaces five sub-scores by three). The judge is one fixed
+  prompt (hook / standalone / payoff of each final clip's transcript text, qwen2.5:7b, temperature 0, cached), so
+  baseline and new runs are rated the same way. Caveat: same model family as the selector, so it is a consistency
+  check, not ground truth — watch the new/dropped clips.
+- **Noise floor**: the baseline code was run twice. The two runs agree on only **50 %** of their top-20 (65 % / 35 %
+  per episode; temperature 0.3, no seed), judge 5.91 vs 5.89. So the requested "overlap ≥ 80 %" is above what the old
+  pipeline achieves against itself. Decision: for prompt-changing steps the overlap bar is the noise floor (50 %),
+  the reference judge/boundary values are the mean of both baseline runs, and a change that changes the picks more
+  than that is only kept when the judge score rises on both episodes (A); prompt-identical steps (D, E) keep the
+  strict 80 %. Every new/dropped clip is listed for a human to watch.
+- **Ollama prompt cache**: the second baseline run took half the time with identical token counts — Ollama's
+  llama.cpp runner served the identical prompts from its prompt cache (~30 000 tok/s "prompt eval"). Its timings are
+  discarded (its picks are valid). Every timed run below used prompts Ollama had not seen. Baseline TjPP window 0 was
+  also cache-warm from an aborted first attempt (≈50 s understated — in the old code's favour).
+
+### Baseline (old code, 694178b)
+| episode | windows | select | prompt tok | output tok | per window |
+|---|---|---|---|---|---|
+| TjPPIf-M6KE | 10 | 759 s | 37 644 | 2 893 | ~76 s |
+| 67AUqNeRf6U | 22 | 2 122 s | 90 668 | 8 837 | ~96 s |
+CPU speed: ~90 tok/s prompt eval, ~8.3 tok/s generation → output was ~45 % of the time although it is <10 % of the
+tokens. Fixtures: `tests/fixtures/select_baseline/<id>.json`.
+
+### Steps (each benchmarked on both episodes, cumulative, vs the baseline)
+| step | select (both) | vs baseline | overlap | judge (ref 5.90) | boundary | decision |
+|---|---|---|---|---|---|---|
+| A compact JSON + title pass | 2 259 s | −22 % | 30 % | 6.24 | 100 % | kept |
+| B numbered lines, fillers, num_ctx | 1 417 s | −51 % | 20 % | 5.92 | 100 % | kept |
+| C num_thread / seed / temp 0.2 | 1 387 s | −52 % | 30 % | 5.87 | 100 % | reverted |
+
+**A — compact output.** Per candidate only `{"s","e","score","hook","standalone","topic"}` (sentence ids), with
+`num_predict = 56 × max_candidates + 64` (a candidate is ~35 tokens). Output tokens −62 %. Titles / hooks / `why`
+are written after refine for the final clips only (`write_titles`, batches of 5, each clip's full text, prompt
+`prompts/clip_titles.md`); a failed batch falls back to a template title (logged), selection never fails on copy.
+YouTube/Instagram descriptions stay in the metadata stage (already final-clips-only and keyed on title/hook, so a
+hand-edited title regenerates them). The overall `score` stands in for emotion/value/controversy in `Scores`, so
+refine's weighted score keeps its 0–10 scale. Prompt tokens rose 10 % (ids added to the timestamped lines; B removes
+the timestamps). Kept although the overlap (30 %) is below the noise floor: the judge score rose on BOTH episodes
+(6.10→6.52, 5.72→5.97), also among clips <35 s only (6.29 vs 5.83/5.71), so it is not just a preference for
+longer clips (A's clips average 36 s vs 26 s). Title quality was comparable but generic → the titles prompt now asks
+for the concrete claim/number/name (8221b6c; doesn't change which clips are picked).
+
+**B — smaller input.** Lines are `12| text` (no timestamps; ids map back to the first word of the first sentence and
+the last word of the last one, both inclusive). Fillers are removed in the LLM input only (`strip_fillers`:
+um/uh/hmm; immediate repeats of a list of function/filler words — "haan haan", "like like", "the the" — but not real
+Hindi reduplication like "dheere dheere"/"kabhi kabhi"; "you know" only as a filler, "you know what…" stays;
+"matlab" only at a line start/after punctuation/before a comma, "iska matlab hai" stays). A line left empty is omitted
+without renumbering. The prompt tells the model ~2.8 words/s (measured 2.9–3.05 on these episodes) so it can still
+aim for 20–59 s; raw candidates in 20–59 s: 58 % (A: 53 %). `num_ctx` = largest window prompt / 2.5 chars per token
+(an over-estimate; measured 3.55–3.62) + reply, rounded up to 1024 (here 5120 / 6144 for a largest prompt of 2 856 / 3 180 tokens) — ONE value for the whole stage incl. the
+title/re-rank calls, because a different num_ctx makes Ollama reload the model. No prompt was truncated (Ollama log:
+`truncated = 0` throughout). Prompt tokens −30 %; generation got faster too (8.3 → 10.2 tok/s with the smaller
+context). Judge 5.92 vs 5.90 → passes; it is 0.3 below A's single sample, C (same input format) scored 5.87, so the
+B-format picks are as good as the baseline's; A's higher score was likely partly luck.
+
+**C — Ollama tuning: reverted.** num_thread = physical cores (8) gave the same speed (97 / 10.2 tok/s) because
+Ollama's default already is one thread per physical core; temperature 0.2 + seed 42 changed the picks and the judge
+score was 0.03 lower than the reference (inside the noise, but the rule is "not lower" and C bought no speed).
+`llm.num_thread` / `llm.seed` stay as options (default: Ollama's thread count, random seed). keep_alive (30m) was
+already sent on every request.
+
+**E — prefilter (`select.prefilter: true`).** Skips a window only when it has <0.5 words/s (silence/music) or when
+≥60 % of its words are in intro/sponsor/outro sentences (keyword list) — never for low energy or a dull topic. With
+8-minute windows this never triggers on real episodes: 0 of 10 / 22 / 24 windows on the three cached episodes, so
+the prompts are byte-identical to B's, the picks unchanged and the time saved 0 s. Kept because it is free and only
+fires on genuinely empty or ad-only windows (e.g. a silent stream start).
+
+**F — re-rank (`select.rerank: true`).** refine was split into `score_pool` (snap/score/dedupe) and `pick` (greedy
+topic-diversity pick). The best `rerank_pool` (40, never fewer than clips.count) are re-scored by the same 7B model,
+5 per call, each with 20 s of what is said BEFORE and AFTER it (`prompts/clip_rerank.md`: rate standalone low if it
+leans on earlier context, the score low if the payoff only comes after the cut). New sub-scores = mean of the window
+pass and the re-rank (two independent looks are steadier than one); refine's energy-peak / mid-sentence adjustment is
+kept; then the usual diversity pick. Cost +285 s on the two episodes; judge 5.94 vs 5.87 for C right before it →
+passes (overlap not required for this step). The measured gain is small and within run-to-run noise.
+
+**D — Radeon 780M (Vulkan).** Current Ollama ships the Vulkan backend on Windows and enables it, but its startup log
+says `dropping integrated GPU; to enable, set OLLAMA_IGPU_ENABLE=1` (ROCm has no gfx1103 kernels). Benchmarked
+WITHOUT touching the user's settings: a second `ollama serve` on 127.0.0.1:11435 with OLLAMA_IGPU_ENABLE=1 set only
+for that process (stopped afterwards). Same window prompt, 3 runs each: prompt eval 85 → 285 tok/s (3.3×),
+generation 10.0 → 15.2 tok/s (1.5×), one window 42 s → 16.7 s; model 100 % in GPU memory (16 GB shared). Full run of
+the same code (8d4fdd3) on both episodes: 1 736 s (CPU) → 732 s (iGPU) = 2.4× faster, 53 calls, no errors in the
+server log. Outputs are not bit-identical (different float maths): top-20 overlap with the CPU run 42 %, judge 5.82
+vs 5.53 for the CPU run, boundary 100 % → passes. NOT switched on automatically (it is a user environment variable):
+README "Speed" + a `clipforge doctor` line ("Ollama GPU") explain it. Undo: delete OLLAMA_IGPU_ENABLE (or set
+OLLAMA_VULKAN=0) and restart Ollama.
+
+### Final runs (all kept changes, step 4)
+| run | code | select both episodes | judge | boundary |
+|---|---|---|---|---|
+| baseline (+ re-run) | 694178b | 2 881 s | 5.91 / 5.89 | 100 % |
+| final2, CPU | d621059 (after review fixes) | 1 726 s (−40 %) — TjPP 558 s, 67AU 1 168 s | 5.91 | 100 % |
+| final, CPU | 8d4fdd3 (before review fixes) | 1 736 s | 5.53 | 100 % |
+| D, iGPU | 8d4fdd3 | 732 s (−75 %) — TjPP 245 s, 67AU 486 s | 5.82 | 100 % |
+Without the re-rank pass the selection is ~1 400 s (−51 %); the re-rank spends ~300 s of the saving on quality.
+
+**Honest read of the judge numbers.** The judge varies ~±0.2 between runs of the same code (final 5.53 vs D 5.82,
+same commit). All runs with the B input format (B, C, F, final, final2, D, and "Bts" = today's code with the
+timestamps kept) average 5.85 — the same as the baseline (5.90). The two A runs (A: 6.24; A2 on the iGPU: 6.04)
+average 6.14, ~2 standard errors higher. Bts (5.94) shows the timestamps are not the cause; filler stripping only
+removes 0.5–0.7 % of the text (the ~20 % input saving is the timestamps). Not resolved further: separating a 0.3
+difference from ±0.2 noise needs several seeded runs per variant. The kept configuration meets the bar (not lower
+than the baseline); it may have given back A's small gain.
+
+**Total pipeline time** (stage timestamps of the original runs; only select changed): TjPP 2 214 s transcribe +
+841 s select + ~195 s render ≈ 54 min → ≈ 49 min (CPU) / ≈ 44 min (iGPU); 67AU 5 327 s transcribe + 2 187 s select
++ ~288 s render + ~414 s metadata ≈ 2 h 17 min → ≈ 2 h 00 min (CPU) / ≈ 1 h 49 min (iGPU). Whisper still dominates
+when it runs on the whole video; with pasted/YouTube transcripts (previous change) select is the main LLM cost.
+
+### Review (subagent) findings — fixed in d621059, regression tests in tests/test_select.py
+- A reply in the wrong shape (e.g. old start/end items) passed the lenient wrapper, was cached and silently gave the
+  window 0 candidates → `CompactRawList` rejects a reply with no usable item, so `complete_json` retries it.
+- `rerank_pool` < clips.count cut the number of clips → the shortlist is at least the final count.
+- `strip_fillers` removed "you know" used as a verb ("Do you know?" → "Do?") → only removed when set off by
+  punctuation and not after do/what/if/everything/kya….
+- Cache keys lacked temperature/seed → added; cache writes are atomic and an unreadable cache file is a miss.
+- num_ctx is estimated from UTF-8 bytes (safe for Devanagari); the schema caps candidates at max_candidates_per_window.
+- Not changed (noted): refine's title-based dedupe no longer applies (titles are written after refine; topic+time
+  overlap dedupe still does); a failed re-rank batch keeps first-pass scores.
+- The full test suite once failed in `test_telegram.py::test_e2e_link_wizard_progress_clips_approve_schedule_queue`
+  in 2 of 4 full-suite runs (passes alone, ×3, and as a file) — it uses seeded fake clips and time-throttled progress
+  edits and never runs select: a load/timing flake, not caused by this change.

@@ -43,6 +43,16 @@ api/ (FastAPI) ─┴─> pipeline.py ──> stages/{download, transcribe, anal
   Audio is decoded by us (PyAV 19 breaks faster-whisper 1.2.1). Transcription checkpoints to `transcript.partial.json`.
 - **Snapping**: Whisper segment boundaries count as sentence boundaries (Hinglish output has little punctuation).
 - **LLM windows**: 8-min windows / 1-min overlap. Local models get the transcript in Latin script (fewer tokens).
+- **Selection format** (DECISIONS "Faster selection"): the LLM sees `id| text` lines (id = 1-based Whisper segment in the
+  window, no timestamps, fillers stripped from the prompt only) and answers `{"s","e","score","hook","standalone",
+  "topic"}`; `select_clips.to_candidate` maps ids → word times. num_ctx is sized once per stage (a different value
+  reloads the model). Then `refine.score_pool` → `select_clips.rerank` (top 40, ±20 s context, `select.rerank`) →
+  `refine.pick` → `select_clips.write_titles` (title/hook/why for the final clips, 5 per call). Window/title/rerank
+  replies are cached in `select_cache/` (key = model, temperature, seed, prompt, options).
+- **Measuring selection quality**: `scripts/bench_commit.sh <commit> <label>` (worktree-pinned) runs
+  `scripts/bench_select.py` on copies of cached episodes and `scripts/compare_selection.py` against
+  `tests/fixtures/select_baseline/` (overlap vs the baseline's own re-run noise floor, fixed judge prompt, boundary %).
+  Never time two runs with identical prompts back to back: Ollama's prompt cache makes the second one look 2× faster.
 
 ## Commands
 ```bash

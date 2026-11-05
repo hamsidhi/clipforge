@@ -51,7 +51,7 @@ FIXES = {
 
 
 IGPU_FIX = ("Windows + AMD iGPU (Radeon 780M/880M/890M): add the user environment variable OLLAMA_IGPU_ENABLE=1, quit "
-            "Ollama from the tray and start it again — clip selection ≈2.5× faster (Vulkan). Undo: delete the variable "
+            "Ollama from the tray and start it again — clip selection ≈2.4× faster (Vulkan). Undo: delete the variable "
             "(or set OLLAMA_VULKAN=0) and restart Ollama.")
 
 

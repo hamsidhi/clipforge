@@ -149,6 +149,23 @@ what the AI looks for, with no code changes. Optional free API keys go in `.env`
 Caption presets: **Bold Yellow Pop** (default), **Clean White**, **Green Highlight** and **Hindi Devanagari**.
 You can also create your own in Settings.
 
+### Speed (clip selection with a local LLM)
+
+Selection with `qwen2.5:7b` on a laptop CPU takes about **8 min per hour of podcast** (was 11–14). The LLM reads
+numbered sentences without timestamps and answers a compact JSON per moment. Titles are written only for the final
+clips. A final re-rank pass re-scores the best 40 with 20 s of context (`select.rerank`, ~17 % of the time; set it to `false` for maximum speed). Details
+and measurements are in [DECISIONS.md → Faster selection](DECISIONS.md).
+
+**AMD laptops with Radeon 780M / 880M / 890M graphics (Windows):** Ollama ignores integrated GPUs by default.
+Turning it on makes selection **≈2.4× faster** (≈3.5 min per hour of podcast):
+
+1. Quit Ollama (tray icon → Quit).
+2. Add a user environment variable `OLLAMA_IGPU_ENABLE` = `1` (Start → "Edit environment variables for your account").
+3. Start Ollama again, then run `clipforge doctor` — "Ollama GPU" should show the Radeon (Vulkan).
+
+To undo, delete the variable (or set `OLLAMA_VULKAN=0`) and restart Ollama. `clipforge doctor` shows the hint
+whenever Ollama is dropping an integrated GPU.
+
 ---
 
 ## 5. Publishing to YouTube (schedule, upload, track)
