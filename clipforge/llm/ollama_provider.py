@@ -2,12 +2,6 @@
 
 from __future__ import annotations
 
-import functools
-import os
-import platform
-import re
-import subprocess
-
 import httpx
 
 from clipforge.llm.base import LLMError, LLMProvider
@@ -34,34 +28,6 @@ def pick_model(installed: list[str]) -> str | None:
     return installed[0] if installed else None
 
 
-@functools.lru_cache(maxsize=1)
-def physical_cores() -> int:
-    """Physical CPU cores (llama.cpp is fastest with one thread per core; hyper-threads only add contention).
-    Falls back to half the logical CPUs."""
-    logical = os.cpu_count() or 2
-    try:
-        system = platform.system()
-        if system == "Windows":
-            out = subprocess.run(["powershell", "-NoProfile", "-Command",
-                                  "(Get-CimInstance Win32_Processor | Measure-Object NumberOfCores -Sum).Sum"],
-                                 capture_output=True, text=True, timeout=15).stdout
-            return max(1, int(out.strip()))
-        if system == "Darwin":
-            out = subprocess.run(["sysctl", "-n", "hw.physicalcpu"], capture_output=True, text=True, timeout=5).stdout
-            return max(1, int(out.strip()))
-        cores = set()  # Linux: unique (physical id, core id) pairs, one block per logical CPU
-        for block in open("/proc/cpuinfo", encoding="utf-8").read().split("\n\n"):
-            phys = re.search(r"^physical id\s*:\s*(\d+)", block, re.MULTILINE)
-            core = re.search(r"^core id\s*:\s*(\d+)", block, re.MULTILINE)
-            if phys and core:
-                cores.add((phys.group(1), core.group(1)))
-        if cores:
-            return len(cores)
-    except Exception:
-        pass
-    return max(1, logical // 2)
-
-
 class OllamaProvider(LLMProvider):
     name = "ollama"
 
@@ -70,7 +36,7 @@ class OllamaProvider(LLMProvider):
                  num_thread: int = 0, seed: int | None = None) -> None:
         self.url = url.rstrip("/")
         self.keep_alive = keep_alive
-        self.num_thread = num_thread  # 0 = physical cores
+        self.num_thread = num_thread  # 0 = Ollama's default (one thread per physical core)
         self.seed = seed  # fixed seed = reproducible answers for the same prompt (benchmarks, re-runs)
         if model == "auto":
             try:
@@ -101,7 +67,7 @@ class OllamaProvider(LLMProvider):
             # num_predict caps runaway generations (JSON mode can otherwise emit whitespace until the context
             # is full — minutes on a CPU); keep_alive avoids reloading the model between windows
             "options": {"temperature": self.temperature, "num_ctx": 16384, "num_predict": self.max_tokens,
-                        "num_thread": self.num_thread or physical_cores(),
+                        **({"num_thread": self.num_thread} if self.num_thread else {}),
                         **({"seed": self.seed} if self.seed is not None else {}), **(options or {})},
             "keep_alive": self.keep_alive,
         }

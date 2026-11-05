@@ -25,7 +25,7 @@ transcript:
 llm:
   provider: ollama     # ollama | gemini | groq | mock
   model: auto          # auto -> best installed Ollama model / provider default
-  temperature: 0.2     # low = steadier picks; 0.2 keeps a little variety in titles
+  temperature: 0.3
   window_min: 8.0
   overlap_min: 1.0
   max_retries: 3
@@ -33,8 +33,8 @@ llm:
   ollama_url: http://127.0.0.1:11434
   timeout_sec: 600
   max_tokens: 2048     # cap per LLM reply (stops runaway generations on slow CPUs)
-  num_thread: 0        # Ollama CPU threads; 0 = physical cores (hyper-threads only add contention)
-  seed: 42             # Ollama sampling seed: same transcript + settings -> same clips (null = random)
+  num_thread: 0        # Ollama CPU threads; 0 = Ollama's default (one per physical core — measured fastest)
+  seed: null           # Ollama sampling seed: a number makes re-runs reproducible (null = random)
   keep_alive: 30m      # Ollama unloads the model this long after the last request (server: 2m frees RAM for Whisper)
 
 select:
