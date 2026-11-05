@@ -102,7 +102,7 @@ REASONS: dict[str, tuple[str, tuple[str, ...]]] = {
     "quota": ("Upload quota used up: continues tomorrow automatically", ()),
     "retrying": ("Retrying automatically", ("retry",)),
     "upload_failed": ("Upload failed", ("retry", "reschedule")),
-    "upload_limit": ("YouTube's upload limit for this channel is reached", ("retry", "studio_instead")),
+    "upload_limit": ("Waiting: YouTube's upload limit for this channel (retries by itself)", ("studio_instead",)),
     "rejected": ("YouTube rejected the video", ("studio",)),
     "deleted": ("Video not found on YouTube (deleted?)", ("reschedule",)),
     "metadata": ("Title/description need a fix", ("edit",)),
@@ -159,6 +159,9 @@ def status_text(it: Any, zone: str = "Asia/Kolkata", mode: str = "", progress: f
     elif st == "queued":
         if reason == "login_expired":
             lab, det = "Needs re-login", err or "The account's login expired: Reconnect it on the Accounts page."
+        elif reason == "upload_limit":
+            lab = "Waiting: YouTube's daily upload limit"
+            det = f"Next try {_when(it.next_attempt_at, zone)}. " + (err or "")
         elif reason == "quota":
             lab, det = "Waiting for quota", err or "Today's upload quota is used up; continues after midnight Pacific time."
         elif it.next_attempt_at or reason == "retrying":

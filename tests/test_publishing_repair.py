@@ -247,7 +247,7 @@ def _http_error(status: int, reason: str, message: str = "boom"):
 
 
 @pytest.mark.parametrize("status,reason,expect_status,expect_reason", [
-    (403, "uploadLimitExceeded", "failed", "upload_limit"),
+    (400, "uploadLimitExceeded", "queued", "upload_limit"),
     (403, "forbidden", "failed", "upload_failed"),
     (400, "invalidMetadata", "failed", "upload_failed"),
     (500, "backendError", "queued", "retrying"),
@@ -624,3 +624,36 @@ def test_existing_titles_with_undated_video(api):
         s.commit()
     assert {"Dated", "Private test"} <= set(q.existing_titles("UCtest", it.id))
     q.problems(q.get(it.id))  # what the queue list and the uploader call
+
+
+def test_upload_limit_pauses_the_channel_and_resumes(api):
+    """Live 5 Nov 2026: after ~10 uploads YouTube answered 400 uploadLimitExceeded for every further clip. One refused
+    call must pause the channel (not 29 calls, not FAILED), and uploads resume by themselves later."""
+    from clipforge.publish import queue as q, runner
+
+    _channel()
+    items = _schedule(3, now=NOW + dt.timedelta(days=2))
+    real, calls = api.upload, []
+
+    def limited(path, body, on_progress=None):
+        calls.append(1)
+        raise _http_error(400, "uploadLimitExceeded", "The user has exceeded the number of videos they may upload.")
+
+    api.upload = limited
+    rep = runner.run_once(_cfg(), now=NOW)
+    assert len(calls) == 1 and rep.failed == []
+    for it in items:
+        got = q.get(it.id)
+        assert (got.status, got.reason) == ("queued", "upload_limit") and got.next_attempt_at and got.attempts == 0
+        assert "limit" in runner_states_label(got)
+    runner.run_once(_cfg(), now=NOW + dt.timedelta(hours=1))
+    assert len(calls) == 1  # paused: no new call
+    api.upload = real
+    rep = runner.run_once(_cfg(), now=NOW + runner.UPLOAD_LIMIT_PAUSE + dt.timedelta(minutes=1))
+    assert sorted(rep.uploaded) == sorted(i.id for i in items)
+
+
+def runner_states_label(it):
+    from clipforge.publish import states
+
+    return states.status_text(it)["label"].lower()

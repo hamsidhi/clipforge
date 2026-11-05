@@ -612,6 +612,7 @@ def _upload_due(ch: db.Channel, client, cfg: Config, now: dt.datetime, rep: RunR
             q.release(it)
             q.save(it)
             rep.uploaded.append(it.id)
+            _clear_upload_limit(ch.id, now)  # uploads work again: the waiting clips stop saying "limit"
             if budget is not None:
                 budget -= 1
             log.info(f"Uploaded queue item {it.id} → {vid} ({it.privacy}, slot {slot.isoformat()})")
@@ -651,10 +652,15 @@ def _upload_due(ch: db.Channel, client, cfg: Config, now: dt.datetime, rep: RunR
                 q.save(it)
                 rep.quota_exhausted = True
                 break
-            if kind == "upload_limit":  # the channel's own upload limit: not ours to retry blindly
-                it.status, it.reason, it.error = "failed", "upload_limit", f"YouTube refused the upload: {msg}"
-                rep.failed.append(it.id)
-            elif kind == "permanent" or it.attempts >= MAX_ATTEMPTS:
+            if kind == "upload_limit":
+                # The channel's own rolling 24-h upload limit (seen live: ~10/day for this channel). Not an error of
+                # the clip: every waiting clip of this channel pauses UPLOAD_LIMIT_PAUSE, then retries by itself.
+                # Stop this run at the first refusal (each refused call still costs a videos.insert call).
+                it.status, it.attempts = "queued", max(0, it.attempts - 1)
+                q.save(it)
+                _pause_channel_uploads(ch.id, now, msg, rep)
+                break
+            if kind == "permanent" or it.attempts >= MAX_ATTEMPTS:
                 it.status, it.reason = "failed", "upload_failed"
                 it.error = (f"YouTube refused the upload: {msg}" if kind == "permanent"
                             else f"Upload failed {it.attempts}×: {msg}")
@@ -671,6 +677,28 @@ def _upload_due(ch: db.Channel, client, cfg: Config, now: dt.datetime, rep: RunR
                 it.reason, it.error = "quota", "Upload quota used up today — continues tomorrow automatically (Pacific time)."
                 q.save(it)
     return budget
+
+
+UPLOAD_LIMIT_PAUSE = dt.timedelta(hours=6)
+
+
+def _pause_channel_uploads(channel_id: str, now: dt.datetime, msg: str, rep: RunReport) -> None:
+    until = now + UPLOAD_LIMIT_PAUSE
+    for it in q.items(channel_id, ("queued",)):
+        if it.platform != "youtube" or it.youtube_video_id or it.batch:
+            continue
+        it.reason, it.next_attempt_at = "upload_limit", until
+        it.error = (f"YouTube's upload limit for this channel is reached ({msg}). ClipForge tries again "
+                    "automatically every 6 h; clips whose time passes meanwhile move to the next free slot.")
+        q.save(it)
+    rep.messages.append("YouTube's upload limit for this channel is reached — uploads resume automatically in 6 h.")
+
+
+def _clear_upload_limit(channel_id: str, now: dt.datetime) -> None:
+    for it in q.items(channel_id, ("queued",)):
+        if it.reason == "upload_limit" and (not it.next_attempt_at or as_utc(it.next_attempt_at) <= now):
+            it.reason, it.error, it.next_attempt_at = "", "", None
+            q.save(it)
 
 
 def upload_error_kind(exc: Exception, msg: str) -> str:
