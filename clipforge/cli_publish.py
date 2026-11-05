@@ -158,13 +158,19 @@ def sync(channel: str = typer.Option(..., "--channel")) -> None:
 
 
 def scheduler(once: bool = typer.Option(True, "--once/--loop", help="Process due work and exit (default)"),
-              daemon: bool = typer.Option(False, "--daemon", help="Always-on: check every minute (Instagram needs it)")) -> None:
-    """Upload due clips (API mode), publish Instagram posts at their slot, refresh statuses, sync stats.
+              daemon: bool = typer.Option(False, "--daemon", help="Always-on: check every minute (Instagram needs it)"),
+              dry_run: bool = typer.Option(False, "--dry-run", help="Only show, per account, the mode and what the next "
+                                                                   "run would do (no platform calls, nothing changes)")) -> None:
+    """Upload due clips (auto mode), publish Instagram posts at their slot, refresh statuses, sync stats.
     Task Scheduler runs `--once`; `--daemon` is the always-on mode (the web app runs the same loop itself)."""
     _db()
     import time
 
     from clipforge.publish import runner
+
+    if dry_run:
+        _scheduler_dry_run()
+        return
 
     loop = daemon or not once
     while True:
@@ -250,6 +256,41 @@ def publish_test(channel: str = typer.Argument(..., help="Channel id (UC…) —
                       f"(otherwise it goes public on {when:%d %b %Y}).")
     else:
         console.print(f"It stays private. Optional: delete it in Studio: https://studio.youtube.com/video/{vid}/edit")
+
+
+def _scheduler_dry_run() -> None:
+    import datetime as dt
+
+    from clipforge.config import load_config
+    from clipforge.publish import channels as chs, modes, queue as q
+    from clipforge.publish.timez import as_utc, now_utc
+    from clipforge.services import publishing as pub
+
+    cfg, now = load_config(), now_utc()
+    days = cfg.publishing.upload_ahead_days
+    horizon = now + dt.timedelta(days=days if days > 0 else 3650)
+    console.print(f"[bold]Dry run[/bold] at {now:%Y-%m-%d %H:%M} UTC — nothing is uploaded or changed.")
+    for ch in chs.all_channels():
+        m = modes.resolve(ch, cfg)
+        waiting = [it for it in q.items(ch.id, ("queued",)) if it.slot_utc and not it.youtube_video_id and not it.ig_media_id]
+        if ch.platform == "instagram":
+            lead = dt.timedelta(minutes=cfg.instagram.upload_lead_minutes)
+            due = [it for it in waiting if as_utc(it.slot_utc) - lead <= now]  # type: ignore[arg-type]
+            verb = "would start the Instagram upload of" if m.auto else "would mark as 'post it yourself'"
+        else:
+            due = [it for it in waiting if not it.batch and now + runner_min_lead() <= as_utc(it.slot_utc) <= horizon]  # type: ignore[arg-type]
+            verb = "would upload (private + publishAt)" if m.auto else "would NOT upload (assisted)"
+        flag = f" [red]blocked: {m.problem}[/red]" if m.problem else ""
+        console.print(f"• {ch.platform} {ch.title}: mode [bold]{m.mode}[/bold] ({m.source}){flag}; "
+                      f"{len(waiting)} waiting, {verb}: {len(due)}" + (" (paused)" if ch.paused else ""))
+        for it in due[:5]:
+            console.print(f"    #{it.id} {pub.when_local(it)} {it.title[:60]} — {pub.status_text(it)['label']}")
+
+
+def runner_min_lead():
+    from clipforge.publish import runner
+
+    return runner.MIN_LEAD
 
 
 TASK_NAME = "ClipForge Scheduler"

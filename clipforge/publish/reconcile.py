@@ -168,8 +168,27 @@ def sync(channel_id: str, cfg: Config | None = None, client: yt.YouTubeClient | 
     }
 
 
+def parse_video_id(text: str) -> str:
+    """A YouTube video id from an id or any URL form: watch?v=, youtu.be/, shorts/, live/, embed/, studio …/video/<id>."""
+    import re
+    from urllib.parse import parse_qs, urlparse
+
+    t = (text or "").strip()
+    if re.fullmatch(r"[A-Za-z0-9_-]{11}", t):
+        return t
+    u = urlparse(t if "://" in t else "https://" + t)
+    v = parse_qs(u.query).get("v")
+    if v and re.fullmatch(r"[A-Za-z0-9_-]{11}", v[0]):
+        return v[0]
+    for part in reversed([p for p in u.path.split("/") if p]):
+        if re.fullmatch(r"[A-Za-z0-9_-]{11}", part):
+            return part
+    raise q.QueueError("That doesn't look like a YouTube video link or id.")
+
+
 def link(item_id: int, video_id: str, cfg: Config | None = None, client: yt.YouTubeClient | None = None) -> db.QueueItem:
-    """Manual linking for anything the automatic match missed."""
+    """Manual linking for anything the automatic match missed. The video must exist and belong to the item's channel."""
+    video_id = parse_video_id(video_id)
     it = q.get(item_id)
     if not it:
         raise q.QueueError("Unknown queue item")

@@ -772,3 +772,16 @@ Runs unattended; every decision is logged here. Final write-up: `PUBLISHING_REPA
 - New config keys: `publishing.contains_synthetic_media` (false), `instagram.test_account_id` ('').
 - Not done on purpose: no Windows task registered (persistent system change → user's step); no OAuth re-consent;
   no browser automation; no hosting/tunnels for Instagram (resumable upload of the local file needs none).
+
+### Results (live, read-only except one private upload)
+- Live YouTube check: `clipforge publish-test` → real id `Cx093Vl1V7M`, read back `uploadStatus: processed`,
+  `privacyStatus: private`, `processingStatus: succeeded`. Private without publishAt (never public). Quota: 1 insert.
+- Migration ran on the real DB (v15 → v16) after the backup `workspace/backups/clipforge-20261105-162429-v15.db`;
+  every row kept its status; the three unique indexes exist (no duplicates were present).
+- Instagram live: not possible (no account connected via Facebook Login, no `instagram.test_account_id`). The Reels
+  preflight passes on a real rendered clip.
+- Also fixed on the way: manual Link accepted only `…/<id>` URLs (`watch?v=` became "watch") → `reconcile.parse_video_id`;
+  upload paths are refused outside `workspace/`; the Schedule header showed the global mode instead of the account's.
+- Sync matching unchanged (file name, then title + duration). Upload time isn't used as a signal: Studio times are
+  user-edited, so it would add false matches.
+

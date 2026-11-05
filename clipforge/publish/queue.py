@@ -182,6 +182,9 @@ def clip_file(item: db.QueueItem, cfg: Config) -> Path:
     f = ws.find_clip(c.rank)
     if not f:
         raise QueueError("The clip's video file is missing — re-render it in the gallery.")
+    root = cfg.workspace.resolve()
+    if not Path(f).resolve().is_relative_to(root):  # uploads only ever send files from workspace/
+        raise QueueError("The clip file is outside the workspace folder — refusing to upload it.")
     return f
 
 

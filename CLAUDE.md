@@ -119,6 +119,18 @@ cd frontend && npm install && npm run build   # build the UI once
 - Accounts are `Channel` rows with `platform="instagram"` (id `ig:<id>` / `ig:manual:<username>`); items have
   `QueueItem.platform`. Tests: `tests/fake_instagram.py`, `tests/test_instagram.py`. Never automate instagram.com.
 
+### Publishing repair (2026-11-05): modes, enforced transitions, one wording
+- `publish/modes.py`: per-account `mode` (auto | assisted) in the channel settings beats the global default
+  (`publishing.mode` / `instagram.mode`); manual Instagram accounts are always assisted. Auto that can't work →
+  `failed/auto_unavailable` (never a silent fallback). Use `modes.resolve(ch)`, never `cfg.publishing.mode`, in code.
+- `states.TRANSITIONS` is enforced in `queue.save` (`IllegalTransition`); `published` needs a platform media id.
+  New stored states `processing`, `cancelled`; `states.CANONICAL` / `canonical()` give the spec names.
+- `states.status_text()` (via `services.publishing.status_text`) is the ONLY wording of a state: API `status_text`,
+  web badges, Telegram `status_line`. Don't write status words anywhere else.
+- Claims are leases (`lease_owner`, `lease_expires_at`); `idempotency_key` = `<platform>:<account>:<clip_key>`.
+- `clipforge scheduler --dry-run`; `clipforge publish-test <channel>` = private, no publishAt (the token has no
+  `videos.update` scope, so a publishAt can't be removed afterwards).
+
 ### Queue state machine (Phase 12.5, `publish/states.py`)
 ```
 draft → queued → uploading → scheduled (on YouTube: private + publishAt) → published

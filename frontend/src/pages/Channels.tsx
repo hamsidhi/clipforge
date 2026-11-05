@@ -267,7 +267,7 @@ function ChannelCard({ ch }: { ch: Channel }) {
   })
   return (
     <Card className="gap-0 py-0">
-      <CardContent className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center">
+      <CardContent className="flex flex-col gap-4 p-5 xl:flex-row xl:items-center">
         <div className="flex min-w-0 flex-1 items-center gap-4">
         <ChannelAvatar ch={ch} className="size-12 shrink-0 text-lg" />
         <div className="min-w-0 flex-1">

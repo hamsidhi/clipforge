@@ -45,11 +45,11 @@ def publishing_status() -> dict:
         banner = {"level": "warning", "text": "Your API project isn't audited and the unverified-project lock is on: "
                   "API uploads stay private. Only a single test upload is allowed — use assisted mode or request the audit.",
                   "link": AUDIT_FORM}
-    elif p.mode == "assisted":
-        banner = {"level": "info", "text": "Assisted mode: ClipForge prepares everything, you upload the batch in YouTube "
-                  "Studio (~10 min/week), then Sync. Clips are never uploaded automatically in this mode. API mode "
-                  "uploads by itself (private + scheduled) — Google lifted the unaudited-project lock on 2 Nov 2026.",
-                  "link": None}
+    elif p.mode == "assisted" and not any(pub.account_mode(c).auto for c in chs.all_channels() if c.platform != "instagram"):
+        banner = {"level": "info", "text": "Every YouTube channel is in assisted mode: ClipForge prepares everything, you "
+                  "upload in YouTube Studio, then Sync — nothing uploads by itself. To publish automatically, set the "
+                  "channel's Mode to Auto on the Accounts page (uploads go up private + scheduled; Google lifted the "
+                  "unaudited-project lock on 2 Nov 2026).", "link": None}
     elif not p.api_audited:
         banner = {"level": "info", "text": "Google lifted the private-only lock for unaudited API projects on 2 Nov 2026, so "
                   "API mode works now. The audit is only needed for more quota (100 uploads/day by default).",
@@ -589,8 +589,7 @@ class LinkIn(BaseModel):
 @router.post("/queue/{item_id}/link", summary="Manually link a queue item to a YouTube video id")
 def link_item(item_id: int, body: LinkIn) -> dict:
     _item_or_404(item_id)
-    vid = body.video_id.strip().split("/")[-1].split("?")[0]
-    return _item_out(_wrap(reconcile.link, item_id, vid))
+    return _item_out(_wrap(reconcile.link, item_id, body.video_id))
 
 
 # ============================================================================ dashboard

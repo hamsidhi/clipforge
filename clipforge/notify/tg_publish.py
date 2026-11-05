@@ -332,8 +332,7 @@ def _link(ctx: Ctx, args: str) -> None:
     if len(parts) != 2 or not parts[0].isdigit():
         ctx.send("Usage: <code>/link 41 https://youtube.com/shorts/abc123</code>")
         return
-    vid = parts[1].strip().split("/")[-1].split("?")[0]
-    it = pub.wrap(reconcile.link, int(parts[0]), vid)
+    it = pub.wrap(reconcile.link, int(parts[0]), parts[1])
     ctx.send(f"🔗 Linked {esc(it.title[:60])} → {status_line(it)}.")
 
 

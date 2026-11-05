@@ -3,6 +3,14 @@
 Everything else was run on this laptop during the build. These steps need your accounts, your phone,
 another network device, or hardware that isn't here.
 
+## 0. Publishing repair (5 Nov 2026): turn on automatic publishing
+See [PUBLISHING_REPAIR_REPORT.md → J](PUBLISHING_REPAIR_REPORT.md). In short:
+1. Restart `clipforge ui`.
+2. Schedule → Sync with YouTube; "Upload with API instead" for batched clips you didn't upload.
+3. Accounts → figuring clips → Mode → **Auto**.
+4. `clipforge schedule-task install`.
+5. Instagram: connect the account with Facebook Login, then set its Mode to Auto.
+
 ## 1. YouTube publishing (Phase 12): needs your Google account
 Everything is unit-tested with a fake YouTube client. The real OAuth flow, uploads and Analytics calls need you:
 1. **Google Cloud setup:** follow README → 5.1, then upload `client_secret.json` in Settings → Publishing.

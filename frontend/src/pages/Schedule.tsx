@@ -302,15 +302,17 @@ export default function Schedule() {
       </>
     )
   }
-  const mode = status?.mode ?? 'assisted'
+  // the selected account's own mode (per-account setting beats the global default); global only for "All accounts"
+  const mode = ch?.mode ? (ch.mode === 'auto' ? 'api' : 'assisted') : (status?.mode ?? 'assisted')
   return (
     <>
       <PageHeader
         title="Schedule"
         description={
           <span className="flex flex-wrap items-center gap-2">
-            {!isIg && <Badge variant="outline">{mode === 'api' ? 'YouTube: API mode — ClipForge uploads' : 'YouTube: assisted — you upload in Studio'}</Badge>}
-            {isIg && <Badge variant="outline">{igManual ? 'Instagram: assisted — you post' : 'Instagram: ClipForge posts at each slot'}</Badge>}
+            {!isIg && <Badge variant="outline">{mode === 'api' ? 'YouTube: auto — ClipForge uploads (private + scheduled)' : 'YouTube: assisted — you upload in Studio'}</Badge>}
+            {isIg && <Badge variant="outline">{igManual || ch?.mode === 'assisted' ? 'Instagram: assisted — you post' : 'Instagram: auto — ClipForge posts at each slot'}</Badge>}
+            {ch?.mode_problem && <Badge variant="outline" className="whitespace-normal text-destructive">{ch.mode_problem}</Badge>}
             {status && <span>{status.uploads_left_today}/{status.quota.inserts_limit} API uploads left today</span>}
             {ch?.paused && <Badge variant="outline" className="text-amber-300">channel paused</Badge>}
           </span>
@@ -321,7 +323,7 @@ export default function Schedule() {
             <Button onClick={() => auto.mutate()} disabled={!channelId || auto.isPending}>
               {auto.isPending ? <Loader2 className="animate-spin" /> : <Sparkles />} Schedule approved clips
             </Button>
-            {!all && (isIg ? igManual : mode === 'assisted') ? (
+            {!all && (isIg ? igManual || ch?.mode === 'assisted' : mode === 'assisted') ? (
               <Button variant="outline" onClick={() => batch.mutate()} disabled={!channelId || batch.isPending}>
                 <FolderUp /> {isIg ? 'Prepare Instagram kit' : 'Prepare batch'}
               </Button>

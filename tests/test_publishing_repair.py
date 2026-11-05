@@ -558,3 +558,53 @@ def test_health_has_heartbeat_and_account_mode(api):
     acc = h["accounts"][0]
     assert acc["mode"] == "auto" and acc["mode_problem"] == "" and acc["audit_status"]
     assert acc["upcoming"] >= 0 and "last_published" in acc
+
+
+def test_link_accepts_every_youtube_url_form():
+    from clipforge.publish import queue as q
+    from clipforge.publish.reconcile import parse_video_id
+
+    for t in ("Cx093Vl1V7M", "https://www.youtube.com/watch?v=Cx093Vl1V7M&t=3", "https://youtu.be/Cx093Vl1V7M",
+              "youtube.com/shorts/Cx093Vl1V7M?feature=share", "https://studio.youtube.com/video/Cx093Vl1V7M/edit"):
+        assert parse_video_id(t) == "Cx093Vl1V7M", t
+    with pytest.raises(q.QueueError):
+        parse_video_id("https://www.youtube.com/watch")
+
+
+def test_upload_path_confined_to_workspace(api, tmp_path, monkeypatch):
+    from clipforge.publish import queue as q
+
+    _channel()
+    it = _schedule(1, now=NOW + dt.timedelta(days=2))[0]
+    assert q.clip_file(it, _cfg()).resolve().is_relative_to(_cfg().workspace.resolve())
+    outside = tmp_path / "elsewhere.mp4"
+    outside.write_bytes(b"x")
+    ws, _c = q.candidate_for(it, _cfg())
+    monkeypatch.setattr(type(ws), "find_clip", lambda self, rank: outside)
+    with pytest.raises(q.QueueError, match="outside the workspace"):
+        q.clip_file(it, _cfg())
+
+
+def test_api_routes_smoke(api):
+    from fastapi.testclient import TestClient
+
+    from clipforge.api.server import create_app
+
+    _channel()
+    it = _schedule(1, now=NOW + dt.timedelta(days=2))[0]
+    app = create_app()
+    app.state.publish_ticker = False
+    with TestClient(app) as c:
+        ch = c.get("/api/channels").json()[0]
+        assert ch["mode"] == "auto" and ch["mode_setting"] == "default" and ch["mode_problem"] == ""
+        r = c.patch("/api/channels/UCtest", json={"mode": "assisted"})
+        assert r.status_code == 200 and r.json()["mode"] == "assisted" and r.json()["mode_setting"] == "assisted"
+        row = next(x for x in c.get("/api/queue").json() if x["id"] == it.id)
+        assert row["status_text"]["label"] == "Planned (assisted)" and row["status_text"]["state"] == "SCHEDULED"
+        assert c.post(f"/api/queue/{it.id}/fix", json={"action": "switch_auto"}).status_code == 200
+        assert c.get("/api/channels").json()[0]["mode"] == "auto"
+        assert c.post(f"/api/queue/{it.id}/fix", json={"action": "bogus"}).status_code == 422
+        h = c.get("/api/publishing/health").json()
+        assert h["heartbeat"]["text"] and h["accounts"][0]["mode"] == "auto"
+        assert c.get("/api/publishing/status").status_code == 200
+        assert c.post(f"/api/queue/{it.id}/link", json={"video_id": "https://www.youtube.com/watch"}).status_code == 400
