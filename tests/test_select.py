@@ -170,3 +170,78 @@ def test_pipeline_select_with_rerank_mock(tmp_path):
     sc.rerank(Workspace(tmp_path, "v"), cfg, MockProvider(), NullReporter(), _info(), t, short)
     final = refine.pick(short, cfg)
     assert [c.rank for c in final] == [1, 2, 3] and all(c in short for c in final)
+
+
+# ---- regressions from the review
+def test_you_know_as_verb_is_kept():
+    f = sc.strip_fillers
+    for keep in ["Do you know?", "What do you know.", "Everything you know", "You know Elon Musk?",
+                 "if you know, you know"]:
+        assert f(keep) == keep
+    assert f("it was, you know, crazy") == "it was, crazy"
+    assert f("You know, ye galat hai") == "ye galat hai"
+
+
+def test_wrong_shape_reply_is_retried_not_cached(tmp_path):
+    from clipforge.llm.base import LLMProvider
+
+    class Old(LLMProvider):
+        name = "old"
+
+        def __init__(self):
+            super().__init__("x")
+            self.n = 0
+
+        def generate(self, prompt, **kw):
+            self.n += 1
+            if self.n == 1:  # old start/end shape -> invalid as a whole -> retried with the error
+                return '{"candidates":[{"start":10,"end":40,"title":"x"}]}'
+            return '{"candidates":[{"s":2,"e":5,"score":7,"hook":7,"standalone":7,"topic":"t"}]}'
+
+    talk = [seg(i, i * 5.0, "maine apni pehli company mein bahut paisa gawaya aur seekha") for i in range(96)]
+    t = Transcript(language="hi", model="x", duration=480, segments=talk)
+    llm = Old()
+    cands, failed, _ = sc.run(Workspace(tmp_path, "v"), Config(), llm, NullReporter(), _info(), t)
+    assert llm.n == 2 and failed == 0 and len(cands) == 1
+    assert cands[0].start == talk[1].words[0].start
+
+
+def test_corrupt_cache_is_asked_again_and_key_has_temperature(tmp_path):
+    talk = [seg(i, i * 5.0, "maine apni pehli company mein bahut paisa gawaya aur seekha") for i in range(96)]
+    t = Transcript(language="hi", model="x", duration=480, segments=talk)
+    ws = Workspace(tmp_path, "v")
+    sc.run(ws, Config(), MockProvider(), NullReporter(), _info(), t)
+    files = list(ws.select_cache.glob("w000_*.json"))
+    assert len(files) == 1
+    files[0].write_text('{"candidates": [', encoding="utf-8")  # killed mid-write
+    cands, failed, _ = sc.run(ws, Config(), MockProvider(), NullReporter(), _info(), t)
+    assert cands and failed == 0
+    hot = MockProvider()
+    hot.temperature = 0.9
+    sc.run(ws, Config(), hot, NullReporter(), _info(), t)
+    assert len(list(ws.select_cache.glob("w000_*.json"))) == 2  # other temperature -> other cache entry
+
+
+def test_rerank_shortlist_never_smaller_than_clip_count(tmp_path, monkeypatch):
+    from clipforge import pipeline
+    from clipforge.stages import refine
+
+    seen = []
+    real_pick = refine.pick
+
+    def spy(kept, cfg, target=None):
+        seen.append(target)
+        return real_pick(kept, cfg, target)
+
+    monkeypatch.setattr(refine, "pick", spy)
+    cfg = Config().with_overrides({"clips.count": 20, "select.rerank_pool": 10, "select.rerank": True})
+    ws = Workspace(tmp_path, "v")
+    talk = [seg(i, i * 5.0, "maine apni pehli company mein bahut paisa gawaya aur seekha") for i in range(300)]
+    ws.write_json(ws.transcript, Transcript(language="hi", model="x", duration=1500, segments=talk).model_dump())
+    ws.write_json(ws.info, _info().model_dump() | {"duration": 1500})
+    monkeypatch.setattr(pipeline, "get_llm", lambda c, required=True: MockProvider())
+    try:
+        pipeline.select(ws, cfg, force=True)
+    except RuntimeError:
+        pass  # the mock may find too few clips; only the shortlist size matters here
+    assert seen and seen[0] == 20

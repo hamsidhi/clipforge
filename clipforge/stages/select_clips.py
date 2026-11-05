@@ -8,10 +8,11 @@ written later (`write_titles`) for the final clips only, with each clip's full t
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from clipforge.config import Config, PROMPTS_DIR
 from clipforge.llm.base import LLMError, LLMProvider, strict_schema
@@ -55,6 +56,18 @@ class CompactCandidate(BaseModel):
 
 class CompactList(BaseModel):
     candidates: list[CompactCandidate]
+
+
+class CompactRawList(RawCandidateList):
+    """The selection reply: lenient per item (one bad candidate doesn't cost the window), but a reply in which NO
+    item has the compact shape (e.g. old-style start/end) is invalid, so `complete_json` retries it."""
+
+    @model_validator(mode="after")
+    def _some_usable(self) -> "CompactRawList":
+        if self.candidates and not parse_compact(self)[0]:
+            raise ValueError('no candidate has the required shape {"s": int, "e": int, "score", "hook", '
+                             '"standalone", "topic"}')
+        return self
 
 
 class TitleOut(BaseModel):
@@ -110,6 +123,9 @@ REPEAT_COLLAPSE = {
     "achha", "acha", "accha", "right", "nahi", "na", "we", "you", "aur", "par", "ye", "yeh", "wo", "woh", "jo",
 }
 YOU_KNOW_KEEP = {"what", "how", "why", "that", "the", "this", "about", "who", "where", "when", "if"}
+# "do you know?", "what you know", "everything you know", "if you know" — the verb, not the filler
+YOU_KNOW_VERB_BEFORE = {"do", "does", "did", "don't", "dont", "didn't", "what", "if", "everything", "all", "as",
+                        "whatever", "kya", "jo", "now", "would", "should", "will", "can", "could"}
 _PUNCT = ".,!?;:…।\"'"
 
 
@@ -119,9 +135,10 @@ def _bare(tok: str) -> str:
 
 def strip_fillers(text: str) -> str:
     """Drop filler words and immediate repetitions — for the LLM prompt only (fewer tokens, same meaning):
-    um/uh/hmm; "haan haan" -> "haan"; "you know" as a filler (before a comma / at the line end, or opening a
-    sentence that doesn't continue with what/how/that… — "you know what…" stays); "matlab" as a filler (line
-    start, after punctuation, or before a comma — "iska matlab hai" stays)."""
+    um/uh/hmm; "haan haan" -> "haan"; "you know" only when set off by punctuation — "You know, …", "…, you
+    know, …", "… you know." — and not after do/what/if/everything… ("do you know?", "everything you know" stay;
+    "you know what…" and an unpunctuated "you know Elon?" stay); "matlab" as a filler (line start, after
+    punctuation, or before a comma — "iska matlab hai" stays)."""
     toks = text.split()
     out: list[str] = []
     i = 0
@@ -133,8 +150,8 @@ def strip_fillers(text: str) -> str:
             continue
         if bare == "you" and i + 1 < len(toks) and _bare(toks[i + 1]) == "know":
             nxt = toks[i + 1]
-            last = i + 2 >= len(toks)
-            if last or nxt[-1] in ",.?!…" or (prev_ends and _bare(toks[i + 2]) not in YOU_KNOW_KEEP):
+            verb = bool(out) and _bare(out[-1]) in YOU_KNOW_VERB_BEFORE
+            if not verb and nxt[-1] in ",.!…":
                 if out and nxt[-1] in ".?!…" and out[-1][-1] not in _PUNCT:
                     out[-1] += nxt[-1]  # keep the sentence end
                 i += 2
@@ -244,11 +261,33 @@ def skip_reason(segs: list[Segment], start: float, end: float) -> str | None:
     return None
 
 
+def _cache_key(llm: LLMProvider, prompt: str, options: dict) -> str:
+    return fingerprint(llm.name, llm.model, llm.temperature, getattr(llm, "seed", None), prompt, options)
+
+
+def _read_cache(path: Path, model: type[BaseModel]):
+    """Cached reply or None (missing, or unreadable — e.g. a run killed mid-write: then it is asked again)."""
+    if not path.exists():
+        return None
+    try:
+        return model.model_validate_json(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        log.warning(f"Ignoring unreadable LLM cache {path.name}: {exc}")
+        return None
+
+
+def _write_cache(path: Path, obj: BaseModel) -> None:
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(obj.model_dump_json(indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def prompt_ctx(prompts: list[str], num_predict: int, floor: int = 0) -> int:
     """Context size for these prompts: the largest one (≈2.5 chars/token for romanized Hinglish — an over-estimate,
     so nothing is ever truncated) + the reply + the system prompt, rounded up to 1024. One value for the whole
     stage, because a different num_ctx makes Ollama reload the model."""
-    need = max((len(p) for p in prompts), default=0) / CHARS_PER_TOKEN + num_predict + 128
+    # UTF-8 bytes, not characters: Devanagari (cloud providers, word-less segments) is ~3 bytes and ~1 token a char
+    need = max((len(p.encode("utf-8")) for p in prompts), default=0) / CHARS_PER_TOKEN + num_predict + 128
     return max(floor, int(-(-need // 1024) * 1024))
 
 
@@ -274,24 +313,25 @@ def run(ws: Workspace, cfg: Config, llm: LLMProvider, reporter: ProgressReporter
         plan.append((i, a, b, segs, build_prompt(template, info, window_lines(segs, latin), cfg, a, b)))
     num_ctx = prompt_ctx([p for *_, p in plan], predict)
     options = {"num_predict": predict, "num_ctx": num_ctx}
+    schema = strict_schema(CompactList)
+    schema["properties"]["candidates"]["maxItems"] = cfg.llm.max_candidates_per_window  # fits num_predict
     for i, a, b, segs, prompt in plan:
         check_cancel(reporter)
-        cache = ws.select_cache / f"w{i:03d}_{fingerprint(llm.name, llm.model, prompt, options)}.json"
-        if cache.exists():
-            res = RawCandidateList.model_validate_json(cache.read_text(encoding="utf-8"))
-        else:
+        cache = ws.select_cache / f"w{i:03d}_{_cache_key(llm, prompt, options)}.json"
+        res = _read_cache(cache, CompactRawList)
+        if res is None:
             reporter.progress(i / len(windows), timer.eta(i / len(windows)) if i else None,
                               f"LLM window {i + 1}/{len(windows)} ({int(a // 60)}-{int(b // 60)} min)")
             try:
-                res = llm.complete_json(prompt, RawCandidateList, system=SYSTEM, retries=cfg.llm.max_retries,
-                                        task="select", json_schema=strict_schema(CompactList), options=options)
+                res = llm.complete_json(prompt, CompactRawList, system=SYSTEM, retries=cfg.llm.max_retries,
+                                        task="select", json_schema=schema, options=options)
             except LLMError as exc:
                 if "not running" in str(exc) or "not found" in str(exc) or "API_KEY" in str(exc):
                     raise
                 log.warning(f"Skipping window {i + 1} ({int(a // 60)}-{int(b // 60)} min) for now: {exc}")
                 failed += 1
                 continue
-            Path(cache).write_text(res.model_dump_json(indent=2), encoding="utf-8")
+            _write_cache(cache, res)
         compact, bad = parse_compact(res)
         if bad:
             log.warning(f"window {i + 1}: ignored {bad} malformed candidate(s)")
@@ -337,16 +377,14 @@ def write_titles(ws: Workspace, cfg: Config, llm: LLMProvider, reporter: Progres
     options = {"num_predict": predict, "num_ctx": prompt_ctx([p for *_, p in batches], predict, floor=num_ctx)}
     for b, batch, texts, prompt in batches:
         check_cancel(reporter)
-        cache = ws.select_cache / f"titles_{fingerprint(llm.name, llm.model, prompt, options)}.json"
-        out: TitleList | None = None
-        if cache.exists():
-            out = TitleList.model_validate_json(cache.read_text(encoding="utf-8"))
-        else:
+        cache = ws.select_cache / f"titles_{_cache_key(llm, prompt, options)}.json"
+        out: TitleList | None = _read_cache(cache, TitleList)
+        if out is None:
             reporter.progress(b / max(1, len(todo)), None, f"Titles {b + 1}-{b + len(batch)} of {len(todo)}")
             try:
                 out = llm.complete_json(prompt, TitleList, system=SYSTEM, retries=cfg.llm.max_retries, task="titles",
                                         json_schema=strict_schema(TitleList), options=options)
-                cache.write_text(out.model_dump_json(indent=2), encoding="utf-8")
+                _write_cache(cache, out)
             except LLMError as exc:
                 if "not running" in str(exc) or "not found" in str(exc) or "API_KEY" in str(exc):
                     raise
@@ -410,16 +448,14 @@ def rerank(ws: Workspace, cfg: Config, llm: LLMProvider, reporter: ProgressRepor
     w = cfg.scoring_weights
     for b, batch, prompt in batches:
         check_cancel(reporter)
-        cache = ws.select_cache / f"rerank_{fingerprint(llm.name, llm.model, prompt, options)}.json"
-        out: RerankList | None = None
-        if cache.exists():
-            out = RerankList.model_validate_json(cache.read_text(encoding="utf-8"))
-        else:
+        cache = ws.select_cache / f"rerank_{_cache_key(llm, prompt, options)}.json"
+        out: RerankList | None = _read_cache(cache, RerankList)
+        if out is None:
             reporter.progress(b / max(1, len(ordered)), None, f"Re-rank {b + 1}-{b + len(batch)} of {len(ordered)}")
             try:
                 out = llm.complete_json(prompt, RerankList, system=SYSTEM, retries=cfg.llm.max_retries, task="rerank",
                                         json_schema=strict_schema(RerankList), options=options)
-                cache.write_text(out.model_dump_json(indent=2), encoding="utf-8")
+                _write_cache(cache, out)
             except LLMError as exc:
                 if "not running" in str(exc) or "not found" in str(exc) or "API_KEY" in str(exc):
                     raise

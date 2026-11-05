@@ -270,7 +270,8 @@ def select(ws: Workspace, cfg: Config, reporter: ProgressReporter | None = None,
     energy = ws.read_model(ws.energy, EnergyData) if ws.energy.exists() else None
     pool = refine.score_pool(raw, transcript.all_words(), energy, cfg, info.duration, transcript.boundaries())
     if cfg.select.rerank and pool:  # re-score the best few with context, then the usual diversity pick
-        shortlist = refine.pick(pool, cfg, target=cfg.select.rerank_pool)
+        final_n = min(cfg.clips.count, cfg.clips.max_count)
+        shortlist = refine.pick(pool, cfg, target=max(cfg.select.rerank_pool, final_n))  # never fewer than the output
         select_clips.rerank(ws, cfg, llm, reporter, info, transcript, shortlist, num_ctx)
         pool = shortlist
     cands = refine.pick(pool, cfg)

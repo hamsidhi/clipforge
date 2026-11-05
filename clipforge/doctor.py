@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import importlib
 import platform
+import re
 import shutil
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
 from clipforge.config import FRONTEND_DIST, load_config, load_secrets
 
@@ -46,6 +48,52 @@ FIXES = {
         "linux": "curl -fsSL https://ollama.com/install.sh | sh && ollama pull qwen2.5:7b",
     },
 }
+
+
+IGPU_FIX = ("Windows + AMD iGPU (Radeon 780M/880M/890M): add the user environment variable OLLAMA_IGPU_ENABLE=1, quit "
+            "Ollama from the tray and start it again — clip selection ≈2.5× faster (Vulkan). Undo: delete the variable "
+            "(or set OLLAMA_VULKAN=0) and restart Ollama.")
+
+
+def _ollama_server_log() -> Path | None:
+    import os
+
+    if _os() == "windows":
+        base = os.environ.get("LOCALAPPDATA", "")
+        p = Path(base) / "Ollama" / "server.log" if base else None
+    else:
+        p = Path.home() / ".ollama" / "logs" / "server.log"
+    return p if p and p.exists() else None
+
+
+def ollama_gpu(url: str) -> tuple[bool | None, str, str]:
+    """(uses a GPU?, detail, fix). Looks at a loaded model first (/api/ps size_vram), then at Ollama's startup log
+    for the devices it found or dropped. None = can't tell."""
+    import httpx
+
+    try:
+        models = httpx.get(f"{url.rstrip('/')}/api/ps", timeout=5).json().get("models", [])
+    except Exception:
+        models = []
+    for m in models:
+        if m.get("size"):
+            share = (m.get("size_vram") or 0) / m["size"]
+            if share > 0:
+                return True, f"{m['name']}: {share:.0%} on the GPU", ""
+    log = _ollama_server_log()
+    if log is None:
+        return None, "no model loaded — can't tell (run a job, then check again)", ""
+    text = log.read_text(encoding="utf-8", errors="replace")
+    start = text.rfind('msg="server config"')
+    text = text[start:] if start >= 0 else text
+    gpus = re.findall(r'msg="inference compute".*?library=(\w+).*?description="([^"]*)"', text)
+    real = [(lib, d) for lib, d in gpus if lib.lower() != "cpu"]
+    if real:
+        return True, ", ".join(f"{d} ({lib})" for lib, d in real), ""
+    if "dropping integrated GPU" in text:
+        name = re.search(r'dropping integrated GPU.*?description="([^"]*)"', text)
+        return False, f"CPU only — Ollama skips the integrated GPU ({name.group(1) if name else 'iGPU'})", IGPU_FIX
+    return False, "CPU only (no supported GPU found by Ollama)", ""
 
 
 def run_checks(fix_assets: bool = False) -> list[Check]:
@@ -112,6 +160,11 @@ def run_checks(fix_assets: bool = False) -> list[Check]:
     except Exception:
         checks.append(Check("Ollama (local LLM)", False, f"not reachable at {cfg.llm.ollama_url}", FIXES["ollama"][osname],
                             required=cfg.llm.provider == "ollama"))
+
+    if cfg.llm.provider == "ollama":
+        gpu, detail, fix = ollama_gpu(cfg.llm.ollama_url)
+        if gpu is not None or detail:
+            checks.append(Check("Ollama GPU (faster selection)", bool(gpu), detail, fix, required=False))
 
     secrets = load_secrets()
     checks.append(Check("Gemini API key (optional)", bool(secrets.gemini_api_key),
