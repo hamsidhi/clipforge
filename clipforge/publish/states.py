@@ -87,8 +87,12 @@ def _has_media(it: Any) -> bool:
     if getattr(it, "youtube_video_id", "") or getattr(it, "ig_media_id", ""):
         return True
     # a manual (no-API) Instagram account: the Reel link you pasted is the only reference that can exist
-    return getattr(it, "platform", "") == "instagram" and bool(getattr(it, "permalink", "")) and \
-        str(getattr(it, "channel_id", "")).startswith("ig:manual:")
+    if getattr(it, "platform", "") != "instagram" or not getattr(it, "permalink", ""):
+        return False
+    from clipforge.publish import channels as chs
+
+    ch = chs.get(str(getattr(it, "channel_id", "")))
+    return bool(ch and ch.extra.get("manual"))  # converted (API) accounts need a real media id
 
 
 # code -> (short label, actions offered in the UI)

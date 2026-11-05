@@ -664,3 +664,66 @@ def test_health_has_plan_ledger_and_auto_ready(plan_env):
     a = h["accounts"][0]
     assert a["limits"]["uploads_24h"] == 1 and a["auto_ready"] is True and a["plan"][0]["count"] == 5
     assert h["plan_today"] == "YT 5" and h["db"]["ok"]
+
+
+# ============================================================================ review regressions (Publishing v2)
+def test_review_ig_published_unconfirmed_never_missed(ig_env):
+    from clipforge.publish import queue as q, channels as chs, instagram as ig
+    from tests.test_instagram import _schedule_ig
+    fake, _ = ig_env
+    ch = _login(fake)
+    chs.update(ch.id, confirmed=True)
+    it = _schedule_ig(ch.id, 1)[0]
+    slot = it.slot_utc.replace(tzinfo=UTC)
+    _run(slot - dt.timedelta(minutes=20)); _run(slot - dt.timedelta(minutes=10))
+    fake.media = lambda mid, tok: (_ for _ in ()).throw(ig.IGError("temp", transient=True))
+    _run(slot)
+    assert q.get(it.id).ig_media_id
+    _run(slot + dt.timedelta(minutes=120))  # read-back still failing / app was off
+    got = q.get(it.id)
+    assert got.status != "missed"
+
+
+def test_review_resumed_clip_never_reuses_a_taken_slot(yt_env, monkeypatch):
+    import clipforge.publish.timez as tz; monkeypatch.setattr(tz, "now_utc", lambda: NOW)
+    from clipforge.publish import queue as q
+    _channel()
+    items = _schedule(1)
+    a = q.get(items[0].id)
+    slot = a.slot_utc
+    a.status, a.reason = "failed", "auto_unavailable"; q.save(a)
+    # another clip takes the freed slot
+    _add(2, "ep2")
+    new = q.autoschedule("UCtest", cfg=_cfg(), now=NOW)
+    res = q.add_clips("UCtest", "ep1", None, _cfg())
+    assert all(r.status == 'draft' and r.slot_utc is None for r in res)
+    planned = [x.slot_utc for x in q.items("UCtest", q.PLANNED)]
+    assert len(planned) == len(set(planned)), planned
+
+
+def test_review_reconnect_keeps_assisted(ig_env):
+    from clipforge.publish import channels as chs, modes
+    import json
+    fake, _ = ig_env
+    ch = _login(fake)
+    s = dict(ch.settings); s["mode"] = "assisted"
+    chs.update(ch.id, settings_json=json.dumps(s))
+    assert modes.resolve(chs.get(ch.id)).mode == "assisted"
+    ch = _login(fake)  # reconnect after token expiry
+    assert modes.resolve(ch).mode == "assisted", modes.resolve(ch).mode
+
+
+def test_review_converted_account_needs_a_media_id(ig_env):
+    from clipforge.api import db
+    from clipforge.publish import channels as chs, queue as q, states
+
+    fake, _ = ig_env
+    manual = chs.add_manual_instagram("figuring.clips")
+    with db.session() as s_:
+        s_.add(db.QueueItem(channel_id=manual.id, video_id="v", rank=1, clip_key="k", platform="instagram", status="queued"))
+        s_.commit()
+    it = q.items(manual.id)[0]
+    it.permalink = "https://www.instagram.com/reel/x/"
+    assert states._has_media(it)  # manual account: a pasted link is the only reference
+    _login(fake)  # converted in place (same id)
+    assert not states._has_media(it)  # API account now: needs a real media id

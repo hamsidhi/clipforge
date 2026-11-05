@@ -135,7 +135,7 @@ def explore(slots: list[str], platform: str, cfg: Config, day: dt.date) -> list[
     step = 30 if day.toordinal() % 2 else -30
     cand = _rel(slots[i], cfg) + step
     others = [_rel(h, cfg) for j, h in enumerate(slots) if j != i]
-    gap = cfg.schedule.ig_min_gap_minutes if platform == "instagram" else 60
+    gap = round(min_gap_hours(platform, cfg) * 60)
     if _inside(cand, platform, cfg) and all(abs(cand - o) >= gap for o in others):
         out = list(slots)
         out[i] = _fmt(cand + _min(cfg.schedule.day_cutoff))
@@ -184,7 +184,7 @@ def adapt(ch: db.Channel, cfg: Config, now: dt.datetime) -> dict:
         return {"ready": False, "samples": len(perfs), "changes": {}, "rule": rule}
     count = cfg.schedule.ig_max_per_day if platform == "instagram" else 6
     slots = base_slots(platform, cfg, count)
-    gap = cfg.schedule.ig_min_gap_minutes if platform == "instagram" else 60
+    gap = round(min_gap_hours(platform, cfg) * 60)
     changes: dict[str, str] = {}
     taken = [_rel(h, cfg) for h in slots]
     for i, h in enumerate(slots):

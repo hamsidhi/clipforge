@@ -101,7 +101,7 @@ def process_account(ch: db.Channel, cfg: Config, now: dt.datetime, rep) -> None:
                 it.status = "queued"
                 q.save(it)
             slot = as_utc(it.slot_utc)  # type: ignore[arg-type]
-            if _late(it, now, cfg):
+            if _late(it, now, cfg) and not it.ig_media_id:  # already on Instagram: confirm, never 'missed'
                 _mark(it, "missed", "ig_missed",
                       f"Instagram has no scheduling: ClipForge must publish at the slot, and the laptop/app wasn't running "
                       f"then (more than {cfg.instagram.max_late_minutes} min late — not posted late). Reschedule or Publish now.")

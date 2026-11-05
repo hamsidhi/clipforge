@@ -81,7 +81,7 @@ def _twins(it: db.QueueItem) -> list[db.QueueItem]:
     with db.session() as s:
         rows = s.exec(select(db.QueueItem).where(db.QueueItem.channel_id == it.channel_id,
                                                  db.QueueItem.video_id == it.video_id,
-                                                 db.QueueItem.rank == it.rank,
+                                                 db.QueueItem.clip_key == it.clip_key,
                                                  db.QueueItem.platform == (it.platform or "youtube"))).all()
     return [r for r in rows if r.id != it.id and (r.intent or "original") == (it.intent or "original")
             and r.status not in ("skipped_duplicate", "cancelled")]
@@ -125,10 +125,8 @@ def add_or_skip(new: db.QueueItem) -> tuple[db.QueueItem | None, str]:
         if r.status == "draft":
             return r, "exists"
         if r.status == "missed" or (r.status == "failed" and r.reason in RETRYABLE_FAILED):
-            r.status, r.reason, r.error, r.next_attempt_at = "draft", "", "", None  # back to planning, same row
-            if r.slot_utc and as_utc(r.slot_utc) > now_utc():
-                r.status = "queued"
-            r.slot_utc = r.slot_utc if r.status == "queued" else None
+            # back to planning, same row; its old slot may belong to another clip now → autoschedule picks one
+            r.status, r.reason, r.error, r.next_attempt_at, r.slot_utc = "draft", "", "", None, None
             return q.save(r), "resumed"
         if r.status == "failed":
             return r, "permanent_failure"

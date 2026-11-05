@@ -881,3 +881,11 @@ None is locked private (a lock drops publishAt); Google lifted the unaudited loc
 - /needsyou: account actions (reconnect, missing Page/permissions, auto impossible, audit rejected) + items whose reason
   needs a person. Self-healing reasons (retrying, quota, channel_limit, safety_limit, duplicate, ig_limit,
   ig_find_media) are never listed.
+
+### Publishing v2 review fixes (review agent, 6 findings, regression tests in tests/test_publishing_v2.py)
+- Instagram item with a media id is never marked missed (confirm via read-back instead).
+- `register_instagram`: a reconnect never upgrades a chosen assisted mode to auto; only new/converted rows get auto.
+- `dedup.add_or_skip` "resumed": back to draft without the old slot (it may belong to another clip now).
+- `states._has_media`: pasted-link exemption only for accounts with `extra.manual` (converted ones keep their old id).
+- Logical twins match `clip_key` (episode + start/end), not rank (ranks change when selection is re-run).
+- `plan.explore` uses the planner's own gap (`min_gap_hours`), so an explored YouTube slot is never dropped.

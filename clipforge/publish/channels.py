@@ -125,7 +125,9 @@ def register_instagram(info: dict, token_expires_at: str, cfg: Config | None = N
     cid = f"ig:{info['ig_user_id']}"
     manual_id = f"ig:manual:{(info.get('username') or '').lower()}"
     with db.session() as s:
-        ch = s.get(db.Channel, cid) or s.get(db.Channel, manual_id) or db.Channel(id=cid, platform="instagram")
+        existing = s.get(db.Channel, cid)
+        ch = existing or s.get(db.Channel, manual_id) or db.Channel(id=cid, platform="instagram")
+        fresh = existing is None  # brand-new row, or a manual account being converted now
         ch.platform = "instagram"
         ch.title, ch.handle = info.get("username", ""), f"@{info.get('username', '')}"
         ch.thumbnail = info.get("profile_picture_url", "")
@@ -141,7 +143,10 @@ def register_instagram(info: dict, token_expires_at: str, cfg: Config | None = N
 
         ok = all(p in granted for p in ig.PUBLISH_SCOPES) and checks.get("token_valid") is True  # every check passed
         settings = dict(ch.settings)
-        settings["mode"] = "auto" if ok else "assisted"
+        if fresh:
+            settings["mode"] = "auto" if ok else "assisted"
+        elif not ok:  # a reconnect never upgrades to auto; it only falls back when the checks fail
+            settings["mode"] = "assisted"
         ch.settings_json = json.dumps(settings)
         s.add(ch)
         s.commit()
