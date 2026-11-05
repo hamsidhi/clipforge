@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, Link2, Loader2, RefreshCw, Save, Trash2, Undo2 } from 'lucide-react'
 import { toast } from 'sonner'
-import { pub, STATUS_LABEL, STATUS_STYLE, useChannels } from '@/api/publish'
+import { pub, STATUS_STYLE, statusLabel, useChannels } from '@/api/publish'
 import type { Privacy, QueueItem } from '@/api/publishTypes'
 import { CopyButton } from '@/components/common'
 import FixActions from '@/components/FixActions'
@@ -103,10 +103,13 @@ export default function QueueItemDialog({ item, onClose }: { item: QueueItem | n
           <>
             <DialogHeader>
               <DialogTitle className="flex flex-wrap items-center gap-2 pr-6">
-                <Badge variant="outline" className={cn('border-transparent', STATUS_STYLE[item.status])}>{STATUS_LABEL[item.status]}</Badge>
+                <Badge variant="outline" className={cn('border-transparent', STATUS_STYLE[item.status])}>{statusLabel(item)}</Badge>
                 <span className="truncate text-sm font-normal text-muted-foreground">{item.episode_title} · #{item.rank} · {Math.round(item.duration)}s</span>
               </DialogTitle>
             </DialogHeader>
+            {item.status_text?.detail && (
+              <p className="-mt-2 text-sm text-muted-foreground" data-testid="status-detail">{item.status_text.detail}</p>
+            )}
             {channel && (
               <div className="flex items-center gap-2 rounded-lg border bg-muted/30 p-2 text-sm">
                 {channel.thumbnail && <img src={channel.thumbnail} alt="" className="size-7 rounded-full" />}

@@ -140,6 +140,12 @@ class QueueItem(SQLModel, table=True):
     ig_caption: str = ""
     batch: str = ""                            # assisted-mode batch folder this item was put in
     published_at: Optional[dt.datetime] = None
+    # Publishing repair (2026-11-05): leases (one uploader per item), last attempt, stable idempotency key
+    # ("<platform>:<account>:<clip_key>", unique with the clip/platform/account index below).
+    last_attempt_at: Optional[dt.datetime] = None
+    lease_owner: str = ""                      # "<host>:<pid>" while uploading
+    lease_expires_at: Optional[dt.datetime] = None
+    idempotency_key: str = ""
     created_at: dt.datetime = Field(default_factory=now)
     updated_at: dt.datetime = Field(default_factory=now)
 
@@ -339,7 +345,7 @@ def _migrate(conn) -> None:
 
 
 _engine = None
-SCHEMA_VERSION = 15  # bump when tables/columns change: an older database is copied to clipforge.db.bak-v<old> first
+SCHEMA_VERSION = 16  # bump when tables/columns change: an older database is copied to clipforge.db.bak-v<old> first
 
 
 def _backup_before_migration(path) -> None:
@@ -358,6 +364,33 @@ def _backup_before_migration(path) -> None:
     if not bak.exists():
         with closing(sqlite3.connect(path)) as a, closing(sqlite3.connect(bak)) as b:
             a.backup(b)
+    # and a timestamped copy in workspace/backups (Publishing repair rule: back up before every migration)
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    dest = path.parent / "backups" / f"clipforge-{stamp}-v{ver}.db"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(path)) as a, closing(sqlite3.connect(dest)) as b:
+        a.backup(b)
+    from clipforge.utils.log import log
+
+    log.info(f"Database backed up to {dest} before migrating v{ver} → v{SCHEMA_VERSION}.")
+
+
+# one publication per (clip, platform, account); a platform media id belongs to one publication
+UNIQUE_INDEXES = {
+    "ux_queue_clip_platform_account": "queueitem (clip_key, platform, channel_id)",
+    "ux_queue_youtube_media": "queueitem (platform, youtube_video_id) WHERE youtube_video_id != ''",
+    "ux_queue_instagram_media": "queueitem (platform, ig_media_id) WHERE ig_media_id != ''",
+}
+
+
+def _unique_indexes(conn) -> None:
+    for name, spec in UNIQUE_INDEXES.items():
+        try:
+            conn.exec_driver_sql(f"CREATE UNIQUE INDEX IF NOT EXISTS {name} ON {spec}")
+        except Exception as exc:  # existing duplicates: keep the data, say so (never drop history)
+            from clipforge.utils.log import log
+
+            log.warning(f"Couldn't create unique index {name} (duplicate rows already exist?): {exc}")
 
 
 def engine():
@@ -378,6 +411,7 @@ def engine():
         SQLModel.metadata.create_all(_engine)
         with _engine.begin() as conn:
             _migrate(conn)
+            _unique_indexes(conn)
             conn.exec_driver_sql(f"PRAGMA user_version={SCHEMA_VERSION}")
     return _engine
 

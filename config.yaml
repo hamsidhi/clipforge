@@ -91,6 +91,7 @@ publishing:
   mode: assisted       # assisted (you upload in YouTube Studio, ClipForge prepares everything) | api (auto upload)
   api_audited: false   # set true once Google approved your YouTube API compliance audit (raises quota)
   unverified_lock: false  # Google lifted the private-only lock for unverified API projects on 2026-11-02
+  contains_synthetic_media: false  # sent as status.containsSyntheticMedia on every YouTube upload (AI disclosure)
   timezone: Asia/Kolkata
   slots: ['12:30', '18:30', '21:00']   # default publish times (IST) for new channels
   peak_slots: ['18:30', '21:00']       # best clips go here, weaker ones to the other slots
@@ -129,6 +130,7 @@ instagram:             # Instagram Reels (Phase 13) — account + Meta app on th
   publish_limit_margin: 10  # stay this far below the limit
   hours_after_youtube: 0.0  # "both" platforms: Instagram at least this many hours after the YouTube slot
   share_to_feed: true       # show the Reel in the main feed too
+  test_account_id: ''       # IG user id that may receive ONE live test Reel (empty = live tests never publish)
 
 auth:                  # login when used from your phone (Phase 14); password hash lives in .env
   trust_localhost: true  # no password needed on the laptop itself (127.0.0.1)

@@ -17,7 +17,7 @@ from clipforge.config import load_config
 from clipforge.publish import batch, slots
 from clipforge.publish import channels as chs
 from clipforge.publish import queue as q
-from clipforge.publish import quota, states
+from clipforge.publish import modes, quota, states
 from clipforge.publish import youtube as yt
 from clipforge.publish.timez import as_utc, now_utc, utc_to_local
 from clipforge.services.errors import BadRequest, Conflict, NotFound
@@ -54,7 +54,20 @@ def item_out(it: db.QueueItem) -> dict:
     d = q.public(it, zone(it.channel_id))
     d["problems"] = q.problems(it) if it.status in ("draft", "queued", "needs_manual") and it.meta_status == "ready" else []
     d["uploading_progress"] = worker.upload_progress.get(it.id or -1)
+    d["status_text"] = status_text(it, progress=d["uploading_progress"])
     return d
+
+
+def account_mode(ch: db.Channel | None) -> modes.Mode:
+    if ch is None:
+        return modes.Mode("assisted", "default")
+    return modes.resolve(ch)
+
+
+def status_text(it: db.QueueItem, progress: float | None = None) -> dict:
+    """The ONE wording of an item's state (web app + Telegram): states.status_text with the account's mode."""
+    ch = chs.get(it.channel_id)
+    return states.status_text(it, zone(it.channel_id), account_mode(ch).mode, progress)
 
 
 def wrap(fn, *a, **kw):
@@ -99,15 +112,25 @@ def do_unbatch(item_id: int) -> db.QueueItem:
 
 
 def do_publish_now(item_id: int) -> db.QueueItem:
+    """Upload + publish right away (YouTube: public; Instagram: next tick). The web app and Telegram both ask for an
+    explicit confirmation first. Never for a clip that is already on the platform (we can't change it there)."""
     from clipforge.publish.worker import run_scheduler, worker
 
     require_publisher()
     it = item_or_404(item_id)
     if it.youtube_video_id or it.ig_media_id or it.status in q.ON_PLATFORM:
         raise q.QueueError("Already uploaded — publish it on the platform (YouTube Studio / Instagram).")
-    if it.platform == "youtube" and load_config().publishing.mode != "api":
-        raise q.QueueError("Publish now uploads with the API — switch to API mode, or upload it in YouTube Studio.")
     ch = chs.get(it.channel_id)
+    mode = account_mode(ch)
+    if not mode.auto:
+        raise q.QueueError("This account is in assisted mode: Publish now uploads with the API. Switch the account to "
+                           "auto (Accounts page), or upload it yourself.")
+    if mode.problem:
+        raise q.QueueError(mode.problem)
+    p = load_config().publishing
+    if it.platform == "youtube" and p.unverified_lock and not p.api_audited:
+        raise q.QueueError("Your API project is set as locked (unverified_lock) and not audited: a public upload would be "
+                           "locked private. Upload it in YouTube Studio instead.")
     if ch and ch.paused:
         raise q.QueueError(f"{ch.title} is paused — resume it first.")
     now = now_utc()
@@ -121,7 +144,77 @@ def do_publish_now(item_id: int) -> db.QueueItem:
     return it
 
 
-FIXES = {"reschedule": do_reschedule, "retry": do_retry, "unbatch": do_unbatch, "publish_now": do_publish_now}
+def set_account_mode(channel_id: str, mode: str) -> db.Channel:
+    """Per-account mode: 'auto' | 'assisted' | '' (follow the global default). Explicit choice beats the default."""
+    import json as _json
+
+    if mode not in ("auto", "assisted", ""):
+        raise BadRequest("Mode must be auto, assisted or empty (default).")
+    ch = ch_or_404(channel_id)
+    if mode == "auto" and ch.platform == "instagram":
+        from clipforge.publish import instagram as ig
+
+        if ig.is_manual(ch):
+            raise BadRequest("This Instagram account was added manually (no Facebook Login): ClipForge can't post to it. "
+                             "Connect it with Facebook Login first (Accounts → Add Instagram account).")
+    settings = dict(ch.settings)
+    if mode:
+        settings["mode"] = mode
+    else:
+        settings.pop("mode", None)
+    return chs.update(channel_id, settings_json=_json.dumps(settings))  # type: ignore[return-value]
+
+
+def do_switch_assisted(item_id: int) -> db.QueueItem:
+    """'Switch to assisted' on an item whose account can't do auto: the whole account goes assisted."""
+    it = item_or_404(item_id)
+    set_account_mode(it.channel_id, "assisted")
+    if it.status == "failed" and it.reason == "auto_unavailable":
+        it.status, it.reason, it.error = "queued", "", ""
+        it = q.save(it)
+    return it
+
+
+def do_switch_auto(item_id: int) -> db.QueueItem:
+    it = item_or_404(item_id)
+    set_account_mode(it.channel_id, "auto")
+    return it
+
+
+def do_studio_instead(item_id: int) -> db.QueueItem:
+    """Assisted for THIS clip only (e.g. locked private, or the channel's upload limit): put it in a Studio batch.
+    A locked video's id is kept in yt_state (history) — the new Studio upload is linked by Sync later."""
+    import json as _json
+
+    from clipforge.publish import batch
+
+    it = item_or_404(item_id)
+    if it.platform != "youtube":
+        raise q.QueueError("Only for YouTube clips.")
+    if it.status == "published":
+        raise q.QueueError("Already published.")
+    if it.status not in ("failed", "missed", "locked_private", "needs_manual", "queued"):
+        raise q.QueueError("Only for clips that couldn't be published automatically.")
+    if it.youtube_video_id:
+        if it.status != "locked_private":
+            raise q.QueueError("Already on YouTube — change it in YouTube Studio.")
+        st = it.yt_state
+        st["replaced_video_id"] = it.youtube_video_id
+        it.yt_state_json, it.youtube_video_id = _json.dumps(st), ""
+    it.status, it.reason, it.error, it.batch = "queued", "", "", ""
+    if it.slot_utc and as_utc(it.slot_utc) < now_utc() + slots.LEAD:
+        q.save(it)
+        it = q.reschedule_next(item_id)
+    q.save(it)
+    batch.prepare(it.channel_id, ids=[item_id], force=True)
+    it = item_or_404(item_id)
+    it.status, it.reason = "needs_manual", "assisted_batch"
+    it.error = "Upload this clip in YouTube Studio from its batch folder (Open batch), then Sync with YouTube."
+    return q.save(it)
+
+
+FIXES = {"reschedule": do_reschedule, "retry": do_retry, "unbatch": do_unbatch, "publish_now": do_publish_now,
+         "switch_assisted": do_switch_assisted, "switch_auto": do_switch_auto, "studio_instead": do_studio_instead}
 
 
 def fix(item_id: int, action: str) -> db.QueueItem:
@@ -250,8 +343,7 @@ def health() -> dict:
     accounts = []
     for ch in chs.all_channels():
         attention = [it for it in q.items(ch.id, states.ATTENTION)]
-        accounts.append({"id": ch.id, "title": ch.title, "platform": ch.platform, "paused": ch.paused,
-                         "token": token_health(ch), "attention": len(attention)})
+        accounts.append(account_summary(ch, cfg) | {"attention": len(attention)})
     try:
         from clipforge.utils import power
 
@@ -266,12 +358,66 @@ def health() -> dict:
     except Exception:
         pass
     return {
+        "heartbeat": heartbeat(st, worker.next_tick_at, worker.ticker_on, tasks),
         "last_run_at": st.get("last_run_at"), "last_source": st.get("last_source"), "last_result": st.get("last_result", {}),
         "runs": st.get("runs", {}), "next_run_at": worker.next_tick_at, "ticker": worker.ticker_on,
         "mode": cfg.publishing.mode, "quota": rem, "audit_status": cfg.publishing.audit_status,
         "api_audited": cfg.publishing.api_audited, "accounts": accounts, "keep_awake": awake, "tasks": tasks,
         "server_time": now_utc().isoformat(), "disk": disk_usage(), "deployment": cfg.deployment.mode,
     }
+
+
+def account_summary(ch: db.Channel, cfg=None) -> dict:
+    """Per account: connection, mode (and why auto can't work), audit (YouTube), last confirmed publication,
+    next upcoming post. Shared by the Dashboard health panel and Telegram /health."""
+    cfg = cfg or load_config()
+    mode = modes.resolve(ch, cfg)
+    pubs = [it for it in q.items(ch.id, ("published",)) if it.youtube_video_id or it.ig_media_id]
+    last = max(pubs, key=lambda it: as_utc(it.published_at or it.slot_utc or it.updated_at), default=None)
+    soon = [it for it in q.items(ch.id, ("queued", "uploading", "processing", "ready", "scheduled"))
+            if it.slot_utc and as_utc(it.slot_utc) >= now_utc()]
+    nxt = soon[0] if soon else None
+    tz = chs.settings_of(ch, cfg)["timezone"]
+    from clipforge.publish.timez import utc_to_local
+
+    def when(t):
+        return utc_to_local(t, tz).strftime("%a %d %b %H:%M") if t else None
+
+    d = {"id": ch.id, "title": ch.title, "platform": ch.platform, "paused": ch.paused, "token": token_health(ch),
+         "mode": mode.mode, "mode_source": mode.source, "mode_problem": mode.problem,
+         "last_published": ({"title": last.title, "at": when(last.published_at or last.slot_utc),
+                             "url": (f"https://youtube.com/shorts/{last.youtube_video_id}" if last.youtube_video_id
+                                     else last.permalink or None)} if last else None),
+         "next_post": ({"title": nxt.title, "at": when(nxt.slot_utc), "status": states.status_text(nxt, tz, mode.mode)["label"]}
+                       if nxt else None),
+         "upcoming": len(soon)}
+    if ch.platform != "instagram":
+        d["audit_status"] = cfg.publishing.audit_status
+        d["api_audited"] = cfg.publishing.api_audited
+    return d
+
+
+def heartbeat(st: dict, next_tick: str | None, ticker: bool, tasks: list) -> dict:
+    """Scheduler heartbeat in plain words: last run (IST), source, items processed, next run, and whether anything
+    runs it while the app is closed."""
+    from clipforge.publish.timez import utc_to_local
+
+    last = st.get("last_run_at")
+    res = st.get("last_result") or {}
+    processed = sum(v for k, v in res.items() if isinstance(v, int) and k in
+                    ("uploaded", "published", "failed", "locked", "missed", "rescheduled"))
+    ist = (lambda iso: utc_to_local(dt.datetime.fromisoformat(iso.replace("Z", "+00:00")), "Asia/Kolkata")
+           .strftime("%d %b %H:%M IST") if iso else None)
+    age = None
+    if last:
+        age = (now_utc() - dt.datetime.fromisoformat(last.replace("Z", "+00:00"))).total_seconds() / 60
+    ok = age is not None and age < (5 if ticker else 45)
+    return {"ok": ok, "last_run": ist(last), "last_run_minutes_ago": round(age) if age is not None else None,
+            "source": st.get("last_source"), "items_processed": processed, "next_run": ist(next_tick),
+            "in_app_ticker": ticker, "windows_task": bool(tasks),
+            "text": (f"Last run {ist(last)} ({st.get('last_source')}), {processed} item(s) changed."
+                     if last else "The scheduler hasn't run yet.") +
+                    ("" if tasks else " Runs only while the app is open (no Windows task).")}
 
 
 def disk_usage() -> dict:

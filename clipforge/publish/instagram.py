@@ -41,9 +41,24 @@ STATUS_DONE = ("FINISHED", "PUBLISHED")
 
 
 class IGError(RuntimeError):
-    def __init__(self, message: str, code: int | None = None, auth: bool = False, transient: bool = False) -> None:
+    def __init__(self, message: str, code: int | None = None, auth: bool = False, transient: bool = False,
+                 subcode: int | None = None, format: bool = False) -> None:
         super().__init__(message)
-        self.code, self.auth, self.transient = code, auth, transient
+        self.code, self.auth, self.transient, self.subcode, self.format = code, auth, transient, subcode, format
+
+
+# Graph error code → what to do (developers.facebook.com/docs/graph-api/guides/error-handling + IG content publishing
+# error codes, checked 2026-11-05). Codes not listed: shown as Meta's own message.
+AUTH_CODES = (190, 102, 10, 200, 3)          # token invalid/expired, permission missing → Reconnect
+TRANSIENT_CODES = (1, 2, 4, 17, 32, 341, 368, 613, 9004, 2207001, 2207003)  # temporary / rate limited → try later
+FORMAT_SUBCODES = (2207026, 2207004, 2207005, 2207006, 2207009, 2207010, 2207027, 2207052, 2207053)  # bad video/caption
+
+
+def _redact(text: str) -> str:
+    """Never let a token reach a log line or an error shown in the UI/Telegram."""
+    import re
+
+    return re.sub(r"(access_token=|OAuth |Bearer )[A-Za-z0-9|_\-\.%]+", r"\1<redacted>", text or "")
 
 
 class IGClient(Protocol):
@@ -81,17 +96,20 @@ class GraphIG:
         try:
             r = self.http.request(method, url if url.startswith("http") else self.base + url, **kw)
         except httpx.HTTPError as exc:
-            raise IGError(f"Network problem talking to Meta: {exc}", transient=True) from exc
+            raise IGError(_redact(f"Network problem talking to Meta: {exc}"), transient=True) from exc
         try:
             data = r.json()
         except ValueError:
             data = {}
         if r.status_code >= 400 or "error" in data:
             err = data.get("error", {}) if isinstance(data, dict) else {}
-            code = err.get("code")
+            code, sub = err.get("code"), err.get("error_subcode")
             msg = err.get("error_user_msg") or err.get("message") or r.text[:300]
-            raise IGError(f"Meta API error {code}: {msg}", code=code, auth=code in (190, 102, 10, 200),
-                          transient=code in (1, 2, 4, 17, 341, 32) or r.status_code >= 500)
+            title = err.get("error_user_title")
+            text = f"Meta API error {code}{f'/{sub}' if sub else ''}: {(title + ' — ') if title else ''}{msg}"
+            raise IGError(_redact(text), code=code, subcode=sub, auth=code in AUTH_CODES,
+                          transient=code in TRANSIENT_CODES or sub in TRANSIENT_CODES or r.status_code >= 500,
+                          format=sub in FORMAT_SUBCODES)
         return data
 
     def exchange_code(self, code: str, redirect_uri: str) -> str:

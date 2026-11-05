@@ -50,8 +50,15 @@ def get(item_id: int) -> db.QueueItem | None:
 
 
 def save(item: db.QueueItem) -> db.QueueItem:
+    """Persist an item. Every status change is checked against states.TRANSITIONS (illegal → IllegalTransition)."""
+    from clipforge.publish import states
+
     item.updated_at = db.now()
+    if not item.idempotency_key and item.clip_key:  # one publication per (clip, platform, account)
+        item.idempotency_key = f"{item.platform}:{item.channel_id}:{item.clip_key}"
     with db.session() as s:
+        old = s.exec(select(db.QueueItem.status).where(db.QueueItem.id == item.id)).first() if item.id else None
+        states.check(old, item.status, item=item)
         s.add(item)
         s.commit()
         s.refresh(item)
@@ -66,22 +73,45 @@ def claim_for_container(item_id: int) -> bool:
         res = s.exec(update(db.QueueItem)  # type: ignore[call-overload]
                      .where(db.QueueItem.id == item_id, db.QueueItem.status == "queued",
                             db.QueueItem.ig_container_id == "", db.QueueItem.ig_media_id == "")
-                     .values(status="uploading", attempts=db.QueueItem.attempts + 1, updated_at=db.now()))
+                     .values(status="uploading", attempts=db.QueueItem.attempts + 1, updated_at=db.now(),
+                             **lease_values(item_id)))
         s.commit()
         return res.rowcount == 1
 
 
 def claim_for_upload(item_id: int, slot_utc: dt.datetime) -> bool:
-    """Atomically move queued → uploading, only if nobody changed the item (status, slot, link, batch) meanwhile."""
+    """Atomically move queued → uploading, only if nobody changed the item (status, slot, link, batch) meanwhile.
+    The claim is also a lease (owner = this process, expires after LEASE): see `lease_values`."""
     from sqlalchemy import update
 
     with db.session() as s:
         res = s.exec(update(db.QueueItem)  # type: ignore[call-overload]
                      .where(db.QueueItem.id == item_id, db.QueueItem.status == "queued",
                             db.QueueItem.slot_utc == slot_utc, db.QueueItem.youtube_video_id == "", db.QueueItem.batch == "")
-                     .values(status="uploading", attempts=db.QueueItem.attempts + 1, updated_at=db.now()))
+                     .values(status="uploading", attempts=db.QueueItem.attempts + 1, updated_at=db.now(),
+                             **lease_values(item_id)))
         s.commit()
         return res.rowcount == 1
+
+
+LEASE = dt.timedelta(hours=2)  # longest plausible upload; the process lock (runner._ProcessLock) is the first guard
+
+
+def lease_owner() -> str:
+    import os
+    import socket
+
+    return f"{socket.gethostname()}:{os.getpid()}"
+
+
+def lease_values(item_id: int) -> dict:
+    now = now_utc()
+    return {"lease_owner": lease_owner(), "lease_expires_at": now + LEASE, "last_attempt_at": now}
+
+
+def release(it: db.QueueItem) -> None:
+    """Clear the lease fields on the object (caller saves)."""
+    it.lease_owner, it.lease_expires_at = "", None
 
 
 def delete(item_id: int) -> None:
@@ -194,8 +224,12 @@ def problems(it: db.QueueItem) -> list[str]:
 # ----------------------------------------------------------------------------- scheduling
 def daily_capacity_fn(cfg: Config, exclude_channel: str | None = None):
     """API mode: all channels share one upload quota, so at most `insert_calls_per_day` posts per day overall."""
+    from clipforge.publish import modes
+
     ch = chs.get(exclude_channel) if exclude_channel else None
-    if cfg.publishing.mode != "api" or (ch and ch.platform == "instagram"):
+    if ch and ch.platform == "instagram":
+        return None
+    if not any(modes.resolve(c, cfg, check=False).auto for c in chs.all_channels() if c.platform != "instagram"):
         return None
     counts: dict[dt.date, int] = {}
     for it in items(statuses=PLANNED):

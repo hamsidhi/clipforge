@@ -5,7 +5,7 @@ import {
   CalendarClock, CalendarDays, ChevronLeft, ChevronRight, Download, FolderUp, Info, List, Loader2, RefreshCw, Sparkles, UploadCloud,
 } from 'lucide-react'
 import { toast } from 'sonner'
-import { istLabel, pub, STATUS_LABEL, STATUS_STYLE, useChannels, usePublishing, useQueue, WEEKDAYS } from '@/api/publish'
+import { istLabel, pub, STATUS_LABEL, STATUS_STYLE, statusLabel, useChannels, usePublishing, useQueue, WEEKDAYS } from '@/api/publish'
 import type { QueueItem, SyncResult } from '@/api/publishTypes'
 import type { BulkAction } from '@/api/publish'
 import FixActions from '@/components/FixActions'
@@ -152,7 +152,7 @@ function ListView({ items, onOpen, channelId }: { items: QueueItem[]; onOpen: (i
               <div className="truncate font-medium">{it.title || 'Writing metadata…'}</div>
               <div className="truncate text-xs text-muted-foreground">{istLabel(it.slot_local)} · {it.episode_title} · score {it.score.toFixed(1)}{it.reason_label ? ` · ⚠ ${it.reason_label}` : it.error ? ` · ${it.error}` : ''}</div>
             </button>
-            <Badge variant="outline" className={cn('shrink-0 border-transparent', STATUS_STYLE[it.status])}>{STATUS_LABEL[it.status]}</Badge>
+            <Badge variant="outline" className={cn('shrink-0 border-transparent', STATUS_STYLE[it.status])}>{statusLabel(it)}</Badge>
           </div>
         ))}
       </div>

@@ -205,6 +205,39 @@ function SettingsForm({ ch }: { ch: Channel }) {
   )
 }
 
+/** Per-account publishing mode. Explicit choice beats the global default; auto is never silently downgraded. */
+function ModeSelect({ ch }: { ch: Channel }) {
+  const qc = useQueryClient()
+  const set = useMutation({
+    mutationFn: (mode: 'auto' | 'assisted' | 'default') => pub.patchChannel(ch.id, { mode }),
+    onSuccess: (c) => {
+      toast.success(c.mode === 'auto' ? 'Auto: ClipForge publishes by itself' : 'Assisted: you upload, ClipForge links and tracks')
+      qc.invalidateQueries({ queryKey: ['channels'] })
+      qc.invalidateQueries({ queryKey: ['queue'] })
+      qc.invalidateQueries({ queryKey: ['health'] })
+    },
+    onError: (e) => toast.error(e.message),
+  })
+  const manual = !!ch.extra?.manual
+  const label = (v: string) => (v === 'default' ? `Default (${ch.mode_source === 'default' ? ch.mode : 'global'})` : v === 'auto' ? 'Auto' : 'Assisted')
+  return (
+    <div className="flex flex-col gap-1">
+      <Select value={manual ? 'assisted' : ch.mode_setting ?? 'default'} disabled={manual || set.isPending}
+        onValueChange={(v) => {
+          if (v === 'auto' && !window.confirm(`Switch ${ch.title} to auto? ClipForge will ${isIg(ch) ? 'post its Reels at their slots' : 'upload its scheduled clips (private, YouTube publishes them at the slot)'} by itself.`)) return
+          set.mutate(v as 'auto' | 'assisted' | 'default')
+        }}>
+        <SelectTrigger size="sm" className="w-[11.5rem]" aria-label="Publishing mode"><SelectValue>{manual ? 'Assisted (manual account)' : label(ch.mode_setting ?? 'default')}</SelectValue></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="default">{label('default')}</SelectItem>
+          <SelectItem value="auto">Auto</SelectItem>
+          <SelectItem value="assisted">Assisted</SelectItem>
+        </SelectContent>
+      </Select>
+    </div>
+  )
+}
+
 function ChannelCard({ ch }: { ch: Channel }) {
   const qc = useQueryClient()
   const [confirmOpen, setConfirmOpen] = useState(false)
@@ -253,6 +286,11 @@ function ChannelCard({ ch }: { ch: Channel }) {
             {ch.handle || ch.id} · {Object.entries(ch.counts).map(([k, v]) => `${v} ${k}`).join(' · ') || 'nothing queued'}
           </div>
           {ch.auth_status !== 'ok' && <div className="mt-1 text-xs text-destructive">{ch.auth_error}</div>}
+          <div className="mt-1 text-xs text-muted-foreground" data-testid="mode-line">
+            Mode: <span className="font-medium text-foreground">{ch.mode === 'auto' ? 'auto' : 'assisted'}</span>
+            {ch.mode === 'auto' ? (isIg(ch) ? ' — ClipForge posts at each slot' : ' — ClipForge uploads (private + scheduled)') : ' — you upload, ClipForge links and tracks'}
+            {ch.mode_problem && <div className="text-destructive">{ch.mode_problem}</div>}
+          </div>
           {isIg(ch) && (
             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               {ch.extra.manual ? (
@@ -273,6 +311,7 @@ function ChannelCard({ ch }: { ch: Channel }) {
           {ch.auth_status !== 'ok' && <Button size="sm" onClick={isIg(ch) ? connectInstagram : connect}><RefreshCw /> Reconnect</Button>}
           {!ch.confirmed && <Button size="sm" variant="outline" onClick={() => setConfirmOpen(true)}><ShieldCheck /> Confirm</Button>}
           {!ch.extra?.manual && <Button size="sm" variant="ghost" onClick={() => check.mutate()} disabled={check.isPending}>Test login</Button>}
+          <ModeSelect ch={ch} />
           <div className="flex items-center gap-2 px-2 text-sm">
             <Switch checked={!ch.paused} onCheckedChange={(v) => pause.mutate(!v)} id={`p-${ch.id}`} />
             <Label htmlFor={`p-${ch.id}`}>{ch.paused ? 'Paused' : 'Active'}</Label>

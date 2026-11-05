@@ -35,13 +35,13 @@ class RunReport:
     messages: list[str] = field(default_factory=list)
 
 
-def upload_body(it: db.QueueItem, settings: dict, slot: dt.datetime) -> dict:
+def upload_body(it: db.QueueItem, settings: dict, slot: dt.datetime, synthetic: bool = False) -> dict:
     """privacy 'scheduled' (default): private + publishAt, so YouTube itself makes it public at the slot.
     'public' is only uploaded at the slot (laptop must be on); 'private'/'unlisted' never go public by themselves."""
     lang = settings.get("language", "hi")
     privacy = it.privacy or "scheduled"
     status: dict = {"privacyStatus": "private" if privacy == "scheduled" else privacy,
-                    "selfDeclaredMadeForKids": False, "containsSyntheticMedia": False, "embeddable": True}
+                    "selfDeclaredMadeForKids": False, "containsSyntheticMedia": bool(synthetic), "embeddable": True}
     if privacy == "scheduled":
         status["publishAt"] = iso_utc(slot)
     return {
@@ -76,12 +76,15 @@ def classify_ex(video: dict, expected_publish: dt.datetime | None, privacy: str 
     vis = st.get("privacyStatus")
     if vis == "public":
         return "published", "", ""
-    if privacy in ("private", "unlisted") and vis == privacy:
-        return "uploaded", "", ""
     if vis == "private" and expected_publish is not None and not st.get("publishAt"):
         return "locked_private", "locked_private", (
             "YouTube kept this video private and dropped the schedule (API project lock). Publish it from YouTube "
             "Studio, or request the API audit.")
+    if upload_status == "uploaded":  # received, still processing
+        pd = video.get("processingDetails", {})
+        return "processing", "", f"YouTube is processing it ({pd.get('processingStatus') or 'processing'})."
+    if privacy in ("private", "unlisted") and vis == privacy:
+        return "uploaded", "", ""
     return "scheduled", "", ""
 
 
@@ -193,8 +196,9 @@ def recover_stuck(now: dt.datetime) -> int:
     for it in q.items(statuses=("uploading",)):
         if it.platform != "youtube":
             continue  # Instagram containers are re-checked by the Instagram runner
+        q.release(it)
         if it.youtube_video_id:
-            it.status = "scheduled"
+            it.status = "processing"  # the next status refresh reads the real state
         else:
             it.status, it.reason, it.error = "needs_manual", "interrupted", (
                 "The upload was interrupted. Check YouTube Studio: if the video is there, use Sync with YouTube (or Link); "
@@ -335,7 +339,10 @@ def _run_locked(cfg: Config, now: dt.datetime, progress) -> RunReport:
 
     rep = RunReport()
     started = time.monotonic()
-    budget = _upload_allowed(cfg, rep) if cfg.publishing.mode == "api" else 0
+    from clipforge.publish import modes
+
+    budget = _upload_allowed(cfg, rep)
+    any_auto = False
     blocked = _quota_block.get(str(cfg.workspace))
     if blocked and now < blocked:
         rep.quota_exhausted = True  # YouTube said "quota exceeded" earlier today: don't burn attempts every minute
@@ -350,10 +357,18 @@ def _run_locked(cfg: Config, now: dt.datetime, progress) -> RunReport:
             rep.skipped_channels[ch.id] = "needs re-login"
             _flag_reauth_items(ch.id, now)
             continue
+        mode = modes.resolve(ch, cfg)
+        if mode.auto and mode.problem:  # auto chosen but impossible: say so on the clips, never fall back silently
+            rep.skipped_channels[ch.id] = f"auto mode blocked: {mode.problem}"
+            _flag_auto_unavailable(ch, cfg, now, mode.problem, rep)
+            continue
+        if mode.auto:
+            any_auto = True
+            _requeue_auto_unavailable(ch.id)
         try:
             client = yt.client_for(ch.id, cfg)
-            _handle_late(ch, client, cfg, now, rep)  # a passed slot never silently stays "queued", never a bare "Needs you"
-            if cfg.publishing.mode == "api" and budget != 0 and not rep.quota_exhausted:
+            _handle_late(ch, client, cfg, now, rep, assisted=not mode.auto)  # never a bare "Needs you"
+            if mode.auto and budget != 0 and not rep.quota_exhausted:
                 budget = _upload_due(ch, client, cfg, now, rep, budget, progress,
                                      between=lambda: _instagram_pass(cfg, now, rep, started))
             since = now - _last_refresh.get(f"{cfg.workspace}|{ch.id}", _EPOCH)
@@ -375,7 +390,7 @@ def _run_locked(cfg: Config, now: dt.datetime, progress) -> RunReport:
             else:
                 log.error(f"[publish] channel {ch.id}: {yt.describe_http_error(exc)}")
                 rep.skipped_channels[ch.id] = f"error: {yt.describe_http_error(exc)[:200]}"
-    if rep.quota_exhausted and cfg.publishing.mode == "api":
+    if rep.quota_exhausted and any_auto:
         _quota_block.setdefault(str(cfg.workspace), _next_pacific_midnight(now))
         if _quota_block[str(cfg.workspace)] <= now:
             _quota_block[str(cfg.workspace)] = _next_pacific_midnight(now)
@@ -384,6 +399,26 @@ def _run_locked(cfg: Config, now: dt.datetime, progress) -> RunReport:
         _quota_block.pop(str(cfg.workspace), None)
     _instagram_pass(cfg, now, rep, started)
     return rep
+
+
+def _flag_auto_unavailable(ch: db.Channel, cfg: Config, now: dt.datetime, problem: str, rep: RunReport) -> None:
+    """Auto mode was chosen for this account but can't upload: clips that are due to upload become FAILED with
+    reason auto_unavailable (Reconnect / Switch to assisted). They go back to the queue by themselves once it works."""
+    days = cfg.publishing.upload_ahead_days
+    horizon = now + dt.timedelta(days=days if days > 0 else 3650)
+    for it in q.items(ch.id, ("queued",)):
+        if it.youtube_video_id or it.batch or not it.slot_utc or as_utc(it.slot_utc) > horizon:
+            continue
+        it.status, it.reason, it.error = "failed", "auto_unavailable", problem
+        q.save(it)
+        rep.failed.append(it.id)  # type: ignore[arg-type]
+
+
+def _requeue_auto_unavailable(channel_id: str) -> None:
+    for it in q.items(channel_id, ("failed",)):
+        if it.reason == "auto_unavailable" and not it.youtube_video_id and not it.ig_media_id:
+            it.status, it.reason, it.error = "queued", "", ""
+            q.save(it)
 
 
 def _mark_quota_waiting(now: dt.datetime) -> None:
@@ -435,14 +470,16 @@ def _local(t: dt.datetime, ch: db.Channel, cfg: Config) -> str:
     return utc_to_local(t, chs.settings_of(ch, cfg)["timezone"]).strftime("%a %d %b %H:%M")
 
 
-def _handle_late(ch: db.Channel, client, cfg: Config, now: dt.datetime, rep: RunReport) -> None:
-    from clipforge.publish import reconcile
+def _handle_late(ch: db.Channel, client, cfg: Config, now: dt.datetime, rep: RunReport,
+                 assisted: bool | None = None) -> None:
+    from clipforge.publish import modes, reconcile
 
     def waiting() -> list[db.QueueItem]:
         return [it for it in q.items(ch.id, ("queued",)) if it.slot_utc and not it.youtube_video_id]
 
     queued = waiting()
-    assisted = cfg.publishing.mode != "api"
+    if assisted is None:
+        assisted = not modes.resolve(ch, cfg, check=False).auto
     # 1. Studio uploads first: link them (read-only), so nothing that is really scheduled gets flagged
     due_batched = [it for it in queued if it.batch and as_utc(it.slot_utc) < now + MIN_LEAD]  # type: ignore[arg-type]
     if due_batched and now - _last_auto_sync.get(f"{cfg.workspace}|{ch.id}", _EPOCH) >= SYNC_THROTTLE:
@@ -568,9 +605,11 @@ def _upload_due(ch: db.Channel, client, cfg: Config, now: dt.datetime, rep: RunR
         it = q.get(item_id)
         settings = chs.settings_of(live_ch, cfg)
         try:
-            vid = client.upload(path, upload_body(it, settings, slot),
+            vid = client.upload(path, upload_body(it, settings, slot, cfg.publishing.contains_synthetic_media),
                                 on_progress=(lambda f, i=it: progress(i.id, f)) if progress else None)
-            it.youtube_video_id, it.status, it.reason, it.error, it.next_attempt_at = vid, "scheduled", "", "", None
+            # real id from YouTube; the state comes from videos.list right below (_verify), never assumed
+            it.youtube_video_id, it.status, it.reason, it.error, it.next_attempt_at = vid, "processing", "", "", None
+            q.release(it)
             q.save(it)
             rep.uploaded.append(it.id)
             if budget is not None:
@@ -582,6 +621,7 @@ def _upload_due(ch: db.Channel, client, cfg: Config, now: dt.datetime, rep: RunR
             if between is not None:
                 between()  # Instagram posts due during a long upload batch go out on time
         except yt.QuotaExceeded as exc:
+            q.release(it)
             it.status, it.reason, it.error = "queued", "quota", str(exc)
             it.attempts = max(0, it.attempts - 1)  # not the clip's fault
             q.save(it)
@@ -589,29 +629,39 @@ def _upload_due(ch: db.Channel, client, cfg: Config, now: dt.datetime, rep: RunR
             q.log_quota_rollover(cfg)
             break
         except KeyboardInterrupt:
+            q.release(it)
             it.status = "queued"
             q.save(it)
             raise
         except Exception as exc:
-            if _is_auth_error(exc):
-                it.status = "queued"
+            q.release(it)
+            if _is_auth_error(exc):  # invalid_grant / revoked: the caller marks the channel REQUIRES_REAUTHENTICATION
+                it.status, it.reason = "queued", "login_expired"
+                it.error = "Google refused the saved login: Reconnect the channel on the Accounts page."
+                it.attempts = max(0, it.attempts - 1)
                 q.save(it)
                 raise
             msg = yt.describe_http_error(exc)
-            if "quotaExceeded" in msg or "uploadLimitExceeded" in msg:
+            kind = upload_error_kind(exc, msg)
+            if kind == "quota":
                 it.status, it.reason = "queued", "quota"
-                it.error = "YouTube says the daily upload limit is reached — continues tomorrow automatically."
+                it.error = f"YouTube: daily API quota used up ({msg}). Continues tomorrow automatically."
                 it.attempts = max(0, it.attempts - 1)
                 it.next_attempt_at = None
                 q.save(it)
                 rep.quota_exhausted = True
                 break
-            if it.attempts >= MAX_ATTEMPTS:
-                it.status, it.reason, it.error = "failed", "upload_failed", f"Upload failed {it.attempts}× — {msg}"
+            if kind == "upload_limit":  # the channel's own upload limit: not ours to retry blindly
+                it.status, it.reason, it.error = "failed", "upload_limit", f"YouTube refused the upload: {msg}"
                 rep.failed.append(it.id)
-            else:
-                it.status, it.reason = "queued", ""
-                it.error = f"Attempt {it.attempts} failed, retrying automatically: {msg}"
+            elif kind == "permanent" or it.attempts >= MAX_ATTEMPTS:
+                it.status, it.reason = "failed", "upload_failed"
+                it.error = (f"YouTube refused the upload: {msg}" if kind == "permanent"
+                            else f"Upload failed {it.attempts}×: {msg}")
+                rep.failed.append(it.id)
+            else:  # 5xx / network: retry later with exponential backoff
+                it.status, it.reason = "queued", "retrying"
+                it.error = f"Attempt {it.attempts} failed: {msg}"
                 it.next_attempt_at = now + dt.timedelta(minutes=min(360, 5 * 2 ** it.attempts))
             q.save(it)
     if rep.quota_exhausted:  # say so on every clip still waiting (they continue automatically tomorrow)
@@ -621,6 +671,22 @@ def _upload_due(ch: db.Channel, client, cfg: Config, now: dt.datetime, rep: RunR
                 it.reason, it.error = "quota", "Upload quota used up today — continues tomorrow automatically (Pacific time)."
                 q.save(it)
     return budget
+
+
+def upload_error_kind(exc: Exception, msg: str) -> str:
+    """quota | upload_limit | permanent (4xx: retrying won't help) | transient (5xx, network, 429)."""
+    if "quotaExceeded" in msg or "dailyLimitExceeded" in msg:
+        return "quota"
+    if "uploadLimitExceeded" in msg:
+        return "upload_limit"
+    code = getattr(getattr(exc, "resp", None), "status", None)
+    try:
+        code = int(code) if code is not None else int(msg.split(" ", 1)[0])
+    except (TypeError, ValueError):
+        code = None
+    if code is not None and 400 <= code < 500 and code not in (408, 429):
+        return "permanent"
+    return "transient"
 
 
 def _verify(it: db.QueueItem, client, slot: dt.datetime, rep: RunReport, now: dt.datetime) -> None:
@@ -668,7 +734,7 @@ def _refresh_status(ch: db.Channel, client, cfg: Config, now: dt.datetime, rep: 
         for it in linked:
             if it.youtube_video_id in by:
                 reconcile.apply_video(it, by[it.youtube_video_id])
-    watch = [it for it in q.items(ch.id, ("scheduled", "locked_private")) if it.youtube_video_id]
+    watch = [it for it in q.items(ch.id, ("processing", "scheduled", "locked_private")) if it.youtube_video_id]
     if not watch:
         return
     by_id = {v["id"]: v for v in client.videos([it.youtube_video_id for it in watch])}

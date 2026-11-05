@@ -120,6 +120,9 @@ def _channel_out(ch: db.Channel) -> dict:
     for it in q.items(ch.id):
         counts[it.status] = counts.get(it.status, 0) + 1
     d["counts"] = counts
+    m = pub.account_mode(ch)
+    d["mode"], d["mode_source"], d["mode_problem"] = m.mode, m.source, m.problem
+    d["mode_setting"] = ch.settings.get("mode", "") or "default"
     if ch.platform == "instagram":
         from clipforge.publish import instagram as ig
 
@@ -187,6 +190,7 @@ def pick(pid: str, body: PickIn) -> dict:
 class ChannelPatch(BaseModel):
     paused: Optional[bool] = None
     settings: Optional[dict[str, Any]] = None
+    mode: Optional[Literal["auto", "assisted", "default"]] = None  # per-account publishing mode (default = global)
 
 
 SETTINGS_KEYS = set(chs.default_settings().keys())
@@ -195,6 +199,8 @@ SETTINGS_KEYS = set(chs.default_settings().keys())
 @router.patch("/channels/{channel_id}")
 def patch_channel(channel_id: str, body: ChannelPatch) -> dict:
     ch = _ch_or_404(channel_id)
+    if body.mode is not None:
+        ch = _wrap(pub.set_account_mode, channel_id, "" if body.mode == "default" else body.mode)
     fields: dict[str, Any] = {}
     if body.paused is not None:
         fields["paused"] = body.paused
@@ -421,6 +427,15 @@ class BulkIn(BaseModel):
                     "reschedule_missed", "retry_failed"]
     days: float = 1
     channel_id: Optional[str] = None
+
+
+class FixIn(BaseModel):
+    action: Literal["switch_assisted", "switch_auto", "studio_instead"]
+
+
+@router.post("/queue/{item_id}/fix", summary="One-click fix: switch the account's mode, or upload this clip via Studio")
+def queue_fix(item_id: int, body: FixIn) -> dict:
+    return _item_out(pub.fix(item_id, body.action))
 
 
 @router.post("/queue/bulk")

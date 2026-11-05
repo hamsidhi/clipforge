@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import {
-  CalendarClock, ExternalLink, FolderOpen, Link2, Loader2, PlugZap, RefreshCw, RotateCcw, Send, ShieldQuestion, Unplug,
+  Bot, CalendarClock, ExternalLink, Hand, FolderOpen, Link2, Loader2, PlugZap, RefreshCw, RotateCcw, Send, ShieldQuestion, Unplug,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { pub } from '@/api/publish'
@@ -13,10 +13,12 @@ const LABEL: Partial<Record<FixAction, string>> = {
   sync: 'Sync with YouTube', link: 'Link to a video', open_batch: 'Open batch checklist', reschedule: 'Reschedule to next free slot',
   publish_now: 'Publish now', retry: 'Retry', reconnect: 'Reconnect', audit_info: 'What this means', studio: 'Open in YouTube Studio',
   unbatch: 'Upload with API instead', confirm: 'Confirm channel', open_app: 'Open the clip',
+  switch_assisted: 'Switch account to assisted', switch_auto: 'Switch account to auto', studio_instead: 'Upload via Studio instead',
 }
 const ICON: Partial<Record<FixAction, typeof RefreshCw>> = {
   sync: RefreshCw, link: Link2, open_batch: FolderOpen, reschedule: CalendarClock, publish_now: Send, retry: RotateCcw,
   reconnect: PlugZap, audit_info: ShieldQuestion, studio: ExternalLink, unbatch: Unplug, confirm: PlugZap, open_app: ExternalLink,
+  switch_assisted: Hand, switch_auto: Bot, studio_instead: FolderOpen,
 }
 
 /** Why a clip needs attention + one-click fixes. Never a bare "Needs you". */
@@ -45,6 +47,15 @@ export default function FixActions({ item, onLink, compact = false, onDone }: {
         case 'publish_now':
           await pub.publishNow(item.id)
           return 'Publishing now…'
+        case 'switch_assisted':
+          await pub.fix(item.id, a)
+          return 'Account switched to assisted mode'
+        case 'switch_auto':
+          await pub.fix(item.id, a)
+          return 'Account switched to auto mode'
+        case 'studio_instead':
+          await pub.fix(item.id, a)
+          return 'Put in a Studio batch — upload it in YouTube Studio, then Sync'
         default:
           return ''
       }
@@ -69,13 +80,15 @@ export default function FixActions({ item, onLink, compact = false, onDone }: {
     else if (a === 'open_app') nav(`/jobs`)
     else if (a === 'publish_now') {
       if (window.confirm(`Publish “${item.title}” now${item.platform === 'youtube' ? ' (public on YouTube right away)' : ''}?`)) run.mutate(a)
+    } else if (a === 'switch_auto') {
+      if (window.confirm('Switch this account to auto mode? ClipForge will upload its scheduled clips by itself.')) run.mutate(a)
     } else run.mutate(a)
   }
   if (!item.reason && !item.error) return null
   const attention = ['failed', 'missed', 'needs_manual', 'locked_private'].includes(item.status) || !!item.reason
   return (
     <div className={cn('rounded-lg border p-3 text-sm', attention ? 'border-amber-500/30 bg-amber-500/10' : 'border-border bg-muted/30')}>
-      {item.reason_label && <div className="font-medium">{item.reason_label}</div>}
+      {(item.status_text?.label || item.reason_label) && <div className="font-medium">{item.reason_label || item.status_text?.label}</div>}
       {item.error && !compact && <div className="mt-0.5 text-muted-foreground">{item.error}</div>}
       {item.actions.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-2">

@@ -431,7 +431,7 @@ def test_cleanup_never_deletes_what_is_still_needed(srv):
             s.add(db.Job(source=vid, video_id=vid, status="done", finished_at=old))
             s.commit()
     q.save(db.QueueItem(channel_id="UC", video_id="a", rank=1, clip_key="ka", status="queued"))  # waiting → keep all
-    q.save(db.QueueItem(channel_id="UC", video_id="b", rank=1, clip_key="kb", status="published", published_at=old))
+    q.save(db.QueueItem(channel_id="UC", video_id="b", rank=1, clip_key="kb", status="published", youtube_video_id="ytb", published_at=old))
     p = housekeeping.plan()
     names = {f.relative_to(tmp / "ws").as_posix() for f in p.delete}
     assert not any(n.startswith("a/") for n in names) and "not published" in p.kept["a"]

@@ -189,12 +189,17 @@ def scheduler(once: bool = typer.Option(True, "--once/--loop", help="Process due
 
 
 def publish_test(channel: str = typer.Argument(..., help="Channel id (UC…) — see `clipforge channels list`"),
-                 days: int = typer.Option(30, help="publishAt = now + this many days (you delete the video before that)")) -> None:
-    """Upload ONE tiny test video as private + publishAt and report what YouTube did with it (locked or scheduled).
-    Delete the test video in YouTube Studio afterwards — ClipForge's login can't delete or unschedule videos."""
+                 days: int = typer.Option(0, help="0 (default) = plain private, never public. N > 0 = private + publishAt "
+                                                  "now + N days (tests the schedule/lock; YOU must delete it before then: "
+                                                  "ClipForge's login can't unschedule or delete)"),
+                 file: Optional[Path] = typer.Option(None, help="Clip to upload (default: a generated 3-second black video)")) -> None:
+    """LIVE check: upload ONE test video as PRIVATE through the real upload path and read its status back
+    (videos.list status + processingDetails). Never public by default."""
     _db()
     import datetime as dt
+    import json as _json
     import tempfile
+    import time
 
     from clipforge.server.dispatch import publishing_allowed
 
@@ -211,23 +216,40 @@ def publish_test(channel: str = typer.Argument(..., help="Channel id (UC…) —
     if not ch:
         raise typer.BadParameter("Unknown channel id")
     cfg = load_config()
-    when = now_utc() + dt.timedelta(days=days)
-    tmp = Path(tempfile.mkdtemp()) / "clipforge-api-test.mp4"
-    run_ffmpeg(["-f", "lavfi", "-i", "color=black:s=1080x1920:d=3", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
-                "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(tmp)])
+    when = now_utc() + dt.timedelta(days=days) if days > 0 else None
+    if file is None:
+        file = Path(tempfile.mkdtemp()) / "clipforge-api-test.mp4"
+        run_ffmpeg(["-f", "lavfi", "-i", "color=black:s=1080x1920:d=3", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+                    "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(file)])
     client = yt.client_for(channel, cfg)
-    body = {"snippet": {"title": "ClipForge API test — delete me", "description": "Private test upload by ClipForge.",
-                        "categoryId": "22"},
-            "status": {"privacyStatus": "private", "publishAt": iso_utc(when), "selfDeclaredMadeForKids": False}}
-    console.print(f"Uploading a 3-second black test video to [bold]{ch.title}[/bold] as private, publishAt {iso_utc(when)} …")
-    vid = client.upload(tmp, body)
-    v = (client.videos([vid]) or [{}])[0]
-    status, _reason, msg = runner.classify_ex(v, when, "scheduled")
-    console.print({"video_id": vid, "status": v.get("status"), "result": status})
-    console.print("[green]Not locked: API mode can publish (YouTube keeps the schedule).[/green]" if status == "scheduled"
-                  else f"[yellow]{msg}[/yellow]")
-    console.print(f"Now delete it: https://studio.youtube.com/video/{vid}/edit → ⋮ → Delete forever "
-                  f"(otherwise it goes public on {when:%d %b %Y}).")
+    status: dict = {"privacyStatus": "private", "selfDeclaredMadeForKids": False,
+                    "containsSyntheticMedia": cfg.publishing.contains_synthetic_media}
+    if when:
+        status["publishAt"] = iso_utc(when)
+    body = {"snippet": {"title": "ClipForge API test (private) - delete me", "categoryId": "22",
+                        "description": "Private test upload by ClipForge (publishing repair live check)."},
+            "status": status}
+    console.print(f"Uploading {file.name} to [bold]{ch.title}[/bold] as PRIVATE" + (f", publishAt {iso_utc(when)}" if when else
+                  " (no publishAt: it can never go public by itself)") + " …")
+    vid = client.upload(file, body)
+    v: dict = {}
+    for _ in range(12):  # read back; give YouTube up to ~2 min to finish processing
+        v = (client.videos([vid]) or [{}])[0]
+        if v.get("status", {}).get("uploadStatus") != "uploaded":
+            break
+        time.sleep(10)
+    status_, _reason, msg = runner.classify_ex(v, when, "scheduled" if when else "private")
+    out = {"video_id": vid, "status": v.get("status"), "processingDetails": v.get("processingDetails"),
+           "classified_as": status_, "note": msg}
+    console.print(out)
+    (cfg.workspace / "logs").mkdir(parents=True, exist_ok=True)
+    (cfg.workspace / "logs" / f"publish_test_{vid}.json").write_text(_json.dumps(out, indent=2), encoding="utf-8")
+    if when:
+        console.print("[green]Schedule kept (not locked).[/green]" if status_ == "scheduled" else f"[yellow]{msg}[/yellow]")
+        console.print(f"Delete it: https://studio.youtube.com/video/{vid}/edit → ⋮ → Delete forever "
+                      f"(otherwise it goes public on {when:%d %b %Y}).")
+    else:
+        console.print(f"It stays private. Optional: delete it in Studio: https://studio.youtube.com/video/{vid}/edit")
 
 
 TASK_NAME = "ClipForge Scheduler"

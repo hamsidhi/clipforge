@@ -26,7 +26,7 @@ export const pub = {
     request<{ id: string; title: string; handle: string; thumbnail: string }[]>(`/api/channels/pick/${pid}`),
   pick: (pid: string, channel_id: string) =>
     request<Channel>(`/api/channels/pick/${pid}`, { method: 'POST', body: json({ channel_id }) }),
-  patchChannel: (id: string, body: { paused?: boolean; settings?: Partial<ChannelSettings> }) =>
+  patchChannel: (id: string, body: { paused?: boolean; settings?: Partial<ChannelSettings>; mode?: 'auto' | 'assisted' | 'default' }) =>
     request<Channel>(`/api/channels/${id}`, { method: 'PATCH', body: json(body) }),
   confirmChannel: (id: string) => request<Channel>(`/api/channels/${id}/confirm`, { method: 'POST' }),
   checkAuth: (id: string) => request<{ ok: boolean; channel: Channel }>(`/api/channels/${id}/check-auth`, { method: 'POST' }),
@@ -48,6 +48,8 @@ export const pub = {
   retry: (id: number) => request<QueueItem>(`/api/queue/${id}/retry`, { method: 'POST' }),
   unbatch: (id: number) => request<QueueItem>(`/api/queue/${id}/unbatch`, { method: 'POST' }),
   publishNow: (id: number) => request<QueueItem>(`/api/queue/${id}/publish-now`, { method: 'POST' }),
+  fix: (id: number, action: 'switch_assisted' | 'switch_auto' | 'studio_instead') =>
+    request<QueueItem>(`/api/queue/${id}/fix`, { method: 'POST', body: JSON.stringify({ action }) }),
   autoschedule: (channelId: string, item_ids?: number[]) =>
     request<{ scheduled: QueueItem[]; still_draft: { id: number; title: string; meta_status: string; problems: string[] }[] }>(
       `/api/channels/${channelId}/autoschedule`, { method: 'POST', body: json({ item_ids }) }),
@@ -118,6 +120,8 @@ export const STATUS_STYLE: Record<string, string> = {
   missed: 'bg-rose-500/15 text-rose-300',
   queued: 'bg-sky-500/15 text-sky-300',
   uploading: 'bg-primary/15 text-primary',
+  processing: 'bg-primary/15 text-primary',
+  cancelled: 'bg-muted text-muted-foreground',
   scheduled: 'bg-violet-500/15 text-violet-300',
   published: 'bg-success/15 text-success',
   failed: 'bg-destructive/15 text-destructive',
@@ -125,10 +129,17 @@ export const STATUS_STYLE: Record<string, string> = {
   needs_manual: 'bg-amber-500/15 text-amber-300',
 }
 
+/** Fallback only: the server sends `status_text.label` (same wording as Telegram). */
 export const STATUS_LABEL: Record<string, string> = {
-  draft: 'Draft', queued: 'Queued', uploading: 'Uploading', ready: 'Uploaded, publishes at slot',
-  scheduled: 'Scheduled on YouTube', uploaded: 'On YouTube (private/unlisted)', published: 'Published',
-  failed: 'Failed', locked_private: 'Locked private', needs_manual: 'Needs you', missed: 'Missed slot',
+  draft: 'Draft', queued: 'Scheduled, not uploaded yet', uploading: 'Uploading', processing: 'Uploaded, processing',
+  ready: 'Uploaded, publishes at slot', scheduled: 'Uploaded (private), goes public at the slot',
+  uploaded: 'On YouTube (private/unlisted)', published: 'Published', failed: 'Failed', locked_private: 'Uploaded but locked private',
+  needs_manual: 'Needs you', missed: 'Missed slot', cancelled: 'Cancelled',
+}
+
+/** The label to show for an item: server wording first. */
+export function statusLabel(it: { status: string; status_text?: { label: string } }): string {
+  return it.status_text?.label ?? STATUS_LABEL[it.status] ?? it.status
 }
 
 export function istLabel(slotLocal: string | null): string {

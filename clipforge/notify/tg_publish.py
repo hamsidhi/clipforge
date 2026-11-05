@@ -214,7 +214,7 @@ def calendar(days: int) -> str:
         for it in its:
             ch = chs.get(it.channel_id)
             out.append(f"{utc_to_local(it.slot_utc, zone):%H:%M} {_plat(it.platform)} {esc(it.title[:45])}"  # type: ignore[arg-type]
-                       f" <i>({esc(ch.title if ch else '')})</i>")
+                       f" <i>({esc(ch.title if ch else '')})</i> · {esc(pub.status_text(it)['label'])}")
     return "\n".join(out)
 
 
@@ -227,7 +227,14 @@ def _queue(ctx: Ctx, args: str) -> None:
 
 # ============================================================================ needs you
 FIX_LABEL = {"reschedule": "📅 Next free slot", "retry": "🔁 Retry", "unbatch": "↩ Remove from batch",
-             "publish_now": "🚀 Publish now", "sync": "🔄 Sync with YouTube"}
+             "publish_now": "🚀 Publish now", "sync": "🔄 Sync with YouTube", "switch_assisted": "✋ Switch to assisted",
+             "studio_instead": "📂 Upload via Studio instead"}
+
+
+def status_line(it) -> str:
+    """Same wording as the web app (publish/states.status_text via services.publishing)."""
+    t = pub.status_text(it)
+    return f"{esc(t['label'])}" + (f" — {esc(scrub(t['detail'][:160]))}" if t["detail"] else "")
 
 
 def needs_you_view(ctx: Ctx) -> None:
@@ -245,7 +252,7 @@ def needs_you_view(ctx: Ctx) -> None:
         btns: list[dict] = []
         notes = []
         for a in r["actions"]:
-            if a in ("reschedule", "retry", "unbatch") and ctx.owner:
+            if a in ("reschedule", "retry", "unbatch", "switch_assisted", "studio_instead") and ctx.owner:
                 btns.append(ctx.btn(FIX_LABEL[a], "q.fix", one_shot=True, i=it.id, a=a))
             elif a == "publish_now" and ctx.owner:
                 btns.append(ctx.btn(FIX_LABEL[a], "q.publish_now", i=it.id))
@@ -267,7 +274,7 @@ def needs_you_view(ctx: Ctx) -> None:
                 notes.append("YouTube keeps API uploads private until the API audit — see Settings → Publishing")
         rows_btn = [btns[i:i + 2] for i in range(0, len(btns), 2)]
         ctx.send(f"{_plat(it.platform)} <b>{esc(it.title[:70] or 'clip')}</b> · {esc(r['account'])}\n"
-                 f"{pub.when_local(it)} · {esc(scrub(r['label']))}" + ("".join(f"\n• {n}" for n in notes)), rows_btn or None)
+                 f"{pub.when_local(it)} · {status_line(it)}" + ("".join(f"\n• {n}" for n in notes)), rows_btn or None)
     if len(rows) > 15:
         ctx.send(f"…and {len(rows) - 15} more — open the Schedule page in the app.")
 
@@ -281,7 +288,7 @@ def _needsyou(ctx: Ctx, args: str) -> None:
 @callback("q.fix")
 def _fix(ctx: Ctx, p: dict) -> None:
     it = pub.fix(int(p["i"]), p["a"])
-    ctx.edit(f"✅ Done: {esc(it.title[:60])} — {it.status} · {pub.when_local(it)}")
+    ctx.edit(f"✅ Done: {esc(it.title[:60])} — {status_line(it)} · {pub.when_local(it)}")
 
 
 @callback("q.bulk")
@@ -327,7 +334,7 @@ def _link(ctx: Ctx, args: str) -> None:
         return
     vid = parts[1].strip().split("/")[-1].split("?")[0]
     it = pub.wrap(reconcile.link, int(parts[0]), vid)
-    ctx.send(f"🔗 Linked {esc(it.title[:60])} → {it.status}.")
+    ctx.send(f"🔗 Linked {esc(it.title[:60])} → {status_line(it)}.")
 
 
 @command("batch", group="Publishing", help="assisted mode: checklist + files to upload yourself", usage="/batch MyChannel")
@@ -426,14 +433,20 @@ def _health(ctx: Ctx, args: str) -> None:
     h = pub.health()
     q = h["quota"]
     last = h.get("last_run_at") or "never"
-    lines = [f"❤️ <b>Health</b> · {h['deployment']} · YouTube {h['mode']} mode",
-             f"Scheduler: last run {esc(str(last)[:16])} ({esc(h.get('last_source') or '-')}); ticker {'on' if h['ticker'] else 'off'}",
+    hb = h.get("heartbeat") or {}
+    lines = [f"❤️ <b>Health</b> · {h['deployment']}",
+             f"Scheduler: {esc(hb.get('text') or f'last run {str(last)[:16]}')} Next run: {esc(hb.get('next_run') or '-')}; "
+             f"in-app ticker {'on' if h['ticker'] else 'off'}",
              f"YouTube quota left today: {q.get('inserts', '?')} uploads · audit: {esc(h['audit_status'])}",
              f"Disk: {h['disk']['pct']}% used · {fmt_bytes(h['disk']['free'])} free"]
     for a in h["accounts"]:
         lines.append(f"{_plat(a['platform'])} {esc(a['title'])}: {'⏸ paused · ' if a['paused'] else ''}"
-                     f"{'🔑 OK' if a['token']['ok'] else '🔑 ' + esc(a['token']['text'])}"
+                     f"{'🔑 OK' if a['token']['ok'] else '🔑 ' + esc(a['token']['text'])} · mode {a.get('mode', '?')}"
+                     + (f" ⚠️ {esc(a['mode_problem'])}" if a.get("mode_problem") else "")
                      + (f" · ⚠️ {a['attention']} need you" if a["attention"] else ""))
+        lp, nx = a.get("last_published"), a.get("next_post")
+        lines.append(f"   last published: {esc(lp['title'][:40]) + ' · ' + esc(lp['at'] or '') if lp else 'none confirmed yet'}"
+                     + (f" · next: {esc(nx['at'] or '')} ({esc(nx['status'])})" if nx else ""))
     try:
         from clipforge.server import leases
 

@@ -423,7 +423,7 @@ def test_linked_or_batched_items_never_reuploaded(env):
     rep = runner.run_once(cfg, now=NOW)
     assert rep.uploaded == []
     assert fake.uploaded_bodies == []
-    with pytest.raises(q.QueueError, match="API mode"):
+    with pytest.raises(q.QueueError, match="auto mode"):
         batch.prepare("UCtest", cfg=cfg)  # env is in API mode: batches would duplicate uploads
 
 

@@ -694,3 +694,81 @@ when it runs on the whole video; with pasted/YouTube transcripts (previous chang
 - The full test suite once failed in `test_telegram.py::test_e2e_link_wizard_progress_clips_approve_schedule_queue`
   in 2 of 4 full-suite runs (passes alone, ×3, and as a file) — it uses seeded fake clips and time-throttled progress
   edits and never runs select: a load/timing flake, not caused by this change.
+
+
+## Publishing repair (2026-11-05)
+
+Brief: make automatic publishing (YouTube Shorts + Instagram Reels) work end to end and make every status honest.
+Runs unattended; every decision is logged here. Final write-up: `PUBLISHING_REPAIR_REPORT.md`.
+
+### Facts checked first (differences from the brief)
+- **The unaudited private-only lock is gone.** The brief assumed unaudited projects are locked private. Google's
+  YouTube Data API revision history, entry **2 Nov 2026**: videos uploaded via `videos.insert` from unverified projects
+  "are no longer restricted to private viewing mode"; the `videos.insert` page now says the same (checked today).
+  → Auto mode works without the audit. Locked-private detection stays (own state `locked_private`, not a failure).
+- **`videos.update` needs the `youtube` / `youtube.force-ssl` scope.** The channel's token has `youtube.upload`,
+  `youtube.readonly`, `yt-analytics.readonly` only. So ClipForge can't remove a `publishAt` or delete a video after the
+  fact. Re-consenting would change the OAuth grant (not allowed by the brief) → the live test is a plain **private**
+  upload without `publishAt` (can never go public), instead of "publishAt +2 h, then clear it".
+- Quota: `videos.insert` = its own bucket (100 calls/day, 1 unit per call on today's page); other calls share 10,000
+  units/day (videos.list 1, videos.update 50, …). Unchanged from Phase 12; the local ledger already uses Pacific days.
+
+### Root cause (evidence from this laptop, read-only)
+1. **YouTube → Studio for every clip: `config.yaml` `publishing.mode: assisted`** (the committed default since
+   Phase 12, `config.py:137`). There was no per-account mode. `runner._run_locked` computed `budget = 0` unless
+   `cfg.publishing.mode == "api"` and `_upload_due` only ran in api mode; `_handle_late`'s assisted branch then flipped
+   every passed slot to `needs_manual/assisted_unlinked` or `missed/assisted_no_batch`. Evidence: `youtube_quota.json`
+   shows **0 `videos.insert` calls ever**; DB: 54 YouTube items `queued` (15 in a Studio batch), 9 `published` (all
+   Studio uploads linked by Sync, real ids, `privacyStatus: public` read from `videos.list`), 1 `needs_manual`.
+2. **Instagram → "post it yourself": the only Instagram account is a manual one** (`ig:manual:figuringclips.in`,
+   added without Facebook Login): no IG user id, no Page, no token file. `ig_runner._assisted` returned True for
+   manual accounts **and silently also when the Meta app was missing or `instagram.mode` was assisted**, so the 13
+   Instagram items could only ever become `needs_manual/ig_assisted`. The Meta App ID/Secret in `.env` are valid
+   (a `client_credentials` grant succeeds) but no account was ever connected with them.
+3. **The scheduler runs and does call the platform client** — but only inside the web app (in-app ticker every 60 s;
+   `scheduler_state.json` shows source `app` only). No Windows Task Scheduler task is registered.
+4. YouTube upload code (resumable `MediaFileUpload`, 8 MB chunks, `next_chunk(num_retries=5)`) was correct but never
+   exercised; a successful upload was immediately written as `scheduled` before reading the platform state.
+5. Instagram code path (container → `rupload` → poll `status_code` → `media_publish` once) was correct; two honesty
+   bugs: a container reported `PUBLISHED` whose Reel couldn't be found was still marked `published` **without a media
+   id**, and Graph `error_subcode` / `error_user_title` were dropped (no way to tell "bad format" from "try later").
+6. Sync/reconcile queries the right channel (its uploads playlist + `videos.list` with `fileDetails`); no change.
+
+### Decisions
+- **Extend `publish/states.py`, don't rename stored statuses.** The running `clipforge ui` process (old code) shares
+  the DB; renaming `queued`→`SCHEDULED` etc. would break it mid-session. Stored values stay lowercase; new ones:
+  `processing` (AWAITING_PLATFORM_PROCESSING) and `cancelled`. `states.CANONICAL` maps stored values to the brief's
+  names; RETRYING = `queued` + `next_attempt_at`, REQUIRES_REAUTHENTICATION = `queued` + reason `login_expired`.
+- **One transition table** (`states.TRANSITIONS`), enforced in `queue.save` (the single write path): an illegal move
+  raises `IllegalTransition` and is logged. `published` is final and requires a platform media id (exception: a Reel
+  link pasted for a manual account, labelled "Posted by you", since no API id can exist there).
+- **Per-account mode** (`publish/modes.py`): the account's own `mode` (auto | assisted) beats the global default;
+  a manual Instagram account is always assisted. Auto is never downgraded: if it can't work (no token, no
+  `youtube.upload` scope, no Meta app) the due clips become `failed/auto_unavailable` with Reconnect + "Switch to
+  assisted", and go back to the queue by themselves once it works.
+- **I did not switch the user's channel to auto.** That would make the running app upload ~40 scheduled clips at once
+  (more than the brief's "at most 1 live upload" and with titles the user may still edit). It is one click
+  (Accounts → Mode → Auto) and listed as the user's step.
+- After an upload the item is `processing` until `videos.list` says otherwise (never assumed `scheduled`).
+- YouTube errors: `invalid_grant`/revoked → channel `needs_reauth`, item `login_expired`; `quotaExceeded` → waits for
+  the next Pacific day; `uploadLimitExceeded` → `failed/upload_limit` with YouTube's message; other 4xx → failed at
+  once with the real message; 5xx/network → `retrying` with exponential backoff (the client library already retries
+  chunks within the same resumable session).
+- "Publish now" (public) needs auto mode, an explicit confirmation (web: confirm dialog; Telegram: YES + PIN), and
+  is refused only when `unverified_lock` is on and the project isn't audited (the brief's "only after api_audited"
+  was based on the lock, which Google removed).
+- Instagram: after the bytes are received the item is `processing`; a `PUBLISHED` container without a findable
+  Reel stays `processing/ig_find_media` (keeps looking, offers Link); Graph errors carry code/subcode/user title;
+  format subcodes (2207026 …) fail at once as `ig_format` (retrying the same file won't help); tokens are redacted
+  from every error text.
+- New columns (additive, defaults, old rows untouched): `last_attempt_at`, `lease_owner`, `lease_expires_at`,
+  `idempotency_key` (`<platform>:<account>:<clip_key>`). Unique indexes: (clip_key, platform, channel_id),
+  (platform, youtube_video_id) and (platform, ig_media_id) where set. Before migrating, the DB is copied to
+  `workspace/backups/clipforge-<timestamp>-v<old>.db` (plus the existing `clipforge.db.bak-v<old>`).
+- The claim (`queued → uploading`) is also a lease (owner `<host>:<pid>`, 2 h); the process lock stays the first
+  guard. `recover_stuck` clears leases and never re-uploads blindly.
+- `states.status_text()` is the one wording of a state; the API sends it as `status_text`, the web app shows it and
+  Telegram (`tg_publish.status_line`, `/health`) uses the same function.
+- New config keys: `publishing.contains_synthetic_media` (false), `instagram.test_account_id` ('').
+- Not done on purpose: no Windows task registered (persistent system change → user's step); no OAuth re-consent;
+  no browser automation; no hosting/tunnels for Instagram (resumable upload of the local file needs none).

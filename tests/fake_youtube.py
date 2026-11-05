@@ -16,6 +16,8 @@ class FakeYouTube:
         self.uploaded_bodies: list[dict] = []
         self.subscribers = 120
         self.analytics_rows: dict[str, list[list]] = {}
+        self.process_after_reads = 1            # like YouTube: an upload is "uploaded/processing" for a while
+        self._reads: dict[str, int] = {}
 
     # ---- helpers for tests
     def add_video(self, vid: str, title: str, seconds: int, privacy: str = "public", publish_at: str | None = None,
@@ -62,7 +64,19 @@ class FakeYouTube:
                 v["snippet"]["publishedAt"] = pa
 
     def videos(self, ids: list[str]) -> list[dict]:
-        return [self.store[i] for i in ids if i in self.store]
+        out = []
+        for i in ids:
+            v = self.store.get(i)
+            if not v:
+                continue
+            out.append(v)
+            if v["status"].get("uploadStatus") == "uploaded":  # finishes processing after N reads
+                self._reads[i] = self._reads.get(i, 0) + 1
+                if self._reads[i] > self.process_after_reads:
+                    v["status"]["uploadStatus"] = "processed"
+                    v["processingDetails"]["processingStatus"] = "succeeded"
+                    out[-1] = v
+        return out
 
     def uploads(self, playlist_id: str, max_items: int = 100) -> list[str]:
         return self.order[:max_items]

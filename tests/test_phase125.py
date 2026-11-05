@@ -145,7 +145,7 @@ def test_api_uploads_as_soon_as_scheduled(api):
     for body, it in zip(api.uploaded_bodies, items):
         assert body["status"]["privacyStatus"] == "private" and body["status"]["publishAt"]
     it = q.get(items[0].id)
-    assert it.status == "scheduled" and it.yt_state["processingStatus"] == "processing"
+    assert it.status == "scheduled" and it.yt_state["processingStatus"] == "succeeded"  # read back after processing
     assert it.yt_state["privacyStatus"] == "private" and it.yt_state["publishAt"]
 
 

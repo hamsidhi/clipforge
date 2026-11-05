@@ -137,6 +137,7 @@ class PublishingConfig(_Section):
     mode: Literal["assisted", "api"] = "assisted"
     api_audited: bool = False
     unverified_lock: bool = False  # Google lifted the private-only lock for unverified projects on 2026-11-02
+    contains_synthetic_media: bool = False  # status.containsSyntheticMedia on every upload (YouTube's AI disclosure)
     timezone: str = "Asia/Kolkata"
     slots: list[str] = ["12:30", "18:30", "21:00"]
     peak_slots: list[str] = ["18:30", "21:00"]
@@ -181,6 +182,7 @@ class InstagramConfig(_Section):
     publish_limit_margin: int = 10      # stay this far below the limit
     hours_after_youtube: float = 0      # "post to Instagram X hours after YouTube" (0 = same day, its own slot)
     share_to_feed: bool = True
+    test_account_id: str = ""           # an IG user id ClipForge may post ONE live test Reel to (empty = never)
 
 
 class AuthConfig(_Section):

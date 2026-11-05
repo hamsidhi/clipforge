@@ -41,15 +41,15 @@ def prepare(channel_id: str, n: int | None = None, cfg: Config | None = None, no
     if not ch:
         raise q.QueueError("Unknown channel")
     instagram = ch.platform == "instagram"
-    if instagram:
-        from clipforge.publish import instagram as ig
+    from clipforge.publish import modes
 
-        if not (ig.is_manual(ch) or cfg.instagram.mode == "assisted" or not ig.configured()) and not (force and ids):
-            raise q.QueueError("ClipForge posts to this Instagram account itself at each slot. An Instagram kit is for "
-                               "accounts in assisted mode (no Meta app, or Settings → Instagram → mode assisted).")
-    elif cfg.publishing.mode == "api" and not (force and ids):
-        raise q.QueueError("You're in API mode — ClipForge uploads these clips itself. A Studio batch would upload them "
-                           "twice. Switch to assisted mode first (Settings → Publishing).")
+    auto = modes.resolve(ch, cfg, check=False).auto
+    if instagram and auto and not (force and ids):
+        raise q.QueueError("ClipForge posts to this Instagram account itself at each slot (auto mode). An Instagram kit "
+                           "is for accounts in assisted mode (switch the account to assisted on the Accounts page).")
+    elif auto and not (force and ids):
+        raise q.QueueError("This channel is in auto mode: ClipForge uploads these clips itself. A Studio batch would "
+                           "upload them twice. Switch the channel to assisted first (Accounts page).")
     now = as_utc(now or now_utc())
     zone = chs.settings_of(ch, cfg)["timezone"]
     n = min(n or cfg.publishing.batch_max, cfg.publishing.batch_max)

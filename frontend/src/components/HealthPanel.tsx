@@ -39,19 +39,28 @@ export default function HealthPanel() {
       <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <Row icon={Timer} label="Last scheduler run" warn={stale}>
           {ago(h.last_run_at)}{h.last_source ? ` (${SOURCE[h.last_source] ?? h.last_source})` : ''}
+          {h.heartbeat && <div className="text-xs text-muted-foreground" data-testid="heartbeat">{h.heartbeat.items_processed} item(s) changed in that run{h.heartbeat.windows_task ? '' : ' · runs only while the app is open (no Windows task)'}</div>}
           {stale && <div className="text-xs text-amber-300">Not running lately — keep the app open, or run <code>clipforge schedule-task install</code>.</div>}
         </Row>
         <Row icon={Timer} label="Next run">
           {h.ticker ? `${time(h.next_run_at)} (web app, every minute)` : task ? `${task.next_run} (Task Scheduler)` : 'only when you open the app'}
           {task && <div className="text-xs text-muted-foreground">Task: {task.status}, last result {task.last_result}</div>}
         </Row>
-        <Row icon={Activity} label="Mode · uploads left today">
-          {h.mode === 'api' ? 'API (uploads by itself)' : 'Assisted (you upload in Studio)'} · {h.quota.inserts}/{h.quota.inserts_limit} uploads ·{' '}
-          {h.quota.units.toLocaleString()} units
+        <Row icon={Activity} label="YouTube uploads left today">
+          {h.quota.inserts}/{h.quota.inserts_limit} uploads · {h.quota.units.toLocaleString()} units
         </Row>
         {h.accounts.map((a) => (
-          <Row key={a.id} icon={a.token.ok ? KeyRound : AlertTriangle} label={`${a.platform === 'instagram' ? 'Instagram' : 'YouTube'} · ${a.title}`} warn={!a.token.ok}>
+          <Row key={a.id} icon={a.token.ok && !a.mode_problem ? KeyRound : AlertTriangle} label={`${a.platform === 'instagram' ? 'Instagram' : 'YouTube'} · ${a.title}`}
+            warn={!a.token.ok || !!a.mode_problem}>
             {a.paused ? 'Paused · ' : ''}{a.token.text}
+            <div className="text-xs" data-testid="account-mode">
+              Mode: <b>{a.mode}</b>{a.mode === 'auto' ? ' (publishes by itself)' : ' (you upload, ClipForge links)'}
+              {a.mode_problem && <span className="text-destructive"> — {a.mode_problem}</span>}
+            </div>
+            <div className="text-xs text-muted-foreground">
+              Last published: {a.last_published ? <>{a.last_published.url ? <a className="underline" href={a.last_published.url} target="_blank" rel="noreferrer">{a.last_published.title}</a> : a.last_published.title} · {a.last_published.at}</> : 'none confirmed yet'}
+            </div>
+            {a.next_post && <div className="text-xs text-muted-foreground">Next: {a.next_post.at} · {a.next_post.status} ({a.upcoming} upcoming)</div>}
             {a.attention > 0 && <div className="text-xs text-amber-300">{a.attention} clip(s) need attention (Schedule page)</div>}
           </Row>
         ))}

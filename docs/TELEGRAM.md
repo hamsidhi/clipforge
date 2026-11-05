@@ -198,7 +198,7 @@ To go back: delete `api_base_url`, call `close` on the local server, wait 10 min
 | `GET /api/oauth/callback` | (Google redirect) | Laptop | |
 | `GET /api/channels/pick/{pid}` | Accounts → Add | Laptop | |
 | `POST /api/channels/pick/{pid}` | Accounts → Add | Laptop | |
-| `PATCH /api/channels/{channel_id}` | Accounts (pause, slots) | `/pause`, `/resume` | slots: app |
+| `PATCH /api/channels/{channel_id}` | Accounts (pause, slots, mode) | `/pause`, `/resume` | slots, mode: app |
 | `POST /api/channels/{channel_id}/confirm` | Accounts | Laptop | first-upload check shows the avatar + name |
 | `POST /api/channels/{channel_id}/check-auth` | Accounts | `/accounts` (read-only token status) | |
 | `DELETE /api/channels/{channel_id}` | Accounts → Disconnect | Laptop | disconnect revokes logins |
@@ -219,6 +219,7 @@ To go back: delete `api_base_url`, call `close` on the local server, wait 10 min
 | `POST /api/queue/{item_id}/retry` | Needs you → Retry | `/needsyou` button | |
 | `POST /api/queue/{item_id}/unbatch` | Needs you | `/needsyou` button | |
 | `POST /api/queue/{item_id}/publish-now` | Needs you | `/needsyou` button (type YES + PIN) | |
+| `POST /api/queue/{item_id}/fix` | Needs you (Switch to assisted / auto, Upload via Studio instead) | `/needsyou` buttons (switch to assisted, Studio instead) | switch to auto: app (confirmation) |
 | `POST /api/queue/{item_id}/link` | Needs you → Link | `/link 41 <url>` | |
 | `POST /api/queue/{item_id}/permalink` | Instagram assisted | `/link 41 <reel url>` | |
 | `GET /api/queue/{item_id}/video` | Instagram kit | `/batch <account>` | |

@@ -1,14 +1,25 @@
 // Phase 12: publishing types
 
 export type QueueStatus =
-  | 'draft' | 'queued' | 'uploading' | 'ready' | 'scheduled' | 'uploaded' | 'published'
-  | 'failed' | 'locked_private' | 'needs_manual' | 'missed'
+  | 'draft' | 'queued' | 'uploading' | 'processing' | 'ready' | 'scheduled' | 'uploaded' | 'published'
+  | 'failed' | 'locked_private' | 'needs_manual' | 'missed' | 'cancelled'
 
 export type Platform = 'youtube' | 'instagram'
 export type Privacy = 'scheduled' | 'public' | 'unlisted' | 'private'
 export type FixAction =
   | 'sync' | 'link' | 'open_batch' | 'reschedule' | 'publish_now' | 'retry' | 'reconnect' | 'audit_info'
-  | 'studio' | 'unbatch' | 'open_app' | 'edit' | 'confirm'
+  | 'studio' | 'unbatch' | 'open_app' | 'edit' | 'confirm' | 'switch_assisted' | 'switch_auto' | 'studio_instead'
+
+export type AccountMode = 'auto' | 'assisted'
+/** Server-side wording of an item's state (same text as Telegram): publish/states.py status_text */
+export interface StatusText { state: string; label: string; detail: string; actions: FixAction[] }
+export interface AccountSummary {
+  id: string; title: string; platform: Platform; paused: boolean; token: { ok: boolean; text: string }; attention: number
+  mode: AccountMode; mode_source: string; mode_problem: string; audit_status?: AuditStatus; api_audited?: boolean
+  last_published: { title: string; at: string | null; url: string | null } | null
+  next_post: { title: string; at: string | null; status: string } | null
+  upcoming: number
+}
 
 export interface ChannelSettings {
   timezone: string
@@ -49,6 +60,10 @@ export interface Channel {
   token_present: boolean
   platform: Platform
   token?: { ok: boolean; text: string }
+  mode?: AccountMode
+  mode_source?: string
+  mode_problem?: string
+  mode_setting?: 'auto' | 'assisted' | 'default'
   extra: {
     username?: string; page_name?: string; followers?: number; token_expires_at?: string; ig_user_id?: string
     profile_picture_url?: string; manual?: boolean
@@ -93,6 +108,7 @@ export interface QueueItem {
   reason: string
   reason_label: string
   actions: FixAction[]
+  status_text?: StatusText
   yt_state: {
     uploadStatus?: string; privacyStatus?: string; publishAt?: string; processingStatus?: string
     failureReason?: string; rejectionReason?: string; checked_at?: string
@@ -116,7 +132,11 @@ export interface Health {
   quota: { inserts: number; units: number; inserts_limit: number; units_limit: number; day: string }
   audit_status: AuditStatus
   api_audited: boolean
-  accounts: { id: string; title: string; platform: Platform; paused: boolean; token: { ok: boolean; text: string }; attention: number }[]
+  accounts: AccountSummary[]
+  heartbeat?: {
+    ok: boolean; last_run: string | null; last_run_minutes_ago: number | null; source: string | null
+    items_processed: number; next_run: string | null; in_app_ticker: boolean; windows_task: boolean; text: string
+  }
   keep_awake: { mode: string; holding: boolean; reason?: string; supported?: boolean }
   tasks: { name: string; status: string; last_run: string; last_result: string; next_run: string }[]
   server_time: string

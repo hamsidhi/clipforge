@@ -92,10 +92,13 @@ def busy_reason(now: dt.datetime | None = None) -> str:
     from clipforge.publish import channels as chs
     from clipforge.publish import instagram as ig
 
-    if load_config().instagram.mode == "api":
-        live = {c.id for c in chs.all_channels() if c.platform == "instagram" and not c.paused
-                and c.auth_status == "ok" and not ig.is_manual(c)}
-        for it in q.items(statuses=("queued", "uploading", "ready")):
+    from clipforge.publish import modes
+
+    cfg = load_config()
+    live = {c.id for c in chs.all_channels() if c.platform == "instagram" and not c.paused
+            and c.auth_status == "ok" and not ig.is_manual(c) and modes.resolve(c, cfg, check=False).auto}
+    if live:
+        for it in q.items(statuses=("queued", "uploading", "processing", "ready")):
             if it.platform == "instagram" and it.channel_id in live and it.slot_utc and \
                     -dt.timedelta(minutes=5) <= as_utc(it.slot_utc) - now <= BUSY_WINDOW:
                 return "an Instagram post is due within 60 min"
