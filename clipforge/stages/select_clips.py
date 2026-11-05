@@ -27,7 +27,7 @@ TOKENS_PER_CANDIDATE = 56   # {"s":12,"e":25,"score":8,"hook":8,"standalone":7,"
 TITLE_BATCH = 5
 TITLE_TOKENS_PER_CLIP = 110
 WORDS_PER_SEC = 2.8   # measured 2.9-3.05 on two Figuring Out episodes (Whisper words / speech time), minus fillers
-CHARS_PER_TOKEN = 2.5  # deliberately low (measured ≈3+ for romanized Hinglish on qwen2.5) → num_ctx never truncates
+CHARS_PER_TOKEN = 2.5  # deliberately low (measured 3.55–3.62 for romanized Hinglish on qwen2.5) → never truncates
 
 
 def _score(v) -> float:
