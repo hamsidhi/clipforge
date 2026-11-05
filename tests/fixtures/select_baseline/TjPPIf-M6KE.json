@@ -1,0 +1,300 @@
+{
+  "video_id": "TjPPIf-M6KE",
+  "label": "baseline",
+  "model": "qwen2.5:7b",
+  "created": "2026-11-05 03:12",
+  "select_sec": 758.8,
+  "llm_sec": 754.7,
+  "prompt_tokens": 37644,
+  "output_tokens": 2893,
+  "raw_candidates": 31,
+  "config": {
+    "llm": {
+      "provider": "ollama",
+      "model": "qwen2.5:7b",
+      "temperature": 0.3,
+      "window_min": 8.0,
+      "overlap_min": 1.0,
+      "max_retries": 3,
+      "max_candidates_per_window": 6,
+      "ollama_url": "http://127.0.0.1:11434",
+      "timeout_sec": 600,
+      "max_tokens": 2048,
+      "keep_alive": "30m"
+    }
+  },
+  "calls": [
+    {
+      "task": "select",
+      "prompt_tokens": 3363,
+      "output_tokens": 288,
+      "prompt_sec": 0.14,
+      "output_sec": 33.57,
+      "load_sec": 0.0,
+      "total_sec": 33.78
+    },
+    {
+      "task": "select",
+      "prompt_tokens": 3343,
+      "output_tokens": 447,
+      "prompt_sec": 0.13,
+      "output_sec": 53.22,
+      "load_sec": 0.0,
+      "total_sec": 53.41
+    },
+    {
+      "task": "select",
+      "prompt_tokens": 3785,
+      "output_tokens": 333,
+      "prompt_sec": 58.78,
+      "output_sec": 41.23,
+      "load_sec": 0.0,
+      "total_sec": 100.05
+    },
+    {
+      "task": "select",
+      "prompt_tokens": 4897,
+      "output_tokens": 347,
+      "prompt_sec": 66.59,
+      "output_sec": 45.73,
+      "load_sec": 0.0,
+      "total_sec": 112.37
+    },
+    {
+      "task": "select",
+      "prompt_tokens": 4002,
+      "output_tokens": 447,
+      "prompt_sec": 51.81,
+      "output_sec": 55.69,
+      "load_sec": 0.0,
+      "total_sec": 107.59
+    },
+    {
+      "task": "select",
+      "prompt_tokens": 3711,
+      "output_tokens": 78,
+      "prompt_sec": 42.14,
+      "output_sec": 9.06,
+      "load_sec": 0.0,
+      "total_sec": 51.26
+    },
+    {
+      "task": "select",
+      "prompt_tokens": 3861,
+      "output_tokens": 301,
+      "prompt_sec": 49.02,
+      "output_sec": 36.1,
+      "load_sec": 0.0,
+      "total_sec": 85.17
+    },
+    {
+      "task": "select",
+      "prompt_tokens": 3917,
+      "output_tokens": 106,
+      "prompt_sec": 44.25,
+      "output_sec": 12.74,
+      "load_sec": 0.0,
+      "total_sec": 57.03
+    },
+    {
+      "task": "select",
+      "prompt_tokens": 4173,
+      "output_tokens": 454,
+      "prompt_sec": 55.93,
+      "output_sec": 56.53,
+      "load_sec": 0.0,
+      "total_sec": 112.51
+    },
+    {
+      "task": "select",
+      "prompt_tokens": 2592,
+      "output_tokens": 92,
+      "prompt_sec": 31.36,
+      "output_sec": 10.12,
+      "load_sec": 0.0,
+      "total_sec": 41.53
+    }
+  ],
+  "clips": [
+    {
+      "rank": 1,
+      "start": 2115.9,
+      "end": 2159.51,
+      "score": 8.35,
+      "topic": "AI",
+      "title": "SMI: Big Threat",
+      "hook": "SMI Threat"
+    },
+    {
+      "rank": 2,
+      "start": 3791.23,
+      "end": 3818.53,
+      "score": 7.95,
+      "topic": "AI",
+      "title": "Sam Altman on AI's Unknown Future",
+      "hook": "AI future uncertain"
+    },
+    {
+      "rank": 3,
+      "start": 1076.17,
+      "end": 1100.46,
+      "score": 7.7,
+      "topic": "AI Investment",
+      "title": "Big Bet on Compute",
+      "hook": "Big Bet on Compute"
+    },
+    {
+      "rank": 4,
+      "start": 421.13,
+      "end": 442.27,
+      "score": 7.05,
+      "topic": "AI perception",
+      "title": "AI Optimism Divide",
+      "hook": "US vs India AI"
+    },
+    {
+      "rank": 5,
+      "start": 2618.04,
+      "end": 2673.48,
+      "score": 7.05,
+      "topic": "success",
+      "title": "Nervous Before Success",
+      "hook": "Nervousness in Success"
+    },
+    {
+      "rank": 6,
+      "start": 1283.38,
+      "end": 1304.83,
+      "score": 7.0,
+      "topic": "Innovation",
+      "title": "Best Time to Innovate",
+      "hook": "Best Time to Innovate"
+    },
+    {
+      "rank": 7,
+      "start": 2947.55,
+      "end": 2967.87,
+      "score": 7.0,
+      "topic": "startup assessment",
+      "title": "30-40 मिनट में कैसे अंतर पाएं?",
+      "hook": "Baat hai kya?"
+    },
+    {
+      "rank": 8,
+      "start": 3375.41,
+      "end": 3401.98,
+      "score": 6.95,
+      "topic": "success",
+      "title": "5 Friends, 5 Future",
+      "hook": "5 friends, 5 future"
+    },
+    {
+      "rank": 9,
+      "start": 904.51,
+      "end": 925.64,
+      "score": 6.9,
+      "topic": "AI Scaling",
+      "title": "Dumb Fix, Smart Scaling",
+      "hook": "Dumb Fix, Smart Scaling"
+    },
+    {
+      "rank": 10,
+      "start": 965.83,
+      "end": 986.22,
+      "score": 6.9,
+      "topic": "AI Learning",
+      "title": "Redefining Learning",
+      "hook": "Redefining Learning"
+    },
+    {
+      "rank": 11,
+      "start": 3527.49,
+      "end": 3551.0,
+      "score": 6.8,
+      "topic": "career",
+      "title": "Compounding Curve: Career Growth",
+      "hook": "Compounding Curve"
+    },
+    {
+      "rank": 12,
+      "start": 87.15,
+      "end": 117.97,
+      "score": 6.75,
+      "topic": "AI",
+      "title": "AI's Path Forward",
+      "hook": "AI's future"
+    },
+    {
+      "rank": 13,
+      "start": 1305.22,
+      "end": 1325.46,
+      "score": 6.4,
+      "topic": "technology",
+      "title": "Unbelievable Gift of Innovation",
+      "hook": "Unbelievable Gift"
+    },
+    {
+      "rank": 14,
+      "start": 527.32,
+      "end": 550.1,
+      "score": 6.2,
+      "topic": "Innovation",
+      "title": "Revolutionary Technologist",
+      "hook": "Sam's Tech Revolution"
+    },
+    {
+      "rank": 15,
+      "start": 2972.6,
+      "end": 2994.33,
+      "score": 6.1,
+      "topic": "leadership",
+      "title": "Founder's Key Trait",
+      "hook": "Clear Communication"
+    },
+    {
+      "rank": 16,
+      "start": 3591.51,
+      "end": 3612.66,
+      "score": 6.1,
+      "topic": "self-improvement",
+      "title": "Doubt & Conviction",
+      "hook": "Doubt & Conviction"
+    },
+    {
+      "rank": 17,
+      "start": 588.78,
+      "end": 609.62,
+      "score": 5.9,
+      "topic": "Business ethics",
+      "title": "No Equity, Big Impact",
+      "hook": "Equity Debate"
+    },
+    {
+      "rank": 18,
+      "start": 120.86,
+      "end": 146.91,
+      "score": 5.65,
+      "topic": "family",
+      "title": "Fatherhood in AI",
+      "hook": "Father's fears"
+    },
+    {
+      "rank": 19,
+      "start": 1362.91,
+      "end": 1392.39,
+      "score": 5.4,
+      "topic": "technology",
+      "title": "AGI Labs vs Photo Sharing",
+      "hook": "AGI Lab Count"
+    },
+    {
+      "rank": 20,
+      "start": 2866.94,
+      "end": 2887.44,
+      "score": 5.2,
+      "topic": "startups",
+      "title": "Startup Moat Myths",
+      "hook": "Moat Question"
+    }
+  ]
+}

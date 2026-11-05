@@ -1,0 +1,408 @@
+{
+  "video_id": "67AUqNeRf6U",
+  "label": "baseline",
+  "model": "qwen2.5:7b",
+  "created": "2026-11-05 03:47",
+  "select_sec": 2121.8,
+  "llm_sec": 2111.2,
+  "prompt_tokens": 90668,
+  "output_tokens": 8837,
+  "raw_candidates": 95,
+  "config": {
+    "llm": {
+      "provider": "ollama",
+      "model": "qwen2.5:7b",
+      "temperature": 0.3,
+      "window_min": 8.0,
+      "overlap_min": 1.0,
+      "max_retries": 3,
+      "max_candidates_per_window": 6,
+      "ollama_url": "http://127.0.0.1:11434",
+      "timeout_sec": 600,
+      "max_tokens": 2048,
+      "keep_alive": "30m"
+    }
+  },
+  "calls": [
+    {
+      "task": "select",
+      "prompt_tokens": 3823,
+      "output_tokens": 300,
+      "prompt_sec": 49.6,
+      "output_sec": 35.33,
+      "load_sec": 0.0,
+      "total_sec": 85.01
+    },
+    {
+      "task": "select",
+      "prompt_tokens": 4136,
+      "output_tokens": 292,
+      "prompt_sec": 51.31,
+      "output_sec": 34.81,
+      "load_sec": 0.0,
+      "total_sec": 86.25
+    },
+    {
+      "task": "select",
+      "prompt_tokens": 4800,
+      "output_tokens": 477,
+      "prompt_sec": 61.44,
+      "output_sec": 61.27,
+      "load_sec": 0.0,
+      "total_sec": 122.77
+    },
+    {
+      "task": "select",
+      "prompt_tokens": 4171,
+      "output_tokens": 461,
+      "prompt_sec": 52.35,
+      "output_sec": 55.57,
+      "load_sec": 0.0,
+      "total_sec": 107.99
+    },
+    {
+      "task": "select",
+      "prompt_tokens": 4881,
+      "output_tokens": 479,
+      "prompt_sec": 64.38,
+      "output_sec": 61.28,
+      "load_sec": 0.0,
+      "total_sec": 125.71
+    },
+    {
+      "task": "select",
+      "prompt_tokens": 4425,
+      "output_tokens": 451,
+      "prompt_sec": 55.86,
+      "output_sec": 55.43,
+      "load_sec": 0.0,
+      "total_sec": 111.35
+    },
+    {
+      "task": "select",
+      "prompt_tokens": 4377,
+      "output_tokens": 295,
+      "prompt_sec": 56.37,
+      "output_sec": 35.78,
+      "load_sec": 0.0,
+      "total_sec": 92.19
+    },
+    {
+      "task": "select",
+      "prompt_tokens": 3538,
+      "output_tokens": 322,
+      "prompt_sec": 43.45,
+      "output_sec": 36.74,
+      "load_sec": 0.0,
+      "total_sec": 80.25
+    },
+    {
+      "task": "select",
+      "prompt_tokens": 4376,
+      "output_tokens": 438,
+      "prompt_sec": 55.46,
+      "output_sec": 54.62,
+      "load_sec": 0.0,
+      "total_sec": 110.14
+    },
+    {
+      "task": "select",
+      "prompt_tokens": 4532,
+      "output_tokens": 462,
+      "prompt_sec": 53.65,
+      "output_sec": 54.89,
+      "load_sec": 0.0,
+      "total_sec": 108.6
+    },
+    {
+      "task": "select",
+      "prompt_tokens": 4425,
+      "output_tokens": 502,
+      "prompt_sec": 52.68,
+      "output_sec": 59.63,
+      "load_sec": 0.0,
+      "total_sec": 112.37
+    },
+    {
+      "task": "select",
+      "prompt_tokens": 4979,
+      "output_tokens": 321,
+      "prompt_sec": 60.24,
+      "output_sec": 38.86,
+      "load_sec": 0.0,
+      "total_sec": 99.17
+    },
+    {
+      "task": "select",
+      "prompt_tokens": 4304,
+      "output_tokens": 302,
+      "prompt_sec": 45.05,
+      "output_sec": 35.06,
+      "load_sec": 0.0,
+      "total_sec": 80.16
+    },
+    {
+      "task": "select",
+      "prompt_tokens": 4929,
+      "output_tokens": 381,
+      "prompt_sec": 59.89,
+      "output_sec": 46.92,
+      "load_sec": 0.0,
+      "total_sec": 106.86
+    },
+    {
+      "task": "select",
+      "prompt_tokens": 4155,
+      "output_tokens": 484,
+      "prompt_sec": 42.27,
+      "output_sec": 55.98,
+      "load_sec": 0.0,
+      "total_sec": 98.31
+    },
+    {
+      "task": "select",
+      "prompt_tokens": 4032,
+      "output_tokens": 463,
+      "prompt_sec": 41.23,
+      "output_sec": 52.93,
+      "load_sec": 0.0,
+      "total_sec": 94.25
+    },
+    {
+      "task": "select",
+      "prompt_tokens": 4152,
+      "output_tokens": 445,
+      "prompt_sec": 48.11,
+      "output_sec": 51.39,
+      "load_sec": 0.0,
+      "total_sec": 99.56
+    },
+    {
+      "task": "select",
+      "prompt_tokens": 3980,
+      "output_tokens": 487,
+      "prompt_sec": 40.27,
+      "output_sec": 55.98,
+      "load_sec": 0.0,
+      "total_sec": 96.3
+    },
+    {
+      "task": "select",
+      "prompt_tokens": 3558,
+      "output_tokens": 318,
+      "prompt_sec": 40.18,
+      "output_sec": 35.18,
+      "load_sec": 0.0,
+      "total_sec": 75.41
+    },
+    {
+      "task": "select",
+      "prompt_tokens": 3076,
+      "output_tokens": 414,
+      "prompt_sec": 27.93,
+      "output_sec": 44.1,
+      "load_sec": 0.0,
+      "total_sec": 72.12
+    },
+    {
+      "task": "select",
+      "prompt_tokens": 3494,
+      "output_tokens": 447,
+      "prompt_sec": 39.99,
+      "output_sec": 49.03,
+      "load_sec": 0.0,
+      "total_sec": 89.06
+    },
+    {
+      "task": "select",
+      "prompt_tokens": 2525,
+      "output_tokens": 296,
+      "prompt_sec": 27.04,
+      "output_sec": 30.25,
+      "load_sec": 0.0,
+      "total_sec": 57.33
+    }
+  ],
+  "clips": [
+    {
+      "rank": 1,
+      "start": 4228.08,
+      "end": 4249.39,
+      "score": 8.05,
+      "topic": "health",
+      "title": "Work Out Every Day? Think Again!",
+      "hook": "Workout Mistake"
+    },
+    {
+      "rank": 2,
+      "start": 8901.88,
+      "end": 8923.14,
+      "score": 8.05,
+      "topic": "sacrifice",
+      "title": "Price of Elite",
+      "hook": "Lose My Childhood"
+    },
+    {
+      "rank": 3,
+      "start": 2610.82,
+      "end": 2632.86,
+      "score": 7.95,
+      "topic": "success",
+      "title": "Golf's Elite Performance",
+      "hook": "58 in Golf"
+    },
+    {
+      "rank": 4,
+      "start": 3167.69,
+      "end": 3190.21,
+      "score": 7.85,
+      "topic": "diet",
+      "title": "24 Pounds in 30 Days: My Health Journey",
+      "hook": "24 Pounds in 30 Days"
+    },
+    {
+      "rank": 5,
+      "start": 8035.7,
+      "end": 8056.08,
+      "score": 7.85,
+      "topic": "Mindset",
+      "title": "Forgive & Live: One Life, No Grudges",
+      "hook": "Forgive & Live"
+    },
+    {
+      "rank": 6,
+      "start": 5585.62,
+      "end": 5613.97,
+      "score": 7.85,
+      "topic": "success",
+      "title": "Humility in Golf Success",
+      "hook": "Humility in Success"
+    },
+    {
+      "rank": 7,
+      "start": 3594.34,
+      "end": 3614.71,
+      "score": 7.75,
+      "topic": "Training",
+      "title": "Pushing Physical Limits",
+      "hook": "Neurological barrier"
+    },
+    {
+      "rank": 8,
+      "start": 6339.16,
+      "end": 6396.15,
+      "score": 7.75,
+      "topic": "self-control",
+      "title": "15 Sec Pause, 100% Better",
+      "hook": "Pause, Breathe, Win"
+    },
+    {
+      "rank": 9,
+      "start": 405.33,
+      "end": 448.18,
+      "score": 7.7,
+      "topic": "mindset",
+      "title": "Perfectionist Mindset",
+      "hook": "Obsession, Perfection"
+    },
+    {
+      "rank": 10,
+      "start": 1647.82,
+      "end": 1669.45,
+      "score": 7.6,
+      "topic": "fundraising",
+      "title": "Raising Money: A Risky Bet",
+      "hook": "Risk Taken"
+    },
+    {
+      "rank": 11,
+      "start": 5897.59,
+      "end": 5925.56,
+      "score": 7.5,
+      "topic": "success & failure",
+      "title": "Top: Lonely, Loved, Misunderstood",
+      "hook": "Top: lonely, loved, misunderstood"
+    },
+    {
+      "rank": 12,
+      "start": 5933.01,
+      "end": 5984.38,
+      "score": 7.5,
+      "topic": "success & failure",
+      "title": "Winning Alone: Trophies & Loneliness",
+      "hook": "Winning, loneliness, trophies"
+    },
+    {
+      "rank": 13,
+      "start": 1785.83,
+      "end": 1806.12,
+      "score": 7.15,
+      "topic": "golf innovation",
+      "title": "Bryson DeChambeau's Radical Golf Innovation",
+      "hook": "Golf's Tradition Challenged"
+    },
+    {
+      "rank": 14,
+      "start": 5490.58,
+      "end": 5516.1,
+      "score": 7.15,
+      "topic": "golf",
+      "title": "Passion vs Ego in Golf",
+      "hook": "Passion vs. Ego"
+    },
+    {
+      "rank": 15,
+      "start": 933.58,
+      "end": 954.55,
+      "score": 6.95,
+      "topic": "gaming",
+      "title": "Gaming Shaped Bryson’s Mindset",
+      "hook": "Gaming & Improvement"
+    },
+    {
+      "rank": 16,
+      "start": 1400.31,
+      "end": 1422.5,
+      "score": 6.95,
+      "topic": "insecurities",
+      "title": "Childhood Insecurities: Cheated and Left Behind",
+      "hook": "Abandoned by Friends"
+    },
+    {
+      "rank": 17,
+      "start": 2231.28,
+      "end": 2259.12,
+      "score": 6.95,
+      "topic": "curiosity",
+      "title": "Ask Questions to Find Answers",
+      "hook": "Passion & Questions"
+    },
+    {
+      "rank": 18,
+      "start": 2130.99,
+      "end": 2151.16,
+      "score": 6.9,
+      "topic": "innovation",
+      "title": "3D Printing Golf Clubs",
+      "hook": "Faster Iteration"
+    },
+    {
+      "rank": 19,
+      "start": 2380.52,
+      "end": 2401.1,
+      "score": 6.9,
+      "topic": "risk",
+      "title": "Bryson's YouTube Gamble",
+      "hook": "YouTube Success"
+    },
+    {
+      "rank": 20,
+      "start": 2410.2,
+      "end": 2432.3,
+      "score": 6.9,
+      "topic": "disruption",
+      "title": "Bryson's Crazy Beliefs",
+      "hook": "Proving Right"
+    }
+  ]
+}
