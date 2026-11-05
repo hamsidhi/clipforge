@@ -126,6 +126,11 @@ def main() -> int:
     ap.add_argument("--no-judge", action="store_true")
     ap.add_argument("--judge-model", default="qwen2.5:7b")
     ap.add_argument("--md", default="")
+    ap.add_argument("--noise", default=str(ROOT / "workspace" / "_bench" / "noise"),
+                    help="a 2nd run of the baseline code (same settings): its agreement with the baseline is the noise "
+                         "floor, and the reference scores are the mean of both runs ('' = off)")
+    ap.add_argument("--strict-overlap", action="store_true",
+                    help="require 80%% overlap even if the baseline's own re-run agrees less (prompt-identical changes)")
     args = ap.parse_args()
 
     new_path = Path(args.new)
@@ -135,7 +140,11 @@ def main() -> int:
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     out: list[str] = []
     pooled = {"base_match": [], "base_score": [], "new_score": [], "base_judge": [], "new_judge": [],
-              "base_bound": [], "new_bound": [], "base_sec": 0.0, "new_sec": 0.0}
+              "base_bound": [], "new_bound": [], "base_sec": 0.0, "new_sec": 0.0,
+              "noise_match": [], "new_match2": [], "ref_judge": [], "ref_bound": []}
+    noise_dir = Path(args.noise) if args.noise else None
+    if noise_dir and (not noise_dir.is_dir() or noise_dir.resolve() == new_path.resolve()):
+        noise_dir = None
     for nf in new_files:
         new = json.loads(nf.read_text(encoding="utf-8"))
         vid = new["video_id"]
@@ -161,6 +170,25 @@ def main() -> int:
         pooled["new_judge"] += nj
         pooled["base_bound"] += bb
         pooled["new_bound"] += nb
+        nz_path = noise_dir / f"{vid}.json" if noise_dir else None
+        if nz_path and nz_path.exists():
+            zc = json.loads(nz_path.read_text(encoding="utf-8"))["clips"][:args.top]
+            nz_kept = match(bc, zc)
+            new2 = match(zc, nc)
+            zj = judge(zc, words, vid, cache_path, args.judge_model) if not args.no_judge else []
+            zb = [on_boundary(c, words, seg_starts) for c in zc]
+            pooled["noise_match"] += nz_kept
+            pooled["new_match2"] += kept + new2
+            pooled["ref_judge"] += bj + zj
+            pooled["ref_bound"] += bb + zb
+            out_noise = (f"- noise floor (baseline re-run vs baseline): overlap {mean(nz_kept) * 100:.0f}%"
+                         + ("" if args.no_judge else f", judge {mean(zj):.2f}")
+                         + f"; new vs both runs: overlap {mean(kept + new2) * 100:.0f}%")
+        else:
+            out_noise = ""
+            pooled["new_match2"] += kept
+            pooled["ref_judge"] += bj
+            pooled["ref_bound"] += bb
         pooled["base_sec"] += base["select_sec"]
         pooled["new_sec"] += new["select_sec"]
         out.append(f"### {vid} — {new['label']} vs {base['label']}")
@@ -171,6 +199,8 @@ def main() -> int:
         if not args.no_judge:
             out.append(f"- avg judge score: {mean(bj):.2f} → {mean(nj):.2f}")
         out.append(f"- boundary + 20–59 s: {mean(bb) * 100:.0f}% → {mean(nb) * 100:.0f}%")
+        if out_noise:
+            out.append(out_noise)
         if added:
             out.append("- NEW clips:")
             out += [f"  - {fmt_ts(c['start'])}–{fmt_ts(c['end'])} ({c['end'] - c['start']:.0f} s) {c['title']}" for c in added]
@@ -180,17 +210,22 @@ def main() -> int:
             out += [f"  - {fmt_ts(c['start'])}–{fmt_ts(c['end'])} ({c['end'] - c['start']:.0f} s) {c['title']}" for c in dropped]
         out.append("")
 
-    ov = mean(pooled["base_match"])
-    bj, nj = mean(pooled["base_judge"]), mean(pooled["new_judge"])
-    bbp, nbp = mean(pooled["base_bound"]), mean(pooled["new_bound"])
+    ov = mean(pooled["new_match2"])  # vs both baseline runs when the noise run exists
+    floor = mean(pooled["noise_match"]) if pooled["noise_match"] else 1.0
+    bar = 0.8 if args.strict_overlap else min(0.8, floor)
+    bj, nj = mean(pooled["ref_judge"]), mean(pooled["new_judge"])
+    bbp, nbp = mean(pooled["ref_bound"]), mean(pooled["new_bound"])
     conds = {
-        "overlap ≥ 80%": True if args.rerank else ov >= 0.8,
+        f"overlap ≥ {bar * 100:.0f}%": True if args.rerank else ov >= bar - 1e-9,
         "judge score not lower": True if args.no_judge else nj >= bj - 1e-9,
         "boundary % not lower": nbp >= bbp - 1e-9,
     }
     verdict = "PASS" if all(conds.values()) else "FAIL"
     out.append("### Pooled")
     out.append(f"- select time: {pooled['base_sec']:.0f} s → {pooled['new_sec']:.0f} s")
+    if pooled["noise_match"]:
+        out.append(f"- noise floor: the baseline code re-run agrees on {floor * 100:.0f}% of its own top-{args.top}; "
+                   "reference scores = mean of both baseline runs")
     out.append(f"- overlap {ov * 100:.0f}%{' (not required: re-rank)' if args.rerank else ''}; "
                f"pipeline score {mean(pooled['base_score']):.2f} → {mean(pooled['new_score']):.2f}; "
                + ("" if args.no_judge else f"judge {bj:.2f} → {nj:.2f}; ")
