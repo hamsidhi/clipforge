@@ -36,6 +36,8 @@ llm:
   num_thread: 0        # Ollama CPU threads; 0 = Ollama's default (one per physical core — measured fastest)
   seed: null           # Ollama sampling seed: a number makes re-runs reproducible (null = random)
   keep_alive: 30m      # Ollama unloads the model this long after the last request (server: 2m frees RAM for Whisper)
+  max_calls_per_day: 200  # publishing: metadata LLM calls per day (0 = no limit); over → metadata waits
+  max_concurrent: 1    # publishing: parallel metadata LLM calls
 
 select:
   prefilter: true      # skip transcript windows that are clearly intro / sponsor read / outro / almost no speech
@@ -107,6 +109,27 @@ publishing:
   category_id: '27'    # 27 Education, 22 People & Blogs
   language: hi
   sync_every_hours: 12.0 # how often stats are pulled while the app runs
+
+youtube:               # Publishing v2: upload eligibility per channel (Google doesn't expose "uploads left")
+  daily_safety_limit: 8   # successful uploads per rolling 24 h per channel (YouTube refused after ~10 on 5 Nov)
+  min_gap_sec: 120        # between two uploads of one channel
+  max_per_batch: 2        # uploads per scheduler run per channel
+  cooldown_hours: 24      # after uploadLimitExceeded, counted from the first upload of the current 24-h window
+  project_units_safe_pct: 90  # stop uploads above this % of the daily API units
+  override_until: ''      # ISO time (e.g. 2026-11-06T12:00): ignore cooldown + safety limit until then
+
+schedule:              # Publishing v2: daily plan per platform, IST (slots before day_cutoff belong to the evening before)
+  enabled: true        # false = the old per-channel slot lists (publishing.slots / instagram.slots)
+  auto_adapt: true     # weekly: move slots ±30–60 min toward better 24-h views (after adapt_min_posts posts)
+  day_cutoff: '05:00'
+  ig_morning: ['08:00', '09:30', '11:00']
+  ig_evening: ['18:00', '19:30', '21:00', '22:15', '23:30', '00:45']
+  ig_min_per_day: 7    # up to ig_max_per_day when approved clips cover today + 1 day of buffer
+  ig_max_per_day: 9
+  ig_min_gap_minutes: 60
+  yt_slots: ['12:30', '15:00', '18:30', '20:30', '22:00']  # 5/day; 6/day adds yt_sixth_slot when views are rising
+  yt_sixth_slot: '23:30'
+  adapt_min_posts: 20
 
 ypp:                   # YouTube Partner Program targets — edit if YouTube changes them
   ad_subs: 1000

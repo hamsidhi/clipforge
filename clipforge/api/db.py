@@ -146,6 +146,9 @@ class QueueItem(SQLModel, table=True):
     lease_owner: str = ""                      # "<host>:<pid>" while uploading
     lease_expires_at: Optional[dt.datetime] = None
     idempotency_key: str = ""
+    # Publishing v2: publication identity (one per clip render × platform × account × intent; unique when set)
+    pub_key: str = Field(default="", index=True)
+    intent: str = "original"                   # original | republish:<n>
     created_at: dt.datetime = Field(default_factory=now)
     updated_at: dt.datetime = Field(default_factory=now)
 
@@ -205,6 +208,25 @@ class VideoPerf(SQLModel, table=True):
     reach: int = 0
     permalink: str = ""
     updated_at: dt.datetime = Field(default_factory=now)
+
+
+class UploadLedger(SQLModel, table=True):
+    """Every platform publish attempt (Publishing v2). Only rows with succeeded_at count as uploads; a video going
+    public later is not an upload. Used for the 24-h window, cooldowns and /health (no secrets stored)."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    platform: str = Field(default="youtube", index=True)
+    channel_id: str = Field(index=True)
+    pub_key: str = ""
+    queue_id: Optional[int] = None
+    video_id: str = ""                         # YouTube video id / Instagram media id
+    attempted_at: dt.datetime = Field(default_factory=now, index=True)
+    succeeded_at: Optional[dt.datetime] = None
+    result: str = ""                           # ok | refused | error
+    error_type: str = ""                       # project_quota | channel_limit | auth | temporary | permanent
+    error_reason: str = ""                     # the platform's reason code + message (no tokens)
+    privacy: str = ""
+    publish_at: Optional[dt.datetime] = None
 
 
 class StatSnapshot(SQLModel, table=True):
@@ -345,7 +367,7 @@ def _migrate(conn) -> None:
 
 
 _engine = None
-SCHEMA_VERSION = 16  # bump when tables/columns change: an older database is copied to clipforge.db.bak-v<old> first
+SCHEMA_VERSION = 17  # bump when tables/columns change: an older database is copied to clipforge.db.bak-v<old> first
 
 
 def _backup_before_migration(path) -> None:
@@ -377,13 +399,15 @@ def _backup_before_migration(path) -> None:
 
 # one publication per (clip, platform, account); a platform media id belongs to one publication
 UNIQUE_INDEXES = {
-    "ux_queue_clip_platform_account": "queueitem (clip_key, platform, channel_id)",
+    # v17: identity = pub_key (clip render × platform × account × intent), so an explicit republish can coexist
+    "ux_queue_pub_key": "queueitem (pub_key) WHERE pub_key != ''",
     "ux_queue_youtube_media": "queueitem (platform, youtube_video_id) WHERE youtube_video_id != ''",
     "ux_queue_instagram_media": "queueitem (platform, ig_media_id) WHERE ig_media_id != ''",
 }
 
 
 def _unique_indexes(conn) -> None:
+    conn.exec_driver_sql("DROP INDEX IF EXISTS ux_queue_clip_platform_account")  # replaced by ux_queue_pub_key
     for name, spec in UNIQUE_INDEXES.items():
         try:
             conn.exec_driver_sql(f"CREATE UNIQUE INDEX IF NOT EXISTS {name} ON {spec}")

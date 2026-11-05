@@ -239,8 +239,12 @@ def status_line(it) -> str:
 
 def needs_you_view(ctx: Ctx) -> None:
     rows = pub.needs_you()
+    accts = pub.needs_you_accounts()
+    if accts:
+        ctx.send("🔑 <b>Accounts</b>\n" + "\n".join(f"• {esc(a['account'])}: {esc(scrub(a['text'])[:200])}" for a in accts))
     if not rows:
-        ctx.send("✅ Nothing needs you.")
+        if not accts:
+            ctx.send("✅ Nothing needs you.")
         return
     from clipforge.notify.commands import app_url
 
@@ -437,12 +441,21 @@ def _health(ctx: Ctx, args: str) -> None:
              f"Scheduler: {esc(hb.get('text') or f'last run {str(last)[:16]}')} Next run: {esc(hb.get('next_run') or '-')}; "
              f"in-app ticker {'on' if h['ticker'] else 'off'}",
              f"YouTube quota left today: {q.get('inserts', '?')} uploads · audit: {esc(h['audit_status'])}",
-             f"Disk: {h['disk']['pct']}% used · {fmt_bytes(h['disk']['free'])} free"]
+             f"Disk: {h['disk']['pct']}% used · {fmt_bytes(h['disk']['free'])} free · {esc(h.get('db', {}).get('text', ''))}",
+             f"Today's plan: {esc(h.get('plan_today') or '-')}"]
     for a in h["accounts"]:
         lines.append(f"{_plat(a['platform'])} {esc(a['title'])}: {'⏸ paused · ' if a['paused'] else ''}"
                      f"{'🔑 OK' if a['token']['ok'] else '🔑 ' + esc(a['token']['text'])} · mode {a.get('mode', '?')}"
                      + (f" ⚠️ {esc(a['mode_problem'])}" if a.get("mode_problem") else "")
                      + (f" · ⚠️ {a['attention']} need you" if a["attention"] else ""))
+        lim = a.get("limits") or {}
+        ready = "✅ auto-publish ready" if a.get("auto_ready") else ("connected, not auto-ready" if a.get("connected")
+                                                                    else "not connected")
+        lines.append(f"   {ready} · uploads 24 h: {lim.get('uploads_24h', 0)}"
+                     + (f" · cooldown until {esc(str(lim['cooldown_until'])[:16])} UTC" if lim.get("cooldown_until") else "")
+                     + ("".join(f"\n   ✖ {esc(scrub(f)[:120])}" for f in lim.get("recent_failures", [])[:2])))
+        if a.get("platform") == "instagram" and a.get("eligibility") and not a.get("auto_ready"):
+            lines.append(f"   {esc(scrub(a['eligibility']['summary'])[:200])}")
         lp, nx = a.get("last_published"), a.get("next_post")
         lines.append(f"   last published: {esc(lp['title'][:40]) + ' · ' + esc(lp['at'] or '') if lp else 'none confirmed yet'}"
                      + (f" · next: {esc(nx['at'] or '')} ({esc(nx['status'])})" if nx else ""))

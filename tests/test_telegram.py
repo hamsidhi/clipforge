@@ -22,7 +22,7 @@ def tg(tmp_path, monkeypatch):
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(f"output: {{dir: '{(tmp_path / 'ws').as_posix()}'}}\nllm: {{provider: mock}}\n"
                         "telegram: {enabled: true, progress_every_sec: 5, clips_to_send: 2}\n"
-                        "publishing: {mode: api}\n", encoding="utf-8")
+                        "publishing: {mode: api}\n" "youtube: {min_gap_sec: 0, max_per_batch: 100, daily_safety_limit: 100}\nschedule: {enabled: false}\n", encoding="utf-8")
     monkeypatch.setattr(config_mod, "DEFAULT_CONFIG_PATH", cfg_path)
     env_file = tmp_path / ".env"
     monkeypatch.setattr(config_mod, "ENV_PATH", env_file)
@@ -521,7 +521,9 @@ def test_e2e_link_wizard_progress_clips_approve_schedule_queue(tg, monkeypatch):
     send(b, fake, "/queue")
     assert "6 posts" in fake.last_text() and "▶️" in fake.last_text() and "📸" in fake.last_text()
     send(b, fake, "/needsyou")
-    assert "Nothing needs you" in fake.last_text()
+    # no clip needs anything; the only human action is the test channel's missing Google login (auto mode, v2)
+    t = fake.last_text()
+    assert "Nothing needs you" in t or ("<b>Accounts</b>" in t and "no saved Google login" in t)
     # every button sent in this whole chat fits Telegram's 64-byte callback_data
     assert all(len(d.encode()) <= 64 for _, d, _ in fake.buttons(len(fake.calls)))
     import os

@@ -43,7 +43,7 @@ def meta_app(request: Request) -> dict:
     return {"app_id": sec.meta_app_id or "", "app_secret": mask_secret(sec.meta_app_secret),
             "login_config_id": sec.meta_login_config_id or "", "configured": ig.configured(),
             "mode": cfg.instagram.mode, "graph_version": cfg.instagram.graph_version,
-            "redirect_uri": f"http://localhost:{request.url.port or 8000}/api/instagram/oauth/callback",
+            "redirect_uri": ig.redirect_uri(request.url.port or 8000),
             "scopes": [{"scope": s, "why": ig.SCOPE_HELP[s]} for s in ig.SCOPES]}
 
 
@@ -69,7 +69,7 @@ def ig_oauth_start(request: Request) -> dict:
     _local_only(request)
     port = request.url.port or 80
     try:  # always "localhost": it must match the redirect URI registered in the Meta app exactly
-        return {"url": ig.oauth_url(f"http://localhost:{port}/api/instagram/oauth/callback")}
+        return {"url": ig.oauth_url(ig.redirect_uri(port))}
     except FileNotFoundError as exc:
         raise HTTPException(400, str(exc))
 

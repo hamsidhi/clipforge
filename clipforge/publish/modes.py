@@ -68,6 +68,11 @@ def auto_problem(ch: db.Channel, cfg: Config) -> str:
             return ""
         if not ig.token_path(ig.ig_id_of(ch), cfg).exists():
             return "This Instagram account has no saved login: Reconnect it (Accounts page), or switch to assisted."
+        granted = ch.extra.get("granted") or []
+        missing = [p for p in ig.PUBLISH_SCOPES if granted and p not in granted]
+        if missing:
+            return ("Meta didn't grant " + ", ".join(missing) + ": Reconnect (Accounts → Add Instagram account) and "
+                    "allow every permission, or switch to assisted.")
         return ""
     from clipforge.publish import youtube as yt
 

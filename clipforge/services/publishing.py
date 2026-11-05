@@ -303,10 +303,42 @@ def upcoming(days: int = 7) -> list[db.QueueItem]:
             if it.slot_utc and now_utc() <= as_utc(it.slot_utc) <= end]
 
 
+# reasons that resolve themselves — never a "Needs you" (Publishing v2)
+SELF_HEALING = ("retrying", "quota", "channel_limit", "safety_limit", "upload_limit", "duplicate", "ig_limit",
+                "ig_find_media")
+
+
+def needs_you_accounts() -> list[dict]:
+    """Account-level human actions only: reconnect, missing Page link / permissions, audit problems."""
+    from clipforge.publish import instagram as ig
+
+    cfg = load_config()
+    out = []
+    for ch in chs.all_channels():
+        if ch.auth_status == "needs_reauth":
+            out.append({"account": ch.title, "platform": ch.platform, "action": "reconnect",
+                        "text": f"Reconnect {ch.title} (login refused). Laptop → Accounts → Reconnect."})
+            continue
+        m = modes.resolve(ch, cfg)
+        if m.auto and m.problem:
+            out.append({"account": ch.title, "platform": ch.platform, "action": "reconnect", "text": m.problem})
+        elif ch.platform == "instagram" and m.auto and not ig.is_manual(ch):
+            e = ig.eligibility(ch, cfg)
+            if not e["auto_ready"]:
+                out.append({"account": ch.title, "platform": "instagram", "action": "reconnect", "text": e["summary"]})
+    if cfg.publishing.audit_status == "rejected":
+        out.append({"account": "YouTube API", "platform": "youtube", "action": "audit_info",
+                    "text": "The YouTube API audit was rejected: uploads keep the default quota. See Settings → Publishing."})
+    return out
+
+
 def needs_you() -> list[dict]:
-    """Every item that needs the user, with its reason sentence and the fix actions (states.REASONS)."""
+    """Items that need a HUMAN action, with the reason sentence and the fix actions (states.REASONS). Routine waits
+    and automatic retries are not listed."""
     out = []
     for it in q.items(statuses=states.ATTENTION):
+        if it.reason in SELF_HEALING:
+            continue
         ch = chs.get(it.channel_id)
         out.append({"item": it, "account": ch.title if ch else it.channel_id, "label": states.label(it.reason) or it.error[:120],
                     "actions": states.actions(it.reason) or (["retry"] if it.status == "failed" else [])})
@@ -357,14 +389,27 @@ def health() -> dict:
         tasks = task_status()
     except Exception:
         pass
+    plan_today = " / ".join(f"{'IG' if a['platform'] == 'instagram' else 'YT'} {a['plan'][0]['count']}"
+                            for a in accounts if a.get("plan") and not a["paused"])
     return {
         "heartbeat": heartbeat(st, worker.next_tick_at, worker.ticker_on, tasks),
+        "db": db_status(),
+        "plan_today": plan_today,
         "last_run_at": st.get("last_run_at"), "last_source": st.get("last_source"), "last_result": st.get("last_result", {}),
         "runs": st.get("runs", {}), "next_run_at": worker.next_tick_at, "ticker": worker.ticker_on,
         "mode": cfg.publishing.mode, "quota": rem, "audit_status": cfg.publishing.audit_status,
         "api_audited": cfg.publishing.api_audited, "accounts": accounts, "keep_awake": awake, "tasks": tasks,
         "server_time": now_utc().isoformat(), "disk": disk_usage(), "deployment": cfg.deployment.mode,
     }
+
+
+def db_status() -> dict:
+    try:
+        with db.session() as s:
+            s.exec(select(db.QueueItem.id).limit(1)).first()
+        return {"ok": True, "text": "Database OK."}
+    except Exception as exc:
+        return {"ok": False, "text": f"Database problem: {str(exc)[:150]}"}
 
 
 def account_summary(ch: db.Channel, cfg=None) -> dict:
@@ -374,7 +419,7 @@ def account_summary(ch: db.Channel, cfg=None) -> dict:
     mode = modes.resolve(ch, cfg)
     pubs = [it for it in q.items(ch.id, ("published",)) if it.youtube_video_id or it.ig_media_id]
     last = max(pubs, key=lambda it: as_utc(it.published_at or it.slot_utc or it.updated_at), default=None)
-    soon = [it for it in q.items(ch.id, ("queued", "uploading", "processing", "ready", "scheduled"))
+    soon = [it for it in q.items(ch.id, ("queued", "uploading", "processing", "ready", "scheduled", "waiting_capacity"))
             if it.slot_utc and as_utc(it.slot_utc) >= now_utc()]
     nxt = soon[0] if soon else None
     tz = chs.settings_of(ch, cfg)["timezone"]
@@ -391,10 +436,35 @@ def account_summary(ch: db.Channel, cfg=None) -> dict:
          "next_post": ({"title": nxt.title, "at": when(nxt.slot_utc), "status": states.status_text(nxt, tz, mode.mode)["label"]}
                        if nxt else None),
          "upcoming": len(soon)}
+    from clipforge.publish import limits, plan
+
+    now = now_utc()
     if ch.platform != "instagram":
         d["audit_status"] = cfg.publishing.audit_status
         d["api_audited"] = cfg.publishing.api_audited
+        d["limits"] = limits.status(ch.id, cfg, now)
+        d["auto_ready"] = mode.auto and not mode.problem and ch.auth_status == "ok" and not d["limits"]["cooldown_until"]
+        d["connected"] = ch.auth_status == "ok"
+    else:
+        from clipforge.publish import instagram as ig
+
+        e = ig.eligibility(ch, cfg)
+        d["eligibility"] = e
+        d["auto_ready"], d["connected"] = mode.auto and e["auto_ready"], e["connected"]
+        d["limits"] = {"uploads_24h": len(limits.successes_24h(ch.id, now, "instagram")), "cooldown_until": None,
+                       "recent_failures": limits.status(ch.id, cfg, now)["recent_failures"]}
+    try:
+        d["plan"] = plan.preview(ch, cfg, now) if cfg.schedule.enabled else []
+    except Exception as exc:  # the plan is informational: never break /health
+        d["plan"] = []
+        log_warn(f"plan preview failed for {ch.id}: {exc}")
     return d
+
+
+def log_warn(msg: str) -> None:
+    from clipforge.utils.log import log
+
+    log.warning(msg)
 
 
 def heartbeat(st: dict, next_tick: str | None, ticker: bool, tasks: list) -> dict:

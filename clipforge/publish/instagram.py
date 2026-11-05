@@ -28,6 +28,16 @@ from clipforge.utils.log import log
 
 SCOPES = ["instagram_basic", "instagram_content_publish", "pages_show_list", "pages_read_engagement",
           "business_management", "instagram_manage_insights"]
+# Publishing needs these (developers.facebook.com → content publishing, Facebook Login column, checked 2026-11-05;
+# pages_show_list to find the Page). business_management / instagram_manage_insights are optional extras.
+PUBLISH_SCOPES = ("instagram_basic", "instagram_content_publish", "pages_read_engagement", "pages_show_list")
+REDIRECT_PATH = "/api/instagram/oauth/callback"
+
+
+def redirect_uri(port: int | None = None) -> str:
+    """The ONE redirect URI ClipForge sends to Meta. Add exactly this under Facebook Login → Valid OAuth Redirect
+    URIs (Strict Mode = exact match: scheme, host, port, path, no trailing slash)."""
+    return f"http://localhost:{port or 8000}{REDIRECT_PATH}"
 SCOPE_HELP = {
     "instagram_basic": "Read your Instagram professional account (username, picture, followers).",
     "instagram_content_publish": "Publish the Reels you approved, at the time you chose.",
@@ -76,6 +86,8 @@ class IGClient(Protocol):
     def publishing_limit(self, ig_id: str, token: str) -> dict: ...
     def insights(self, media_id: str, token: str) -> dict: ...
     def revoke(self, user_token: str) -> None: ...
+    def permissions(self, user_token: str) -> list[dict]: ...
+    def debug_token(self, token: str) -> dict: ...
 
 
 # ----------------------------------------------------------------------------- real client
@@ -182,6 +194,16 @@ class GraphIG:
 
     def revoke(self, user_token: str) -> None:
         self._do("DELETE", "/me/permissions", params={"access_token": user_token})
+
+    def permissions(self, user_token: str) -> list[dict]:
+        """[{permission, status: granted|declined|expired}] for the logged-in Facebook user."""
+        return self._do("GET", "/me/permissions", params={"access_token": user_token}).get("data", [])
+
+    def debug_token(self, token: str) -> dict:
+        """is_valid, expires_at (0 = never), data_access_expires_at, type, scopes — checked with the app token."""
+        d = self._do("GET", "/debug_token", params={"input_token": token,
+                                                    "access_token": f"{self.app_id}|{self.app_secret}"})
+        return d.get("data", {})
 
 
 _factory: Callable[[Config], IGClient] = lambda cfg: GraphIG(cfg)  # noqa: E731
@@ -364,10 +386,11 @@ def finish_oauth(code: str, state: str, cfg: Config | None = None, now: dt.datet
         raise ValueError("None of your Facebook Pages has a linked Instagram professional account. In the Instagram app: "
                          "Settings → Account type → switch to Professional (Creator or Business), then link a Facebook Page "
                          "(Accounts Center). If you have several Pages, tick them all on Meta's permission screen.")
+    checks = login_checks(c, user_token)
     pid = secrets.token_urlsafe(8)
     with _lock:
-        _pending[pid] = ({"user_token": user_token, "user_token_expires_at": iso_utc(now + dt.timedelta(seconds=secs))},
-                         choices, time.time())
+        _pending[pid] = ({"user_token": user_token, "user_token_expires_at": iso_utc(now + dt.timedelta(seconds=secs)),
+                          **checks}, choices, time.time())
     return {"pick": pid, "accounts": [{k: v for k, v in ch.items() if k != "page_token"} for ch in choices]}
 
 
@@ -389,7 +412,95 @@ def pick(pid: str, ig_user_id: str, cfg: Config | None = None) -> db.Channel:
     if not ch:
         raise ValueError("Unknown Instagram account")
     save_tokens(ig_user_id, {**user, "page_id": ch["page_id"], "page_name": ch["page_name"], "page_token": ch["page_token"]}, cfg)
-    return chs.register_instagram(ch, user["user_token_expires_at"], cfg)
+    return chs.register_instagram(ch, user["user_token_expires_at"], cfg,
+                                  checks={k: user.get(k) for k in ("granted", "declined", "token_valid", "token_type")})
+
+
+def login_checks(c: IGClient, user_token: str) -> dict:
+    """Step 6 of the login: which permissions Meta really granted (me/permissions) and whether the token is valid
+    (debug_token). Never raises: a failed check just isn't 'ready'."""
+    out: dict = {"granted": [], "declined": [], "token_valid": None, "token_type": ""}
+    try:
+        perms = c.permissions(user_token)
+        out["granted"] = sorted(p["permission"] for p in perms if p.get("status") == "granted")
+        out["declined"] = sorted(p["permission"] for p in perms if p.get("status") != "granted")
+    except IGError as exc:
+        log.warning(f"[instagram] couldn't read the granted permissions: {exc}")
+    try:
+        d = c.debug_token(user_token)
+        out["token_valid"], out["token_type"] = bool(d.get("is_valid")), d.get("type", "")
+    except IGError as exc:
+        log.warning(f"[instagram] debug_token failed: {exc}")
+    return out
+
+
+def eligibility(ch: db.Channel, cfg: Config | None = None, live: bool = False, c: IGClient | None = None) -> dict:
+    """Is this account ready for AUTO publishing? 'Connected' is not enough. Local checks always; `live` also asks
+    Meta (account, publishing limit, token) and stores the answer on the account."""
+    from clipforge.publish import channels as chs
+
+    cfg = cfg or load_config()
+    ex = ch.extra
+    checks: dict[str, dict] = {}
+
+    def put(name: str, ok: bool | None, text: str) -> None:
+        checks[name] = {"ok": ok, "text": text}
+
+    if is_manual(ch):
+        put("login", False, "Added manually, without Facebook Login: no access to the account.")
+        return {"checks": checks, "auto_ready": False, "connected": False,
+                "summary": "Not connected: added manually. Connect it with Facebook Login (Accounts → Add Instagram account)."}
+    put("meta_app", configured(), "Meta app (App ID + Secret) set up." if configured() else "No Meta app set up.")
+    try:
+        tok = load_tokens(ig_id_of(ch), cfg)
+    except (IGError, ValueError):
+        tok = {}
+    put("ig_id", bool(ex.get("ig_user_id")), f"Instagram professional account id {'found' if ex.get('ig_user_id') else 'missing'}.")
+    put("professional", bool(ex.get("ig_user_id")), "Professional account (Business/Creator) linked to a Page."
+        if ex.get("ig_user_id") else "No professional account found on your Pages.")
+    put("page", bool(tok.get("page_id")), f"Facebook Page linked: {tok.get('page_name') or tok.get('page_id')}."
+        if tok.get("page_id") else "No Facebook Page linked.")
+    exp = tok.get("user_token_expires_at")
+    left = (dt.datetime.fromisoformat(exp.replace("Z", "+00:00")) - dt.datetime.now(dt.timezone.utc)) if exp else None
+    valid = bool(tok.get("page_token")) and ch.auth_status == "ok" and (left is None or left > dt.timedelta(0)) and \
+        tok.get("token_valid") is not False
+    put("token", valid, (f"Login valid ({left.days} days left, renews itself)." if left is not None and valid else
+                         "Login valid." if valid else ch.auth_error or "Login missing or expired: Reconnect."))
+    granted = set(tok.get("granted") or ex.get("granted") or [])
+    if granted:
+        missing = [p for p in PUBLISH_SCOPES if p not in granted]
+        put("permissions", not missing, "Publishing permissions granted." if not missing else
+            "Missing permission(s): " + ", ".join(missing) + " — Reconnect and allow them all.")
+    else:
+        put("permissions", None, "Permissions not checked yet (reconnect once, or run the live check).")
+    if live and valid:
+        c = c or client(cfg)
+        try:
+            lim = c.publishing_limit(ig_id_of(ch), tok["page_token"])
+            used = int(lim.get("quota_usage") or 0)
+            total = int((lim.get("config") or {}).get("quota_total") or cfg.instagram.publish_limit)
+            put("publish_limit", used < total - cfg.instagram.publish_limit_margin,
+                f"Publishing limit: {used}/{total} posts in the last 24 h.")
+        except IGError as exc:
+            put("publish_limit", False, f"Couldn't read the publishing limit: {exc}")
+        try:
+            perms = c.permissions(tok.get("user_token", ""))
+            g = sorted(p["permission"] for p in perms if p.get("status") == "granted")
+            tok["granted"] = g
+            save_tokens(ig_id_of(ch), tok, cfg)
+            missing = [p for p in PUBLISH_SCOPES if p not in g]
+            put("permissions", not missing, "Publishing permissions granted." if not missing else
+                "Missing permission(s): " + ", ".join(missing) + " — Reconnect and allow them all.")
+        except IGError as exc:
+            put("permissions", None, f"Couldn't read permissions: {exc}")
+    required = ("meta_app", "ig_id", "page", "token", "permissions")
+    ready = all(checks[k]["ok"] is True for k in required) and checks.get("publish_limit", {"ok": True})["ok"] is not False
+    res = {"checks": checks, "auto_ready": ready, "connected": valid,
+           "summary": "Auto-publish ready." if ready else "Connected, not auto-publish ready: " + "; ".join(
+               checks[k]["text"] for k in required if checks[k]["ok"] is not True)}
+    if live:
+        chs.update(ch.id, extra_json=json.dumps({**ex, "ig_eligibility": {"auto_ready": ready, "summary": res["summary"]}}))
+    return res
 
 
 # ----------------------------------------------------------------------------- video pre-flight (ffprobe)

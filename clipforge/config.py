@@ -73,6 +73,8 @@ class LLMConfig(_Section):
     keep_alive: str = "30m"  # Ollama: unload the model this long after the last request (server: "2m" frees RAM for Whisper)
     num_thread: int = Field(0, ge=0)  # Ollama CPU threads; 0 = Ollama's default (one per physical core)
     seed: int | None = None  # Ollama sampling seed: a number makes re-runs reproducible (None = random)
+    max_calls_per_day: int = Field(200, ge=0)  # publishing metadata LLM calls per day (0 = no limit); over → metadata waits
+    max_concurrent: int = Field(1, ge=1)       # parallel metadata LLM calls
 
 
 class SelectConfig(_Section):
@@ -153,6 +155,33 @@ class PublishingConfig(_Section):
     category_id: str = "27"
     language: str = "hi"
     sync_every_hours: float = 12
+
+
+class YouTubeLimitsConfig(_Section):
+    """Publishing v2: upload eligibility per YouTube channel (Google doesn't expose 'uploads left')."""
+
+    daily_safety_limit: int = Field(8, ge=1, le=100)  # successful uploads per rolling 24 h per channel
+    min_gap_sec: int = Field(120, ge=0)               # between two uploads of one channel
+    max_per_batch: int = Field(2, ge=1)               # uploads per scheduler run per channel
+    cooldown_hours: float = 24                        # after uploadLimitExceeded (from the first upload of the window)
+    project_units_safe_pct: int = Field(90, ge=10, le=100)  # stop uploads above this % of the daily API units
+    override_until: str = ""                          # ISO date/time: ignore cooldown + safety limit until then
+
+
+class ScheduleConfig(_Section):
+    """Publishing v2: daily plan per platform (IST). Slots before `day_cutoff` belong to the previous evening."""
+
+    enabled: bool = True                # False = use the old per-channel slot lists (publishing.slots / instagram.slots)
+    auto_adapt: bool = True             # weekly move slots ±30–60 min toward better 24-h views (≥20 posts)
+    day_cutoff: str = "05:00"
+    ig_morning: list[str] = ["08:00", "09:30", "11:00"]
+    ig_evening: list[str] = ["18:00", "19:30", "21:00", "22:15", "23:30", "00:45"]
+    ig_min_per_day: int = Field(7, ge=1, le=12)
+    ig_max_per_day: int = Field(9, ge=1, le=12)
+    ig_min_gap_minutes: int = 60
+    yt_slots: list[str] = ["12:30", "15:00", "18:30", "20:30", "22:00"]
+    yt_sixth_slot: str = "23:30"
+    adapt_min_posts: int = 20
 
 
 class YppConfig(_Section):
@@ -294,6 +323,8 @@ class Config(_Section):
     output: OutputConfig = OutputConfig()
     publishing: PublishingConfig = PublishingConfig()
     ypp: YppConfig = YppConfig()
+    youtube: YouTubeLimitsConfig = YouTubeLimitsConfig()
+    schedule: ScheduleConfig = ScheduleConfig()
     instagram: InstagramConfig = InstagramConfig()
     auth: AuthConfig = AuthConfig()
     power: PowerConfig = PowerConfig()

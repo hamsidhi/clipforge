@@ -800,3 +800,84 @@ Runs unattended; every decision is logged here. Final write-up: `PUBLISHING_REPA
   path deletes queue items by itself); not re-added.
 - The 15 clips still in an old Studio batch were moved to auto upload (`unbatch`) after Sync confirmed none of them
   is on YouTube (the only unlinked channel video is the private test). They wait for the upload limit like the rest.
+
+## Publishing v2 (2026-11-05/06)
+Brief: Instagram auto-publish, no duplicates, YouTube limit controller, daily schedule, independent pipelines,
+honest /health and /needsyou — with no Claude/agent needed to run the queue. Report: `PUBLISHING_V2_REPORT.md`.
+
+### Facts checked first (docs, 2026-11-05)
+- Instagram publishing (Facebook Login path) needs `instagram_basic`, `instagram_content_publish`,
+  `pages_read_engagement`; `pages_show_list` to list the Pages. `business_management` is not listed as required
+  (kept as optional for Pages owned through a Business portfolio). Development-mode apps get Standard Access for
+  people with a role on the app: no App Review for your own account.
+- Redirect URIs: Strict Mode is required (exact match: scheme, host, port, path). Meta's security / manual-flow pages
+  document no localhost exemption, so the URI must be added explicitly:
+  `http://localhost:8000/api/instagram/oauth/callback` (no trailing slash). "Enforce HTTPS" is on by default for new
+  apps; if Meta refuses the http URI, that setting is why (TODO_ON_LAPTOP 0b).
+- Reels insights: `views` is current (`plays` gone), saves = `saved`. YouTube Analytics has `creatorContentType=SHORTS`.
+- `videos.insert` errors: 400 `uploadLimitExceeded` ("The user has exceeded the number of videos they may upload"),
+  403 `quotaExceeded` (general table), 403 `forbidden`, 400 invalid* metadata reasons.
+
+### The 9 uploaded Shorts (read-only `videos.list(part=status)`, 5 Nov 19:04 IST)
+All 9: `uploadStatus: processed`, `privacyStatus: private`, `publishAt` = their slot (6 Nov 01:30Z … 7 Nov 07:00Z).
+None is locked private (a lock drops publishAt); Google lifted the unaudited lock on 2 Nov 2026. Untouched.
+
+### Instagram root cause
+- `figuringclips.in` was created by `channels.add_manual_instagram` (Accounts → add manually): id
+  `ig:manual:figuringclips.in`, `extra.manual = true`, no IG user id, no Page, no token
+  (`workspace/accounts/instagram/` doesn't exist); `modes.resolve` → assisted (`manual_account`). Facebook Login was
+  never completed on this laptop, so no code path could make it auto.
+- Fixes: `finish_oauth` runs `login_checks` (me/permissions + debug_token with the app token); `pick` →
+  `register_instagram` converts a manual account with the same username **in place** (same row id: queue items and
+  tracked Reels stay attached) and sets mode `auto` only when every publish permission is granted and the token is
+  valid (else `assisted`). `ig.eligibility()` reports professional / Page / IG id / token + expiry / permissions /
+  publishing limit / auto-ready; "Connected" ≠ "Auto-publish ready" in the UI and Telegram.
+- `media_publish` returns a media id; the item becomes PUBLISHED only after `GET /{media-id}` returns it.
+- No Instagram `video_url` path exists (the only `video_url` is the web app's own clip preview URL).
+
+### Duplicates
+- `pub_key = sha256(video_id | rank | clip file sha256 | platform | account | intent)`, unique index
+  `ux_queue_pub_key` (replaces v16's (clip_key, platform, account) index so an explicit republish can coexist).
+  The file hash is cached per render in `clips/_work/sha256.json` (size + mtime).
+- A "logical twin" (same episode + rank + platform + account + intent: after a re-render changed the hash, or a pre-v2
+  row) also counts: the same clip is never posted twice on one account without an explicit republish.
+- Checked when adding (transaction + unique index; IntegrityError = duplicate) and again as the first check of an
+  upload job. Duplicates become `skipped_duplicate` (final, kept), never deleted. `dedup.backfill` keys old rows once
+  per process.
+
+### YouTube limits
+- One error table: `publish/yt_errors.py` (`REASON_TYPE` on the real `reason`, then HTTP status, then network).
+- Ledger `UploadLedger`: every attempt (both platforms); only `succeeded_at` rows count as uploads.
+- `publish/limits.py` before each upload: cooldown → project quota (inserts, units ≥ 90%) → successful uploads in
+  24 h < `youtube.daily_safety_limit` (8) → ≤1 active upload → `min_gap_sec` (120 s, also inside one run, so a run
+  uploads one clip and the next minute's run the next) → `max_per_batch` (2). `override_until` skips cooldown +
+  safety limit.
+- `uploadLimitExceeded`: the channel's waiting clips become `waiting_capacity` (slots kept); cooldown = first
+  successful upload of the 24-h window + 24 h (≥30 min from now). Then ONE probe upload: success clears the cooldown
+  and the batch continues; a refusal starts a new cooldown. Clips whose slot passed move to the next free slot and
+  you're told on Telegram.
+- Deviation: during a cooldown the read-only status refresh (`videos.list`) still runs, so already scheduled Shorts
+  still flip to "published"; no uploads, no metadata/LLM work for that channel.
+
+### Daily schedule
+- `publish/plan.py` + `schedule:` config; `slots.Plan.day_plan` (per-day lists; slots before `day_cutoff` 05:00
+  count for the evening before). Used when an account has no explicit `slots` in its own settings.
+- Instagram 7/day (3 morning + 4 evening), 8–9 when approved clips cover today + 1 day. YouTube 5/day, 6 when the last
+  7 days' median 24-h views ≥ the 7 before (≥3 Shorts each), capped by the safety limit.
+- Adaptation: deterministic, `VideoPerf.views_24h` (70% last 14 days), ±30/60 min, ≥10% better, inside windows
+  (IG 07:00–12:00 / 18:00–01:30, YT 11:30–00:30), weekly; one exploration slot a day once active.
+  `schedule.auto_adapt: false` = suggestion only (`extra.adapt_suggestion`). Existing heatmap on the Dashboard.
+- 17:45–18:15 IST: if Instagram posts are due tonight and only a Task Scheduler run is alive, Telegram warns. With the
+  laptop off nothing can warn (documented limit).
+
+### LLM
+- The publisher only calls the LLM to write metadata for an item without it; `generate_metadata` returns stored
+  metadata unchanged (Regenerate sets `pending` first). `llm.max_calls_per_day` (200) / `max_concurrent` (1) wrap the
+  provider (`publish/llm_budget.py`); at the cap only metadata waits.
+
+### /health, /needsyou
+- /health (API + Telegram): heartbeat, DB check, per account auto-ready, uploads in 24 h (ledger), cooldown, last
+  failures (reason only), next post, today's + tomorrow's plan, e.g. "YT 5 / IG 7".
+- /needsyou: account actions (reconnect, missing Page/permissions, auto impossible, audit rejected) + items whose reason
+  needs a person. Self-healing reasons (retrying, quota, channel_limit, safety_limit, duplicate, ig_limit,
+  ig_find_media) are never listed.

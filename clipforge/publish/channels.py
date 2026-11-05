@@ -117,19 +117,32 @@ def remove(channel_id: str, cfg: Config | None = None) -> None:
         shutil.rmtree(yt.token_path(channel_id, cfg).parent, ignore_errors=True)
 
 
-def register_instagram(info: dict, token_expires_at: str, cfg: Config | None = None) -> db.Channel:
-    """Upsert an Instagram account row (keeps existing settings). id = "ig:<ig user id>"."""
+def register_instagram(info: dict, token_expires_at: str, cfg: Config | None = None,
+                       checks: dict | None = None) -> db.Channel:
+    """Upsert an Instagram account row (keeps existing settings). id = "ig:<ig user id>".
+    A manual account with the same username is converted IN PLACE (same row id, so its queue items, tracked Reels
+    and history stay attached). Mode becomes auto only when every login check passed (Publishing v2, step 7)."""
     cid = f"ig:{info['ig_user_id']}"
+    manual_id = f"ig:manual:{(info.get('username') or '').lower()}"
     with db.session() as s:
-        ch = s.get(db.Channel, cid) or db.Channel(id=cid, platform="instagram")
+        ch = s.get(db.Channel, cid) or s.get(db.Channel, manual_id) or db.Channel(id=cid, platform="instagram")
         ch.platform = "instagram"
         ch.title, ch.handle = info.get("username", ""), f"@{info.get('username', '')}"
         ch.thumbnail = info.get("profile_picture_url", "")
         ch.auth_status, ch.auth_error = "ok", ""
+        checks = checks or {}
+        granted = list(checks.get("granted") or [])
         ch.extra_json = json.dumps({"ig_user_id": info["ig_user_id"], "username": info.get("username", ""),
                                     "page_id": info.get("page_id", ""), "page_name": info.get("page_name", ""),
                                     "followers": info.get("followers", 0), "token_expires_at": token_expires_at,
-                                    "profile_picture_url": info.get("profile_picture_url", "")})
+                                    "profile_picture_url": info.get("profile_picture_url", ""), "manual": False,
+                                    "granted": granted, "converted_from_manual": ch.id == manual_id})
+        from clipforge.publish import instagram as ig
+
+        ok = all(p in granted for p in ig.PUBLISH_SCOPES) and checks.get("token_valid") is True  # every check passed
+        settings = dict(ch.settings)
+        settings["mode"] = "auto" if ok else "assisted"
+        ch.settings_json = json.dumps(settings)
         s.add(ch)
         s.commit()
         s.refresh(ch)

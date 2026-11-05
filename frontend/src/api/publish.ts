@@ -122,6 +122,8 @@ export const STATUS_STYLE: Record<string, string> = {
   uploading: 'bg-primary/15 text-primary',
   processing: 'bg-primary/15 text-primary',
   cancelled: 'bg-muted text-muted-foreground',
+  skipped_duplicate: 'bg-muted text-muted-foreground',
+  waiting_capacity: 'bg-amber-500/15 text-amber-300',
   scheduled: 'bg-violet-500/15 text-violet-300',
   published: 'bg-success/15 text-success',
   failed: 'bg-destructive/15 text-destructive',
@@ -134,7 +136,8 @@ export const STATUS_LABEL: Record<string, string> = {
   draft: 'Draft', queued: 'Scheduled, not uploaded yet', uploading: 'Uploading', processing: 'Uploaded, processing',
   ready: 'Uploaded, publishes at slot', scheduled: 'Uploaded (private), goes public at the slot',
   uploaded: 'On YouTube (private/unlisted)', published: 'Published', failed: 'Failed', locked_private: 'Uploaded but locked private',
-  needs_manual: 'Needs you', missed: 'Missed slot', cancelled: 'Cancelled',
+  needs_manual: 'Needs you', missed: 'Missed slot', cancelled: 'Cancelled', skipped_duplicate: 'Skipped: duplicate',
+  waiting_capacity: "Waiting: YouTube's upload limit",
 }
 
 /** The label to show for an item: server wording first. */

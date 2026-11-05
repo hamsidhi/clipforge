@@ -12,7 +12,7 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import dataclass, field
 from statistics import median
-from typing import Callable, Iterator
+from typing import Callable, Iterator, Optional
 
 from clipforge.publish.timez import as_utc, local_to_utc, utc_to_local
 
@@ -28,6 +28,10 @@ class Plan:
     min_gap_hours: float = 2.5
     days: list[int] = field(default_factory=lambda: [0, 1, 2, 3, 4, 5, 6])  # Monday=0
     start_date: dt.date | None = None
+    # Publishing v2 daily plan: day → that day's slots (HH:MM); slots before `cutoff` fall on the next date and
+    # count for the evening before. None = the fixed `slots` list above.
+    day_plan: Optional[Callable[[dt.date], list[str]]] = None
+    cutoff: str = "05:00"
 
     @classmethod
     def from_settings(cls, s: dict) -> "Plan":
@@ -64,6 +68,9 @@ def free_slots(plan: Plan, taken: list[dt.datetime], now: dt.datetime, days_ahea
 
     `taken` is read live (UTC datetimes): the caller appends the slots it fills, skipped slots stay free."""
     now = as_utc(now)
+    if plan.day_plan is not None:
+        yield from _free_slots_daily(plan, taken, now, days_ahead)
+        return
     today = utc_to_local(now, plan.zone).date()
     start = max(today, plan.start_date) if plan.start_date else today
     gap = dt.timedelta(hours=plan.min_gap_hours)
@@ -77,6 +84,35 @@ def free_slots(plan: Plan, taken: list[dt.datetime], now: dt.datetime, days_ahea
                 continue
             per_day = sum(1 for x in taken if utc_to_local(x, plan.zone).date() == day)
             if per_day >= plan.posts_per_day:
+                break
+            if any(abs(t - as_utc(x)) < gap for x in taken):
+                continue
+            yield t, hhmm in plan.peak_slots
+
+
+def _free_slots_daily(plan: Plan, taken: list[dt.datetime], now: dt.datetime, days_ahead: int) -> Iterator[tuple[dt.datetime, bool]]:
+    ch, cm = (int(x) for x in plan.cutoff.split(":"))
+    cut = dt.timedelta(hours=ch, minutes=cm)
+
+    def pday(t: dt.datetime) -> dt.date:
+        return (utc_to_local(t, plan.zone) - cut).date()
+
+    start = pday(now)
+    if plan.start_date and plan.start_date > start:
+        start = plan.start_date
+    gap = dt.timedelta(hours=plan.min_gap_hours)
+    for d in range(days_ahead):
+        day = start + dt.timedelta(days=d)
+        if day.weekday() not in plan.days:
+            continue
+        times = plan.day_plan(day)  # type: ignore[misc]
+        for hhmm in times:
+            h, m = (int(x) for x in hhmm.split(":"))
+            date = day + dt.timedelta(days=1) if dt.timedelta(hours=h, minutes=m) < cut else day
+            t = local_to_utc(date, hhmm, plan.zone)
+            if t < now + LEAD:
+                continue
+            if sum(1 for x in taken if pday(as_utc(x)) == day) >= len(times):
                 break
             if any(abs(t - as_utc(x)) < gap for x in taken):
                 continue

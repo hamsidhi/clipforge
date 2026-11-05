@@ -496,6 +496,8 @@ def on_run_report(rep) -> None:
             if why == "needs re-login":
                 b.notify("reauth", f"🔑 {ch_id} needs a new login — open Accounts on the laptop and click Reconnect.",
                          key=f"reauth:{ch_id}:{dt.date.today()}")
+        for note in getattr(rep, "notices", []):  # moved slots, upload-limit waits (Publishing v2)
+            b.notify("publish_failed", f"ℹ️ {scrub(note)[:300]}", key=f"note:{dt.date.today()}:{note[:80]}")
         if rep.quota_exhausted:
             b.notify("quota", "⏳ YouTube upload quota used up today — uploads continue tomorrow automatically.",
                      key=f"quota:{dt.date.today()}")

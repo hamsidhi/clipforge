@@ -119,5 +119,17 @@ class FakeInstagram:
     def insights(self, media_id: str, token: str) -> dict:
         return {"views": 1500, "reach": 1200, "likes": 80, "comments": 6, "shares": 9, "saved": 14}
 
+    granted = ["instagram_basic", "instagram_content_publish", "pages_read_engagement", "pages_show_list",
+               "business_management", "instagram_manage_insights"]
+    token_valid = True
+
+    def permissions(self, user_token: str) -> list[dict]:
+        self._auth(user_token)
+        return [{"permission": p, "status": "granted"} for p in self.granted] + [
+            {"permission": "pages_manage_posts", "status": "declined"}]
+
+    def debug_token(self, token: str) -> dict:
+        return {"is_valid": self.token_valid, "type": "USER", "expires_at": 0}
+
     def revoke(self, user_token: str) -> None:
         self.revoked.append(user_token)

@@ -507,8 +507,7 @@ def autoschedule(channel_id: str, body: AutoIn = AutoIn()) -> dict:
 @router.get("/channels/{channel_id}/free-slots", summary="Next free publish times (for moving a clip)")
 def free_slots(channel_id: str, n: int = 12) -> list[dict]:
     ch = _ch_or_404(channel_id)
-    settings = chs.settings_of(ch)
-    plan = slots.Plan.from_settings(settings)
+    plan = q.plan_for(ch, load_config(), now_utc())
     taken = [as_utc(it.slot_utc) for it in q.items(channel_id, q.PLANNED) if it.slot_utc]
     out = []
     for t, peak in slots.free_slots(plan, taken, now_utc(), 30):

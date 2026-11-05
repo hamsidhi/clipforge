@@ -20,8 +20,8 @@ from clipforge.utils.log import log
 
 ACTIVE = ("draft", "queued", "uploading", "ready", "scheduled", "uploaded", "published", "needs_manual",
           "locked_private", "missed", "failed")
-PLANNED = ("queued", "uploading", "ready", "scheduled", "published", "needs_manual")
-ON_PLATFORM = ("uploading", "ready", "scheduled", "uploaded", "published", "locked_private")
+PLANNED = ("queued", "uploading", "processing", "ready", "scheduled", "published", "needs_manual", "waiting_capacity")
+ON_PLATFORM = ("uploading", "processing", "ready", "scheduled", "uploaded", "published", "locked_private")
 
 
 class QueueError(ValueError):
@@ -156,19 +156,24 @@ def add_clips(channel_id: str, video_id: str, ranks: list[int] | None, cfg: Conf
         cands = [c for c in cands if c.approved]
     if not cands:
         raise QueueError("No clips to add (approve some clips first, or pass their ranks).")
-    with db.session() as s:
-        have = {it.clip_key for it in s.exec(select(db.QueueItem).where(db.QueueItem.channel_id == channel_id)).all()}
+    from clipforge.publish import dedup
+
     out = []
     for c in cands:
-        if not ws.find_clip(c.rank):
+        f = ws.find_clip(c.rank)
+        if not f:
             raise QueueError(f"Clip {c.rank} isn't rendered yet.")
-        key = clip_key(video_id, c)
-        if key in have:
-            continue  # duplicate guard
-        out.append(save(db.QueueItem(channel_id=channel_id, video_id=video_id, rank=c.rank, clip_key=key,
-                                     episode_title=info.title, topic=c.topic, score=c.score, duration=c.duration,
-                                     title=c.title, category_id=str(chs.settings_of(ch, cfg).get("category_id", "27")),
-                                     platform=ch.platform or "youtube")))
+        platform = ch.platform or "youtube"
+        new = db.QueueItem(channel_id=channel_id, video_id=video_id, rank=c.rank, clip_key=clip_key(video_id, c),
+                           episode_title=info.title, topic=c.topic, score=c.score, duration=c.duration,
+                           title=c.title, category_id=str(chs.settings_of(ch, cfg).get("category_id", "27")),
+                           platform=platform)
+        new.pub_key = dedup.make_key(video_id, c.rank, dedup.file_sha256(f), platform, channel_id, "original")
+        row, outcome = dedup.add_or_skip(new)  # atomic check-and-create (unique pub_key)
+        if outcome in ("created", "resumed") and row is not None:
+            out.append(row)
+        else:
+            log.info(f"[queue] clip {video_id}#{c.rank} on {channel_id}: {outcome}")
     return out
 
 
@@ -199,12 +204,22 @@ def generate_metadata(item_id: int, cfg: Config | None = None, llm=None) -> db.Q
     ch = chs.get(it.channel_id)
     if not ch:
         raise QueueError("Unknown channel")
+    if it.meta_status == "ready" and (it.title or it.ig_caption):
+        return it  # metadata is written once and kept: a publish retry never calls the LLM (Regenerate sets pending)
     ws, c = candidate_for(it, cfg)
     info = pipeline.load_info(ws)
     words = pipeline.load_transcript(ws).all_words()
     if llm is None:
         llm = pipeline.get_llm(cfg, required=False)
-    meta = metadata_opt.generate(c, info, words, chs.settings_of(ch, cfg), llm, existing_titles(it.channel_id, it.id))
+    from clipforge.publish import llm_budget
+
+    if llm is not None:
+        llm = llm_budget.Budgeted(llm, cfg)
+    try:
+        meta = metadata_opt.generate(c, info, words, chs.settings_of(ch, cfg), llm, existing_titles(it.channel_id, it.id))
+    except llm_budget.BudgetExceeded as exc:  # only the metadata step pauses
+        it.meta_status, it.error = "pending", str(exc)
+        return save(it)
     it.title, it.description = meta["title"], meta["description"]
     it.tags_json, it.variants_json = json.dumps(meta["tags"], ensure_ascii=False), json.dumps(meta["variants"], ensure_ascii=False)
     it.ig_caption, it.category_id = meta["ig_caption"], meta["category_id"]
@@ -245,6 +260,22 @@ def daily_capacity_fn(cfg: Config, exclude_channel: str | None = None):
     return lambda day: max(0, cfg.publishing.insert_calls_per_day - counts.get(day, 0))
 
 
+def plan_for(ch: db.Channel, cfg: Config, now: dt.datetime) -> slots.Plan:
+    """Publishing v2 daily plan (schedule.enabled) unless this account has its own slot list in its settings."""
+    from clipforge.publish import plan as daily
+
+    settings = chs.settings_of(ch, cfg)
+    p = slots.Plan.from_settings(settings)
+    if cfg.schedule.enabled and "slots" not in (ch.settings or {}):
+        platform = ch.platform or "youtube"
+        p.day_plan = lambda day: daily.day_slots(ch, cfg, day, now)
+        p.cutoff = cfg.schedule.day_cutoff
+        p.min_gap_hours = daily.min_gap_hours(platform, cfg)
+        p.slots = daily.base_slots(platform, cfg, 9 if platform == "instagram" else 6)
+        p.peak_slots = (["19:30", "21:00", "22:15"] if platform == "instagram" else ["18:30", "20:30"])
+    return p
+
+
 def autoschedule(channel_id: str, item_ids: list[int] | None = None, cfg: Config | None = None,
                  now: dt.datetime | None = None) -> list[db.QueueItem]:
     """Put draft items (metadata ready, no problems) into the next free slots of the channel."""
@@ -252,8 +283,8 @@ def autoschedule(channel_id: str, item_ids: list[int] | None = None, cfg: Config
     ch = chs.get(channel_id)
     if not ch:
         raise QueueError("Unknown channel")
-    plan = slots.Plan.from_settings(chs.settings_of(ch, cfg))
-    if not plan.slots:
+    plan = plan_for(ch, cfg, now or now_utc())
+    if not plan.slots and plan.day_plan is None:
         raise QueueError("This channel has no publish slots — set them in Channels → Schedule settings.")
     drafts = [it for it in items(channel_id, ("draft",)) if item_ids is None or it.id in item_ids]
     ready, seen = [], set()
@@ -324,7 +355,8 @@ def next_free_slot(channel_id: str, now: dt.datetime | None = None, exclude_id: 
     ch = chs.get(channel_id)
     if not ch:
         return None
-    plan = slots.Plan.from_settings(chs.settings_of(ch, cfg))
+    cfg = cfg or load_config()
+    plan = plan_for(ch, cfg, now or now_utc())
     taken = [as_utc(o.slot_utc) for o in items(channel_id, PLANNED) if o.slot_utc and o.id != exclude_id]
     for t, _peak in slots.free_slots(plan, taken, now or now_utc(), 60):
         return t

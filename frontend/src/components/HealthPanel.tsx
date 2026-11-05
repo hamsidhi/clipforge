@@ -46,6 +46,7 @@ export default function HealthPanel() {
           {h.ticker ? `${time(h.next_run_at)} (web app, every minute)` : task ? `${task.next_run} (Task Scheduler)` : 'only when you open the app'}
           {task && <div className="text-xs text-muted-foreground">Task: {task.status}, last result {task.last_result}</div>}
         </Row>
+        {h.plan_today && <Row icon={Timer} label="Today's plan">{h.plan_today}</Row>}
         <Row icon={Activity} label="YouTube uploads left today">
           {h.quota.inserts}/{h.quota.inserts_limit} uploads · {h.quota.units.toLocaleString()} units
         </Row>
@@ -61,6 +62,16 @@ export default function HealthPanel() {
               Last published: {a.last_published ? <>{a.last_published.url ? <a className="underline" href={a.last_published.url} target="_blank" rel="noreferrer">{a.last_published.title}</a> : a.last_published.title} · {a.last_published.at}</> : 'none confirmed yet'}
             </div>
             {a.next_post && <div className="text-xs text-muted-foreground">Next: {a.next_post.at} · {a.next_post.status} ({a.upcoming} upcoming)</div>}
+            <div className="text-xs" data-testid="auto-ready">
+              {a.auto_ready ? <span className="text-success">Auto-publish ready</span>
+                : a.connected ? <span className="text-amber-300">Connected, not auto-publish ready{a.eligibility ? `: ${a.eligibility.summary}` : ''}</span>
+                : <span className="text-muted-foreground">Not connected for auto-publishing</span>}
+              {a.limits && <span className="text-muted-foreground"> · uploads in 24 h: {a.limits.uploads_24h}{a.limits.safety_limit ? `/${a.limits.safety_limit}` : ''}</span>}
+              {a.limits?.cooldown_until && <span className="text-amber-300"> · upload limit: waiting until {new Date(a.limits.cooldown_until).toLocaleString('en-IN', { weekday: 'short', hour: 'numeric', minute: '2-digit' })}</span>}
+            </div>
+            {a.plan && a.plan.length > 0 && (
+              <div className="text-xs text-muted-foreground">Plan {a.plan.map((p) => `${p.label}: ${p.slots.join(', ')}`).join(' · ')}</div>
+            )}
             {a.attention > 0 && <div className="text-xs text-amber-300">{a.attention} clip(s) need attention (Schedule page)</div>}
           </Row>
         ))}

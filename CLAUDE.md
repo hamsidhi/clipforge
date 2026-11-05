@@ -131,6 +131,14 @@ cd frontend && npm install && npm run build   # build the UI once
 - `clipforge scheduler --dry-run`; `clipforge publish-test <channel>` = private, no publishAt (the token has no
   `videos.update` scope, so a publishAt can't be removed afterwards).
 
+### Publishing v2 (2026-11-06): duplicates, limits, daily plan
+- `publish/dedup.py` (pub_key, unique `ux_queue_pub_key`, `add_or_skip`, `duplicate_of`, `republish`, `backfill`),
+  `publish/yt_errors.py` (the ONE Google error table), `publish/limits.py` (UploadLedger, eligibility controller,
+  cooldown + probe), `publish/plan.py` (daily plan + adaptation), `publish/llm_budget.py`. New states
+  `skipped_duplicate` (final) and `waiting_capacity`. Config sections `youtube:` and `schedule:`.
+- Tests that need the old fixed slot lists / unlimited uploads write `schedule: {enabled: false}` and a loose
+  `youtube:` section into their temp config (see the env fixture in tests/test_publish.py).
+
 ### Queue state machine (Phase 12.5, `publish/states.py`)
 ```
 draft → queued → uploading → scheduled (on YouTube: private + publishAt) → published

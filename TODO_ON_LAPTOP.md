@@ -11,6 +11,19 @@ See [PUBLISHING_REPAIR_REPORT.md → J](PUBLISHING_REPAIR_REPORT.md). In short:
 4. `clipforge schedule-task install`.
 5. Instagram: connect the account with Facebook Login, then set its Mode to Auto.
 
+## 0b. Publishing v2 (6 Nov 2026): Instagram auto-publish (~10 min)
+1. **(3 min) Meta app → Facebook Login (for Business) → Settings → Valid OAuth Redirect URIs**: add exactly
+   `http://localhost:8000/api/instagram/oauth/callback` (http, localhost, port 8000, no trailing slash). Keep
+   Strict Mode on. If Meta refuses an http URI, turn **Enforce HTTPS** off for this Development-mode app (it only
+   affects your own login on this laptop) and add it again.
+2. **(1 min)** Your Facebook user needs a role on the app (Admin/Developer/Tester), so no App Review is needed.
+   Instagram `figuringclips.in` must be a Professional account linked to a Facebook Page.
+3. **(3 min) On the laptop** (http://localhost:8000, not the phone): Accounts → Instagram → **Add Instagram
+   account** → allow every permission → pick figuringclips.in. The manual account is converted in place (history
+   kept) and switches to **Auto** only if every check passes; the card then says "Auto-publish ready".
+4. **(1 min)** Telegram `/health`: the Instagram line must say "✅ auto-publish ready".
+5. Keep the laptop on and `clipforge ui` running until 01:30 IST on posting days (Instagram has no scheduling).
+
 ## 1. YouTube publishing (Phase 12): needs your Google account
 Everything is unit-tested with a fake YouTube client. The real OAuth flow, uploads and Analytics calls need you:
 1. **Google Cloud setup:** follow README → 5.1, then upload `client_secret.json` in Settings → Publishing.

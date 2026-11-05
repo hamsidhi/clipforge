@@ -2,7 +2,7 @@
 
 export type QueueStatus =
   | 'draft' | 'queued' | 'uploading' | 'processing' | 'ready' | 'scheduled' | 'uploaded' | 'published'
-  | 'failed' | 'locked_private' | 'needs_manual' | 'missed' | 'cancelled'
+  | 'failed' | 'locked_private' | 'needs_manual' | 'missed' | 'cancelled' | 'skipped_duplicate' | 'waiting_capacity'
 
 export type Platform = 'youtube' | 'instagram'
 export type Privacy = 'scheduled' | 'public' | 'unlisted' | 'private'
@@ -19,6 +19,11 @@ export interface AccountSummary {
   last_published: { title: string; at: string | null; url: string | null } | null
   next_post: { title: string; at: string | null; status: string } | null
   upcoming: number
+  auto_ready?: boolean
+  connected?: boolean
+  limits?: { uploads_24h: number; safety_limit?: number; cooldown_until: string | null; recent_failures: string[] }
+  plan?: { day: string; label: string; slots: string[]; count: number }[]
+  eligibility?: { auto_ready: boolean; connected: boolean; summary: string }
 }
 
 export interface ChannelSettings {
@@ -133,6 +138,8 @@ export interface Health {
   audit_status: AuditStatus
   api_audited: boolean
   accounts: AccountSummary[]
+  plan_today?: string
+  db?: { ok: boolean; text: string }
   heartbeat?: {
     ok: boolean; last_run: string | null; last_run_minutes_ago: number | null; source: string | null
     items_processed: number; next_run: string | null; in_app_ticker: boolean; windows_task: boolean; text: string

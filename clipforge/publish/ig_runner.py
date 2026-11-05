@@ -166,6 +166,12 @@ def _start_upload(it: db.QueueItem, ch: db.Channel, client: ig.IGClient, token: 
         _mark(it, "failed", "ig_format", "The video doesn't meet Instagram's Reels specs: " + " ".join(bad))
         rep.failed.append(it.id)
         return False
+    from clipforge.publish import dedup
+
+    twin = dedup.duplicate_of(it)  # duplicate first (queue + history)
+    if twin is not None:
+        dedup.mark_skipped(it, twin)
+        return False
     if not q.claim_for_container(it.id):
         return False
     it = q.get(it.id)  # type: ignore[assignment]
@@ -222,6 +228,9 @@ def _find_published(it: db.QueueItem, client: ig.IGClient, token: str, ig_id: st
 
 def _advance(it: db.QueueItem, client: ig.IGClient, token: str, ig_id: str, cfg: Config, now: dt.datetime, rep,
              fresh: bool = False) -> None:
+    if it.ig_media_id and it.status != "published":  # published earlier, read-back pending: confirm, never re-publish
+        _confirm_media(it, client, token, now, rep)
+        return
     if it.status == "uploading" and not fresh:
         _resume_upload(it, client, token, cfg)
     st = client.container_status(it.ig_container_id, token)
@@ -267,17 +276,37 @@ def _advance(it: db.QueueItem, client: ig.IGClient, token: str, ig_id: str, cfg:
     if used >= total - cfg.instagram.publish_limit_margin:
         _mark(it, "ready", "ig_limit", f"Instagram's limit of {total} API posts per 24 h is nearly used ({used}) — retrying.")
         return
-    media_id = client.publish(ig_id, token, it.ig_container_id)  # once: a stored media id is never published again
-    it.ig_media_id, it.status, it.reason, it.error, it.published_at = media_id, "published", "", "", now
-    q.save(it)  # the media id first (the next call may fail)
+    from clipforge.publish import limits
+
     try:
-        m = client.media(media_id, token)  # platform check: the Reel exists, and its link
-        it.permalink = m.get("permalink", "")
-        q.save(it)
+        media_id = client.publish(ig_id, token, it.ig_container_id)  # once: a stored media id is never published again
     except ig.IGError as exc:
-        log.warning(f"[instagram] published {media_id} but couldn't read it back: {exc}")
+        limits.record("instagram", it.channel_id, queue_id=it.id, pub_key=it.pub_key, result="error",
+                      error_type="auth" if exc.auth else "temporary" if exc.transient else "permanent",
+                      error_reason=str(exc), at=now)
+        raise
+    it.ig_media_id, it.status, it.reason = media_id, "processing", "ig_find_media"
+    it.error = "Instagram accepted the post; confirming it through the API."
+    q.save(it)  # the media id first (the read-back may fail)
+    limits.record("instagram", it.channel_id, queue_id=it.id, pub_key=it.pub_key, video_id=media_id, result="ok", at=now)
+    _confirm_media(it, client, token, now, rep)
+
+
+def _confirm_media(it: db.QueueItem, client: ig.IGClient, token: str, now: dt.datetime, rep) -> None:
+    """PUBLISHED only after the Graph API returns the Reel (media id + permalink)."""
+    try:
+        m = client.media(it.ig_media_id, token)
+    except ig.IGError as exc:
+        log.warning(f"[instagram] published {it.ig_media_id} but couldn't read it back yet: {exc}")
+        return
+    if not m.get("id"):
+        return
+    it.permalink = m.get("permalink", "") or it.permalink
+    it.status, it.reason, it.error = "published", "", ""
+    it.published_at = it.published_at or now
+    q.save(it)
     rep.published.append(it.id)
-    log.info(f"[instagram] published queue item {it.id} → {it.permalink or media_id}")
+    log.info(f"[instagram] published queue item {it.id} → {it.permalink or it.ig_media_id}")
 
 
 def _sync_insights(ch: db.Channel, client: ig.IGClient, token: str, ig_id: str, cfg: Config, now: dt.datetime) -> None:

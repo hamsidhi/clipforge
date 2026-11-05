@@ -163,7 +163,7 @@ def test_reconcile_matching():
 def env(tmp_path, monkeypatch):
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(f"output: {{dir: '{(tmp_path / 'ws').as_posix()}'}}\nllm: {{provider: mock}}\n"
-                        "publishing: {mode: api}\n", encoding="utf-8")
+                        "publishing: {mode: api}\n" "youtube: {min_gap_sec: 0, max_per_batch: 100, daily_safety_limit: 100}\nschedule: {enabled: false}\n", encoding="utf-8")
     monkeypatch.setattr(config_mod, "DEFAULT_CONFIG_PATH", cfg_path)
     from clipforge.api import db
     from clipforge.publish import youtube as yt

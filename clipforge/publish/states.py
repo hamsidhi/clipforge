@@ -24,7 +24,7 @@ import datetime as dt
 from typing import Any
 
 STATUSES = ("draft", "queued", "uploading", "processing", "ready", "scheduled", "uploaded", "published", "failed",
-            "locked_private", "needs_manual", "missed", "cancelled")
+            "locked_private", "needs_manual", "missed", "cancelled", "skipped_duplicate", "waiting_capacity")
 ATTENTION = ("failed", "locked_private", "needs_manual", "missed")
 
 # Names from the publishing spec (DECISIONS → "Publishing repair") for each stored status.
@@ -32,24 +32,30 @@ CANONICAL = {
     "draft": "DRAFT", "queued": "SCHEDULED", "uploading": "UPLOADING", "processing": "AWAITING_PLATFORM_PROCESSING",
     "ready": "READY_TO_PUBLISH", "scheduled": "PUBLISHED_PRIVATE_SCHEDULED", "uploaded": "UPLOADED_PRIVATE",
     "published": "PUBLISHED", "failed": "FAILED", "locked_private": "LOCKED_PRIVATE", "needs_manual": "NEEDS_MANUAL",
-    "missed": "MISSED", "cancelled": "CANCELLED",
+    "missed": "MISSED", "cancelled": "CANCELLED", "skipped_duplicate": "SKIPPED_DUPLICATE",
+    "waiting_capacity": "WAITING_FOR_CHANNEL_CAPACITY",
 }
+# Publishing v2: work the scheduler still owns (a new copy of the same publication is a duplicate of these)
+ACTIVE_WORK = ("queued", "uploading", "processing", "ready", "waiting_capacity")
 
 _PLATFORM_STATES = {"scheduled", "uploaded", "published", "locked_private", "processing", "ready"}
 # from → allowed to.  Same-state saves are always allowed.  Linking / Sync may jump to whatever the platform reports.
 TRANSITIONS: dict[str, set[str]] = {
-    "draft": {"queued", "cancelled"},
-    "queued": {"draft", "uploading", "needs_manual", "missed", "failed", "cancelled"} | _PLATFORM_STATES,
-    "uploading": {"queued", "failed", "needs_manual", "missed"} | _PLATFORM_STATES,
+    "draft": {"queued", "cancelled", "skipped_duplicate"},
+    "queued": {"draft", "uploading", "needs_manual", "missed", "failed", "cancelled", "skipped_duplicate",
+               "waiting_capacity"} | _PLATFORM_STATES,
+    "waiting_capacity": {"queued", "draft", "cancelled", "skipped_duplicate", "missed", "failed"},
+    "skipped_duplicate": set(),                           # final (kept as history, never deleted)
+    "uploading": {"queued", "failed", "needs_manual", "missed", "waiting_capacity"} | _PLATFORM_STATES,
     "processing": {"queued", "failed", "needs_manual", "missed"} | _PLATFORM_STATES,
     "ready": {"queued", "failed", "missed", "processing", "published"},
     "scheduled": {"processing", "published", "locked_private", "uploaded", "failed", "needs_manual"},
     "uploaded": {"scheduled", "published", "locked_private", "failed"},
     "published": set(),                                   # final
     "locked_private": {"scheduled", "published", "uploaded", "failed", "needs_manual", "queued"},  # queued: Studio instead
-    "failed": {"queued", "draft", "needs_manual", "cancelled"} | _PLATFORM_STATES,
-    "missed": {"queued", "draft", "needs_manual", "failed", "cancelled"} | _PLATFORM_STATES,
-    "needs_manual": {"queued", "draft", "missed", "failed", "cancelled"} | _PLATFORM_STATES,
+    "failed": {"queued", "draft", "needs_manual", "cancelled", "skipped_duplicate"} | _PLATFORM_STATES,
+    "missed": {"queued", "draft", "needs_manual", "failed", "cancelled", "skipped_duplicate"} | _PLATFORM_STATES,
+    "needs_manual": {"queued", "draft", "missed", "failed", "cancelled", "skipped_duplicate"} | _PLATFORM_STATES,
     "cancelled": {"draft", "queued"},
 }
 
@@ -101,6 +107,10 @@ REASONS: dict[str, tuple[str, tuple[str, ...]]] = {
     "locked_private": ("Locked private by YouTube", ("audit_info", "studio", "studio_instead")),
     "quota": ("Upload quota used up: continues tomorrow automatically", ()),
     "retrying": ("Retrying automatically", ("retry",)),
+    "channel_limit": ("Waiting: YouTube's upload limit for this channel", ()),
+    "safety_limit": ("Waiting: daily safety limit for uploads", ()),
+    "duplicate": ("Skipped: duplicate of another post", ()),
+    "ig_not_ready": ("Instagram account isn't ready for auto-publishing", ("reconnect", "switch_assisted")),
     "upload_failed": ("Upload failed", ("retry", "reschedule")),
     "upload_limit": ("Waiting: YouTube's upload limit for this channel (retries by itself)", ("studio_instead",)),
     "rejected": ("YouTube rejected the video", ("studio",)),
@@ -210,6 +220,12 @@ def status_text(it: Any, zone: str = "Asia/Kolkata", mode: str = "", progress: f
         lab, det = label(reason) or "Missed slot", err
     elif st == "needs_manual":
         lab, det = label(reason) or "Needs you", err
+    elif st == "waiting_capacity":
+        lab = "Waiting: YouTube's upload limit for this channel"
+        det = (f"YouTube refused more uploads for now. ClipForge tries ONE upload after {_when(it.next_attempt_at, zone)}"
+               " and continues if it works; the slot is kept (or moved to the next free slot if it passes). " + err).strip()
+    elif st == "skipped_duplicate":
+        lab, det = "Skipped: duplicate", err or "The same clip is already planned or published on this account."
     elif st == "cancelled":
         lab, det = "Cancelled", err
     else:
