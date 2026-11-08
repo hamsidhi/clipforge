@@ -15,6 +15,16 @@ $ErrorActionPreference = "Continue"
 $Log = "$Root\workspace\logs\deploy_remote_fix.log"
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 function Say($m) { $line = "$(Get-Date -Format s) [deploy] $m"; Add-Content -Path $Log -Value $line; Write-Output $line }
+function Restart-ClipForge {
+    # Windows reports the listener on 8000 as PID 0 here, so find ClipForge by its exact command line (server
+    # `-m clipforge ui` + watchdog `-m clipforge service run`), stop those PIDs, then start the watchdog task fresh.
+    Stop-ScheduledTask -TaskName "ClipForge Service" -ErrorAction SilentlyContinue
+    $procs = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match '-m clipforge (ui|service run)' }
+    foreach ($p in $procs) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue; Say "stopped PID $($p.ProcessId)" }
+    for ($i = 0; $i -lt 20; $i++) { if (-not (Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue)) { break }; Start-Sleep 1 }
+    if (Get-ScheduledTask -TaskName "ClipForge Service" -ErrorAction SilentlyContinue) { Start-ScheduledTask -TaskName "ClipForge Service"; Say "watchdog task started" }
+    else { Start-Process -FilePath "$Root\start-ui.bat" -WorkingDirectory $Root; Say "started start-ui.bat (no watchdog task)" }
+}
 function Rollback { Say "UNHEALTHY -> rollback"; & powershell -NoProfile -ExecutionPolicy Bypass -File "$Here\rollback.ps1" -Old $Old -New $New -Root $Root; Say "DEPLOY RESULT: ROLLED BACK"; exit 2 }
 
 Set-Location $Root
@@ -45,19 +55,9 @@ $inst = & $py -m clipforge service install 2>&1
 Say "service install: $($inst | Select-Object -Last 2)"
 if (-not (Get-ScheduledTask -TaskName "ClipForge Service" -ErrorAction SilentlyContinue)) { Say "watchdog task missing"; Rollback }
 # 5. restart
-$conn = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($conn) {
-    $p = $conn.OwningProcess
-    $parent = (Get-CimInstance Win32_Process -Filter "ProcessId=$p").ParentProcessId
-    $pp = Get-CimInstance Win32_Process -Filter "ProcessId=$parent" -ErrorAction SilentlyContinue
-    Stop-Process -Id $p -Force
-    if ($pp -and $pp.CommandLine -match "clipforge ui") { Stop-Process -Id $parent -Force -ErrorAction SilentlyContinue }
-    Say "old server stopped (PID $p)"
-}
-for ($i = 0; $i -lt 15; $i++) { if (-not (Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue)) { break }; Start-Sleep 1 }
 $t0 = (Get-Date).ToUniversalTime()
-Start-ScheduledTask -TaskName "ClipForge Service"
-Say "watchdog task started at $($t0.ToString('s'))Z"
+Restart-ClipForge
+Say "restart at $($t0.ToString('s'))Z"
 # 6. health
 $healthy = $false
 for ($i = 0; $i -lt 60; $i++) {
