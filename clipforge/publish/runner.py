@@ -266,6 +266,15 @@ def _v2_housekeeping(cfg: Config, now: dt.datetime, rep: RunReport, source: str)
         _evening_watch(cfg, now, source, rep)
     except Exception as exc:
         log.warning(f"[publish] housekeeping: {exc}")
+    try:  # weekly reach report (read-only Google calls; never blocks publishing)
+        from clipforge.publish import reach
+
+        import os
+
+        if os.environ.get("CLIPFORGE_TESTING") != "1" and reach.weekly_due(cfg, now):
+            reach.run(cfg, now)
+    except Exception as exc:
+        log.warning(f"[publish] weekly reach report failed: {exc}")
 
 
 def _evening_watch(cfg: Config, now: dt.datetime, source: str, rep: RunReport) -> None:

@@ -88,6 +88,17 @@ def publishing_health() -> dict:
     return pub.health()
 
 
+@router.get("/publishing/reach", summary="Latest YouTube reach report (weekly; Dashboard)")
+def publishing_reach() -> dict:
+    from clipforge.publish import reach
+
+    rep = reach.latest()
+    if not rep:
+        return {"available": False}
+    return {"available": True, "generated_at": rep.get("generated_at"), "funnel": rep.get("funnel"),
+            "buckets": rep.get("buckets"), "summary": reach.telegram_summary(rep)}
+
+
 class AuditIn(BaseModel):
     status: Literal["not_applied", "applied", "approved", "rejected"]
     applied_on: Optional[str] = None

@@ -52,10 +52,12 @@ export default function InstagramSettings({ cfg, set }: { cfg: Cfg; set: (sectio
               <a className="text-primary underline" href="https://developers.facebook.com/apps/creation/" target="_blank" rel="noreferrer">Create a Meta app</a>{' '}
               (type <b>Business</b>), add the products <b>Facebook Login for Business</b> and <b>Instagram</b>.
             </li>
-            <li>Facebook Login → Settings → <b>Valid OAuth Redirect URIs</b>: <code>{app?.redirect_uri ?? 'http://localhost:8000/api/instagram/oauth/callback'}</code></li>
+            <li>Facebook Login → Settings → <b>Valid OAuth Redirect URIs</b> — add each, exactly:{' '}
+              {(app?.redirect_uris ?? [app?.redirect_uri ?? 'http://localhost:8000/api/instagram/oauth/callback']).map((u) => (
+                <code key={u} className="mr-2 block break-all">{u}</code>))}</li>
             <li>App settings → Basic: copy the <b>App ID</b> and <b>App Secret</b> here. The app can stay in <b>Development</b> mode —
               no App Review is needed for your own accounts (your Facebook user is the app's admin).</li>
-            <li>Then Accounts → Instagram → <b>Add Instagram account</b> (on this laptop).</li>
+            <li>Then Accounts → Instagram → <b>Add Instagram account</b> (laptop, or the phone through Tailscale), or <b>Connect with a token</b>.</li>
           </ol>
           <div className="mt-4 grid gap-3 md:grid-cols-3">
             <div className="space-y-1.5">

@@ -212,6 +212,20 @@ class InstagramConfig(_Section):
     hours_after_youtube: float = 0      # "post to Instagram X hours after YouTube" (0 = same day, its own slot)
     share_to_feed: bool = True
     test_account_id: str = ""           # an IG user id ClipForge may post ONE live test Reel to (empty = never)
+    public_url: str = ""                # https base for logins from the phone (empty = this laptop's Tailscale name)
+    test_publish_ok: bool = False       # `clipforge ig-test`: also call media_publish (the Reel goes LIVE)
+
+
+class ReachConfig(_Section):
+    """Reach report (2026-11-09, publish/reach.py) + the prompt rules it led to (future clips only)."""
+
+    weekly_report: bool = True          # every 7 days: workspace/reports/REACH_REPORT.md + Telegram summary
+    min_hours: float = 48               # a Short younger than this is "too new" to judge
+    min_views: int = 50                 # fewer lifetime views (and < min_feed_views) after min_hours = "no test traffic"
+    min_feed_views: int = 20
+    min_view_pct: float = 70.0          # average view % below this = "tested but rejected"
+    hook_rule: bool = True              # selection prompt: stricter first-sentence rule
+    title_rules: bool = True            # title prompt: guest name + search words
 
 
 class AuthConfig(_Section):
@@ -326,6 +340,7 @@ class Config(_Section):
     youtube: YouTubeLimitsConfig = YouTubeLimitsConfig()
     schedule: ScheduleConfig = ScheduleConfig()
     instagram: InstagramConfig = InstagramConfig()
+    reach: ReachConfig = ReachConfig()
     auth: AuthConfig = AuthConfig()
     power: PowerConfig = PowerConfig()
     telegram: TelegramConfig = TelegramConfig()

@@ -154,6 +154,17 @@ instagram:             # Instagram Reels (Phase 13) — account + Meta app on th
   hours_after_youtube: 0.0  # "both" platforms: Instagram at least this many hours after the YouTube slot
   share_to_feed: true       # show the Reel in the main feed too
   test_account_id: ''       # IG user id that may receive ONE live test Reel (empty = live tests never publish)
+  public_url: ''            # https base Meta sends remote logins back to (empty = auto: https://<laptop>.<tailnet>.ts.net)
+  test_publish_ok: false    # `clipforge ig-test`: true = also publish the test Reel (it goes LIVE on the profile)
+
+reach:                 # YouTube reach report (REACH_REPORT.md) + the rules it led to — future clips only
+  weekly_report: true  # every 7 days: workspace/reports/REACH_REPORT.md + a Telegram summary
+  min_hours: 48        # a Short younger than this is "too new" to judge
+  min_views: 50        # < this many views (and < min_feed_views Shorts-feed views) after min_hours = "no test traffic"
+  min_feed_views: 20
+  min_view_pct: 70.0   # average view % below this = "tested but rejected"
+  hook_rule: true      # selection prompt: stricter first-sentence rule (half the viewers leave in the first seconds)
+  title_rules: true    # title prompt: guest name + search words (search is the #1 traffic source)
 
 auth:                  # login when used from your phone (Phase 14); password hash lives in .env
   trust_localhost: true  # no password needed on the laptop itself (127.0.0.1)

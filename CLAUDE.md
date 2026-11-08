@@ -54,6 +54,16 @@ api/ (FastAPI) ─┴─> pipeline.py ──> stages/{download, transcribe, anal
   `tests/fixtures/select_baseline/` (overlap vs the baseline's own re-run noise floor, fixed judge prompt, boundary %).
   Never time two runs with identical prompts back to back: Ollama's prompt cache makes the second one look 2× faster.
 
+## Live install (2026-11-09)
+- The production copy runs on the laptop at `D:\clipforge`. It is reached remotely over Tailscale
+  (https://leaderhub-ad8.tail8f9785.ts.net) and kept alive by the `ClipForge Service` Task Scheduler task
+  (`clipforge service`, watchdog).
+- Remote safety: never touch Tailscale, network, power or Windows settings. Restart only through the service, with
+  `workspace/rollback.ps1`.
+- Instagram remote login: `instagram.public_url` (redirect URI on the tailnet) or "Connect with a token"
+  (DECISIONS → IG remote fix).
+- YouTube reach: `publish/reach.py`, `clipforge reach-report`, config `reach:` (weekly Telegram summary).
+
 ## Commands
 ```bash
 # setup (Windows: .venv\Scripts\activate)

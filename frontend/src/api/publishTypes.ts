@@ -254,7 +254,19 @@ export interface MetaApp {
   mode: 'api' | 'assisted'
   graph_version: string
   redirect_uri: string
+  redirect_uris?: string[]
+  token_steps?: string[]
+  last_attempts?: { at: string; step: string; result?: string; error?: string; error_reason?: string; error_description?: string; redirect_uri?: string }[]
   scopes: { scope: string; why: string }[]
+}
+
+export interface IgTokenResult {
+  channel_id?: string
+  username?: string
+  mode?: string
+  pick?: string
+  accounts?: IgChoice[]
+  eligibility?: { auto_ready: boolean; summary: string; checks: Record<string, { ok: boolean | null; text: string }> } | null
 }
 
 export interface IgChoice {

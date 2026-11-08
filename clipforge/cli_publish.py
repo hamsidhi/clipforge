@@ -366,7 +366,58 @@ def task_show() -> None:
     console.print({"last scheduler run": runner.read_state()})
 
 
+def reach_report(no_telegram: bool = typer.Option(False, "--no-telegram", help="Don't send the Telegram summary"),
+                 out: Optional[str] = typer.Option(None, "--out", help="Also write the Markdown report here")) -> None:
+    """YouTube reach report (read-only): visibility, Shorts-feed testing, retention, buckets, patterns."""
+    from pathlib import Path
+
+    from clipforge.publish import reach
+
+    _db()
+    try:
+        reps = reach.run(notify=not no_telegram)
+    except Exception as exc:
+        _fail(exc)
+    for rep in reps:
+        console.print(reach.telegram_summary(rep))
+        if out:
+            Path(out).write_text(reach.render_md(rep), encoding="utf-8")
+    if not reps:
+        console.print("[yellow]No connected YouTube channel.[/]")
+
+
+def ig_test(account: str = typer.Argument(..., help="Instagram account id (ig:<id>) — see `clipforge channels list`"),
+            clip: Optional[str] = typer.Option(None, "--clip", help="mp4 to upload (default: the next queued Reel's file)")) -> None:
+    """Instagram live check WITHOUT posting: container + resumable upload + poll until FINISHED.
+    media_publish only if instagram.test_publish_ok: true."""
+    from pathlib import Path
+
+    from clipforge.publish import channels as chs
+    from clipforge.publish import instagram as ig
+
+    _db()
+    ch = chs.get(account)
+    if not ch or ch.platform != "instagram":
+        _fail(ValueError(f"Unknown Instagram account {account}"))
+    path = Path(clip) if clip else None
+    if path is None:
+        from clipforge.publish import queue as q
+
+        from clipforge.config import load_config
+
+        nxt = next(iter(q.items(ch.id, ("queued",))), None)
+        path = q.clip_file(nxt, load_config()) if nxt else None
+    if not path or not Path(path).exists():
+        _fail(FileNotFoundError("No clip file — pass --clip <file.mp4>"))
+    res = ig.container_test(ch, Path(path))
+    console.print(res)
+    if not res.get("ok"):
+        raise typer.Exit(1)
+
+
 def register(app: typer.Typer) -> None:
+    app.command(name="reach-report")(reach_report)
+    app.command(name="ig-test")(ig_test)
     app.add_typer(channels_app, name="channels")
     app.add_typer(queue_app, name="queue")
     app.add_typer(batch_app, name="batch")

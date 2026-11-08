@@ -18,15 +18,24 @@ from clipforge.publish import analytics, channels as chs
 from clipforge.publish import instagram as ig
 from clipforge.publish import queue as q
 from clipforge.publish.timez import now_utc, utc_to_local
+from clipforge.utils.log import log
 
 router = APIRouter(prefix="/api", tags=["instagram"])
 LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
 
 
-def _local_only(request: Request) -> None:
-    if (request.url.hostname or "") not in LOCAL_HOSTS:
-        raise HTTPException(400, "Connect accounts on the laptop itself (open http://localhost:8000) — Meta and Google "
-                                 "only send logins back to this computer's localhost address.")
+def _login_host(request: Request) -> str:
+    """Where a Facebook Login may start: the laptop (localhost) or this laptop's https address on the tailnet
+    (instagram.public_url / Tailscale name). Meta must send the browser back to the same place."""
+    host = request.url.hostname or ""
+    if host in LOCAL_HOSTS:
+        return host
+    base = ig.public_base()
+    if base and host == base.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0]:
+        return host
+    raise HTTPException(400, f"Open ClipForge on the laptop (http://localhost:8000) or at {base or 'its Tailscale https address'} "
+                             "to connect Instagram — Meta only sends logins back to an address registered in the Meta app. "
+                             "Or use 'Connect with a token'.")
 
 
 # ============================================================================ Meta app
@@ -44,6 +53,8 @@ def meta_app(request: Request) -> dict:
             "login_config_id": sec.meta_login_config_id or "", "configured": ig.configured(),
             "mode": cfg.instagram.mode, "graph_version": cfg.instagram.graph_version,
             "redirect_uri": ig.redirect_uri(request.url.port or 8000),
+            "redirect_uris": ig.redirect_uris(8000), "token_steps": ig.TOKEN_STEPS,
+            "last_attempts": ig.attempts()[-5:],
             "scopes": [{"scope": s, "why": ig.SCOPE_HELP[s]} for s in ig.SCOPES]}
 
 
@@ -66,23 +77,38 @@ def save_meta_app(body: MetaAppIn, request: Request) -> dict:
 # ============================================================================ accounts
 @router.post("/instagram/oauth/start", summary="Facebook Login URL for adding an Instagram professional account")
 def ig_oauth_start(request: Request) -> dict:
-    _local_only(request)
+    host = _login_host(request)
     port = request.url.port or 80
-    try:  # always "localhost": it must match the redirect URI registered in the Meta app exactly
-        return {"url": ig.oauth_url(ig.redirect_uri(port))}
-    except FileNotFoundError as exc:
+    try:  # it must match a redirect URI registered in the Meta app EXACTLY
+        uri = ig.redirect_uri(port, host)
+        ig.record_attempt(step="start", redirect_uri=uri, host=host,
+                          method="config_id" if Secrets().meta_login_config_id else "scope")
+        return {"url": ig.oauth_url(uri), "redirect_uri": uri}
+    except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(400, str(exc))
 
 
 @router.get("/instagram/oauth/callback", include_in_schema=False)
-def ig_oauth_callback(code: str = "", state: str = "", error: str = "", error_description: str = "") -> Response:
-    if error:
-        return RedirectResponse(f"/channels?tab=instagram&error={error_description or error}")
+def ig_oauth_callback(code: str = "", state: str = "", error: str = "", error_reason: str = "",
+                      error_description: str = "", error_code: str = "", error_message: str = "") -> Response:
+    """Public (no session cookie: it is SameSite=Strict, so a redirect from facebook.com arrives without it). Safe
+    because it does nothing without a valid one-time `state` from a login that a signed-in user started."""
+    from urllib.parse import quote
+
+    if error or error_code:
+        ig.record_attempt(step="callback", result="meta_error", error=error or error_code, error_reason=error_reason,
+                          error_description=error_description or error_message)
+        log.warning(f"[instagram] Facebook Login returned an error: {error or error_code} / {error_reason} / "
+                    f"{error_description or error_message}")
+        return RedirectResponse(f"/channels?tab=instagram&error={quote(error_description or error_message or error or error_code)}")
     try:
         res = ig.finish_oauth(code, state)
+        ig.record_attempt(step="callback", result="ok", accounts=len(res["accounts"]))
     except Exception as exc:
         import html
 
+        ig.record_attempt(step="callback", result="failed", error=str(exc))
+        log.warning(f"[instagram] login callback failed: {exc}")
         return HTMLResponse(f"<body style='font-family:system-ui;background:#111;color:#eee;padding:40px'>"
                             f"<h3>Couldn't connect Instagram</h3><p>{html.escape(str(exc))}</p>"
                             f"<a style='color:#ffe600' href='/channels?tab=instagram'>Back</a></body>", status_code=400)
@@ -109,6 +135,36 @@ def ig_pick(pid: str, body: IgPickIn) -> dict:
         return _channel_out(ig.pick(pid, body.ig_user_id))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+
+
+class TokenIn(BaseModel):
+    token: str
+    username: str = ""   # the manual account to convert (default: the only manual Instagram account)
+
+
+@router.post("/instagram/token", summary="Connect Instagram with a user token pasted from Graph API Explorer")
+def ig_token(body: TokenIn) -> dict:
+    """Works from the phone: the token is exchanged on the laptop (app secret stays here); a manual account with
+    the same username is converted in place (queue + history kept)."""
+    want = body.username
+    if not want:
+        manual = [c for c in chs.all_channels() if c.platform == "instagram" and ig.is_manual(c)]
+        want = manual[0].extra.get("username", "") if len(manual) == 1 else ""
+    try:
+        res = ig.connect_with_token(body.token, prefer_username=want)
+    except (ValueError, ig.IGError) as exc:
+        ig.record_attempt(step="token", result="failed", error=str(exc))
+        raise HTTPException(400, str(exc))
+    ig.record_attempt(step="token", result="ok" if "channel_id" in res else "pick")
+    if "channel_id" in res:
+        ch = chs.get(res["channel_id"])
+        res["eligibility"] = ig.eligibility(ch, live=True) if ch else None
+    return res
+
+
+@router.get("/instagram/attempts", summary="Last Instagram login attempts (no tokens)")
+def ig_attempts() -> list[dict]:
+    return ig.attempts()
 
 
 class ManualIn(BaseModel):

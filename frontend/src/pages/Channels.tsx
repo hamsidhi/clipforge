@@ -438,15 +438,59 @@ function ManualIgDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
   )
 }
 
+function TokenIgDialog({ open, onOpenChange, steps }: { open: boolean; onOpenChange: (o: boolean) => void; steps: string[] }) {
+  const qc = useQueryClient()
+  const [token, setToken] = useState('')
+  const [, setParams] = useSearchParams()
+  const m = useMutation({
+    mutationFn: () => pub.igToken(token),
+    onSuccess: (r) => {
+      setToken('')
+      qc.invalidateQueries({ queryKey: ['channels'] })
+      qc.invalidateQueries({ queryKey: ['meta-app'] })
+      onOpenChange(false)
+      if (r.pick) { setParams({ tab: 'instagram', ig_pick: r.pick }); return }
+      if (r.eligibility?.auto_ready) toast.success(`@${r.username} connected — auto-publish ready`)
+      else toast.warning(`@${r.username} connected, still assisted: ${r.eligibility?.summary ?? 'checks pending'}`)
+    },
+    onError: (e) => toast.error(e.message, { duration: 15000 }),
+  })
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Connect Instagram with a token</DialogTitle>
+          <DialogDescription>Works from your phone. Your existing account (manual) is converted in place — queue and history kept.</DialogDescription>
+        </DialogHeader>
+        <ol className="list-decimal space-y-1 pl-5 text-sm text-muted-foreground">{steps.map((s) => <li key={s}>{s}</li>)}</ol>
+        <Field label="Access token"><Textarea rows={4} autoComplete="off" spellCheck={false} placeholder="EAAG…" value={token} onChange={(e) => setToken(e.target.value)} /></Field>
+        <DialogFooter>
+          <Button onClick={() => m.mutate()} disabled={token.trim().length < 40 || m.isPending}>
+            {m.isPending ? <Loader2 className="animate-spin" /> : <KeyRound />} Connect
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function InstagramTab({ accounts }: { accounts: Channel[] }) {
   const { data: app } = useMetaApp()
   const [manual, setManual] = useState(false)
+  const [tokenOpen, setTokenOpen] = useState(false)
+  const last = app?.last_attempts?.slice(-1)[0]
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
         <Button onClick={connectInstagram} disabled={!app?.configured}><Camera /> Add Instagram account</Button>
+        <Button variant="outline" onClick={() => setTokenOpen(true)} disabled={!app?.configured}><KeyRound /> Connect with a token</Button>
         <Button variant="outline" onClick={() => setManual(true)}><UserPlus /> Add without a Meta app (assisted)</Button>
       </div>
+      {last && last.result && last.result !== 'ok' && (
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs">
+          Last login attempt ({last.step}, {new Date(last.at).toLocaleString()}): {last.error_description || last.error || last.result}
+        </div>
+      )}
       {app && !app.configured && (
         <div className="flex items-start gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm">
           <KeyRound className="mt-0.5 size-4 shrink-0 text-amber-300" />
@@ -473,6 +517,7 @@ function InstagramTab({ accounts }: { accounts: Channel[] }) {
         </EmptyState>
       ) : <div className="space-y-4">{accounts.map((c) => <ChannelCard key={c.id} ch={c} />)}</div>}
       <ManualIgDialog open={manual} onOpenChange={setManual} />
+      <TokenIgDialog open={tokenOpen} onOpenChange={setTokenOpen} steps={app?.token_steps ?? []} />
     </div>
   )
 }

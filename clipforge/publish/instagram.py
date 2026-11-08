@@ -34,10 +34,53 @@ PUBLISH_SCOPES = ("instagram_basic", "instagram_content_publish", "pages_read_en
 REDIRECT_PATH = "/api/instagram/oauth/callback"
 
 
-def redirect_uri(port: int | None = None) -> str:
-    """The ONE redirect URI ClipForge sends to Meta. Add exactly this under Facebook Login → Valid OAuth Redirect
-    URIs (Strict Mode = exact match: scheme, host, port, path, no trailing slash)."""
+LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
+_ts_cache: dict[str, tuple[str, float]] = {}
+
+
+def public_base(cfg: Config | None = None) -> str:
+    """https base URL Meta can send a login started on the phone back to: `instagram.public_url`, else this laptop's
+    Tailscale name (https://<laptop>.<tailnet>.ts.net, from `tailscale status --json`, cached 10 min). It only
+    resolves inside the tailnet — fine, because Meta only redirects the BROWSER (which is on the tailnet)."""
+    cfg = cfg or load_config()
+    url = (cfg.instagram.public_url or "").strip().rstrip("/")
+    if url:
+        return url
+    hit = _ts_cache.get("dns")
+    if hit and time.time() - hit[1] < 600:
+        return hit[0]
+    base = ""
+    try:
+        from clipforge import remote
+
+        dns = remote.status().dns_name
+        base = f"https://{dns}" if dns else ""
+    except Exception as exc:  # Tailscale missing/stopped: remote logins just aren't offered
+        log.debug(f"[instagram] tailscale name unknown: {exc}")
+    _ts_cache["dns"] = (base, time.time())
+    return base
+
+
+def redirect_uri(port: int | None = None, host: str | None = None, cfg: Config | None = None) -> str:
+    """The redirect URI ClipForge sends to Meta for a login started from `host`. On the laptop (localhost) it is
+    http://localhost:<port>/…; from the phone it is <public_base>/… . Both must be listed EXACTLY under Facebook
+    Login → Settings → Valid OAuth Redirect URIs (Strict Mode: scheme, host, port, path, no trailing slash)."""
+    if host and host not in LOCAL_HOSTS:
+        base = public_base(cfg)
+        if not base:
+            raise ValueError("No https address for remote logins: set instagram.public_url in config.yaml, or start "
+                             "Tailscale (`clipforge remote setup`).")
+        return base + REDIRECT_PATH
     return f"http://localhost:{port or 8000}{REDIRECT_PATH}"
+
+
+def redirect_uris(port: int = 8000, cfg: Config | None = None) -> list[str]:
+    """Every redirect URI to register in the Meta app (laptop + phone)."""
+    out = [redirect_uri(port)]
+    base = public_base(cfg)
+    if base:
+        out.append(base + REDIRECT_PATH)
+    return out
 SCOPE_HELP = {
     "instagram_basic": "Read your Instagram professional account (username, picture, followers).",
     "instagram_content_publish": "Publish the Reels you approved, at the time you chose.",
@@ -374,6 +417,13 @@ def finish_oauth(code: str, state: str, cfg: Config | None = None, now: dt.datet
     c = client(cfg)
     short = c.exchange_code(code, redirect_uri)
     user_token, secs = c.long_lived(short)
+    return _offer_accounts(c, user_token, secs, now)
+
+
+def _offer_accounts(c: IGClient, user_token: str, secs: int, now: dt.datetime) -> dict:
+    """Long-lived user token → Pages with a linked IG professional account → a pending pick (tokens stay here)."""
+    from clipforge.publish.timez import iso_utc
+
     pages = c.pages(user_token)
     choices = []
     for p in pages:
@@ -383,15 +433,130 @@ def finish_oauth(code: str, state: str, cfg: Config | None = None, now: dt.datet
                             ig.get("profile_picture_url", ""), "followers": ig.get("followers_count", 0),
                             "page_id": p["id"], "page_name": p.get("name", ""), "page_token": p["access_token"]})
     if not choices:
-        raise ValueError("None of your Facebook Pages has a linked Instagram professional account. In the Instagram app: "
-                         "Settings → Account type → switch to Professional (Creator or Business), then link a Facebook Page "
-                         "(Accounts Center). If you have several Pages, tick them all on Meta's permission screen.")
+        checks = login_checks(c, user_token)
+        miss = [p for p in PUBLISH_SCOPES if p not in checks["granted"]]
+        why = (f" Meta did not grant: {', '.join(miss)} (allow every permission, or with a Login Configuration make sure "
+               "it lists them)." if checks["granted"] and miss else "")
+        raise ValueError(f"Meta returned {len(pages)} Facebook Page(s), none with a linked Instagram professional "
+                         f"account.{why} Check: (1) Instagram app → Settings → Account type = Professional; (2) the Page "
+                         "is linked (Page → Settings → Linked accounts → Instagram); (3) on Meta's screen 'Choose the "
+                         "Pages' you TICKED that Page (Edit previous settings → select all).")
     checks = login_checks(c, user_token)
     pid = secrets.token_urlsafe(8)
     with _lock:
         _pending[pid] = ({"user_token": user_token, "user_token_expires_at": iso_utc(now + dt.timedelta(seconds=secs)),
                           **checks}, choices, time.time())
     return {"pick": pid, "accounts": [{k: v for k, v in ch.items() if k != "page_token"} for ch in choices]}
+
+
+TOKEN_STEPS = [
+    "On your phone open developers.facebook.com/tools/explorer (log in with the Facebook account that manages the Page).",
+    "Top right: Meta App = your ClipForge app (not 'Graph API Explorer'); User or Page = 'Get User Access Token'.",
+    "Add permissions: instagram_basic, instagram_content_publish, pages_show_list, pages_read_engagement, "
+    "business_management (optional: instagram_manage_insights).",
+    "Generate Access Token → in Meta's window choose the Page linked to your Instagram and the Instagram account → Save.",
+    "Copy the token (the long text in the 'Access Token' box) and paste it here. ClipForge exchanges it for a "
+    "60-day login on the laptop; the app secret never leaves the laptop.",
+]
+
+
+def connect_with_token(user_token: str, cfg: Config | None = None, now: dt.datetime | None = None,
+                       prefer_username: str = "") -> dict:
+    """Fallback that works 100% remotely: a user token from Graph API Explorer (same Meta app) → long-lived token
+    → Pages → IG account. With exactly one account, or one matching `prefer_username` (the manual account being
+    converted), it is picked right away and the manual row converted IN PLACE. Otherwise returns a pick id."""
+    from clipforge.publish.timez import now_utc
+
+    cfg = cfg or load_config()
+    now = now or now_utc()
+    token = (user_token or "").strip().strip('"')
+    if len(token) < 40 or " " in token:
+        raise ValueError("That doesn't look like an access token — copy the whole 'Access Token' box from Graph API Explorer.")
+    c = client(cfg)
+    try:
+        d = c.debug_token(token)
+    except IGError as exc:
+        raise ValueError(f"Meta rejected the token: {exc}") from exc
+    if not d.get("is_valid"):
+        raise ValueError("Meta says this token is not valid (expired or revoked) — generate a new one.")
+    if str(d.get("app_id") or "") and Secrets().meta_app_id and str(d.get("app_id")) != str(Secrets().meta_app_id):
+        raise ValueError("This token belongs to another Meta app. In Graph API Explorer pick YOUR app (top right) "
+                         "under 'Meta App', then generate the token again.")
+    if d.get("type") and d.get("type") != "USER":
+        raise ValueError(f"This is a {d.get('type')} token — choose 'Get User Access Token' in Graph API Explorer.")
+    long_tok, secs = c.long_lived(token)
+    res = _offer_accounts(c, long_tok, secs, now)
+    accs = res["accounts"]
+    want = (prefer_username or "").lower().lstrip("@")
+    match = [a for a in accs if want and a["username"].lower() == want] or (accs if len(accs) == 1 else [])
+    if len(match) == 1:
+        ch = pick(res["pick"], match[0]["ig_user_id"], cfg)
+        return {"channel_id": ch.id, "username": ch.title, "mode": ch.settings.get("mode", "assisted")}
+    return res
+
+
+def record_attempt(cfg: Config | None = None, **fields: Any) -> None:
+    """Keep the last 20 login attempts (no tokens) in workspace/accounts/instagram/oauth_attempts.json, so a failed
+    login can be diagnosed later from the phone."""
+    from clipforge.publish.timez import iso_utc, now_utc
+
+    try:
+        p = (cfg or load_config()).workspace / "accounts" / "instagram" / "oauth_attempts.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        rows = json.loads(p.read_text(encoding="utf-8")) if p.exists() else []
+        rows.append({"at": iso_utc(now_utc()), **{k: _redact(str(v))[:500] for k, v in fields.items()}})
+        p.write_text(json.dumps(rows[-20:], indent=1), encoding="utf-8")
+    except Exception as exc:
+        log.warning(f"[instagram] couldn't record the login attempt: {exc}")
+
+
+def attempts(cfg: Config | None = None) -> list[dict]:
+    p = (cfg or load_config()).workspace / "accounts" / "instagram" / "oauth_attempts.json"
+    try:
+        return json.loads(p.read_text(encoding="utf-8")) if p.exists() else []
+    except (OSError, ValueError):
+        return []
+
+
+def container_test(ch: db.Channel, path: Path, cfg: Config | None = None, c: IGClient | None = None,
+                   poll_seconds: float = 5, timeout: float = 600, sleep: Callable[[float], None] = time.sleep) -> dict:
+    """Live check of the publishing path WITHOUT posting: create a Reel container, resumable upload, poll until
+    FINISHED. `media_publish` only when instagram.test_publish_ok is true. An unpublished container expires by
+    itself after 24 h (nothing appears on the profile)."""
+    cfg = cfg or load_config()
+    c = c or client(cfg)
+    probs = preflight(path)
+    if probs:
+        return {"ok": False, "step": "preflight", "text": "; ".join(probs)}
+    token, ig_id = page_token(ch, cfg), ig_id_of(ch)
+    out: dict[str, Any] = {"ok": False, "published": False}
+    try:
+        cont = c.create_reel(ig_id, token, "ClipForge test (not published)", False, None)
+        out["container_id"] = cont["id"]
+        out["step"] = "upload"
+        c.upload(cont["id"], token, path)
+        out["step"] = "processing"
+        waited, st = 0.0, {}
+        while waited <= timeout:
+            st = c.container_status(cont["id"], token)
+            if st.get("status_code") in STATUS_DONE or st.get("status_code") in ("ERROR", "EXPIRED"):
+                break
+            sleep(poll_seconds)
+            waited += poll_seconds
+        out["status_code"] = st.get("status_code")
+        if st.get("status_code") != "FINISHED":
+            out["text"] = f"Container ended as {st.get('status_code') or 'timeout'}: {st.get('status', '')}"
+            return out
+        out["ok"], out["step"] = True, "finished"
+        if cfg.instagram.test_publish_ok:
+            out["media_id"] = c.publish(ig_id, token, cont["id"])
+            out["published"] = True
+            out["text"] = "Uploaded, processed and PUBLISHED (instagram.test_publish_ok: true)."
+        else:
+            out["text"] = "Uploaded and processed (FINISHED). Not published: instagram.test_publish_ok is false."
+    except IGError as exc:
+        out["text"] = f"{out.get('step', 'create')} failed: {exc}"
+    return out
 
 
 def pending(pid: str) -> list[dict] | None:

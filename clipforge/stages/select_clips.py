@@ -219,6 +219,26 @@ def load_prompt(name: str = "clip_selection.md") -> str:
     return p.read_text(encoding="utf-8")
 
 
+# Reach report 2026-11-09 (REACH_REPORT.md): extra prompt rules for FUTURE clips, behind `reach.hook_rule` /
+# `reach.title_rules`. They live in config `reach:` (not in prompts/*.md or `select:`) on purpose: the selection
+# fingerprint is unchanged, so re-running an old job never re-selects its clips.
+HOOK_RULE = ("EXTRA RULE (data from this channel: about half of all viewers leave in the first seconds): the FIRST "
+             "sentence alone must make a stranger stop scrolling - a concrete claim, number, name or conflict. If the "
+             "moment needs a setup sentence to make sense, start AFTER the setup or skip the moment. Score `hook` "
+             "below 6 for any clip whose first sentence is a question to the guest, a greeting, or 'so/haan/achha'.")
+TITLE_RULES = ("EXTRA RULES (data from this channel: YouTube search brings the most views): put the guest's name in "
+               "the title when the clip is about their story, opinion or numbers (e.g. 'Sam Altman ...', 'Bryson ...'); "
+               "use words people would type into search; no 'Topic: Subtitle' colon pattern; never invent words.")
+
+
+def with_reach_rules(template: str, cfg: Config, kind: str) -> str:
+    if kind == "select" and cfg.reach.hook_rule and "For each candidate return:" in template:
+        return template.replace("For each candidate return:", HOOK_RULE + "\n\nFor each candidate return:", 1)
+    if kind == "titles" and cfg.reach.title_rules and "{clips}" in template:
+        return template.replace("{clips}", TITLE_RULES + "\n\n{clips}", 1)
+    return template
+
+
 def build_prompt(template: str, info: VideoInfo, transcript_text: str, cfg: Config, start: float, end: float) -> str:
     chapter = next((c.title for c in info.chapters if c.start <= (start + end) / 2 < c.end), "")
     return template.format(
@@ -294,7 +314,7 @@ def prompt_ctx(prompts: list[str], num_predict: int, floor: int = 0) -> int:
 def run(ws: Workspace, cfg: Config, llm: LLMProvider, reporter: ProgressReporter, info: VideoInfo,
         transcript: Transcript) -> tuple[list[LLMCandidate], int, int]:
     """Returns (candidates, number of windows that failed and should be retried next run, num_ctx used)."""
-    template = load_prompt()
+    template = with_reach_rules(load_prompt(), cfg, "select")
     latin = uses_latin(llm)
     windows = make_windows(transcript.duration, cfg.llm.window_min, cfg.llm.overlap_min)
     timer = Timer()
@@ -362,7 +382,7 @@ def write_titles(ws: Workspace, cfg: Config, llm: LLMProvider, reporter: Progres
     """Fill title / hook / why of the final clips (in place), TITLE_BATCH clips per LLM call, each with its full
     text. A failed batch gets a template title (logged) — selection never fails because of copywriting.
     `num_ctx`: the selection's context size, reused when big enough (no model reload)."""
-    template = load_prompt("clip_titles.md")
+    template = with_reach_rules(load_prompt("clip_titles.md"), cfg, "titles")
     latin = uses_latin(llm)
     todo = [c for c in cands if not c.title]
     batches = []

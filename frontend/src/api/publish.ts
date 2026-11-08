@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { request } from './client'
 import type {
-  AuditStatus, Batch, Channel, ChannelSettings, Dashboard, Health, IgChoice, IgDashboard, MetaApp, Overview, PublishingStatus,
+  AuditStatus, Batch, Channel, ChannelSettings, Dashboard, Health, IgChoice, IgDashboard, IgTokenResult, MetaApp, Overview, PublishingStatus,
   QueueItem, Reminder, SyncResult,
 } from './publishTypes'
 
@@ -76,6 +76,7 @@ export const pub = {
   igPickOptions: (pid: string) => request<IgChoice[]>(`/api/instagram/pick/${pid}`),
   igPick: (pid: string, ig_user_id: string) =>
     request<Channel>(`/api/instagram/pick/${pid}`, { method: 'POST', body: json({ ig_user_id }) }),
+  igToken: (token: string) => request<IgTokenResult>('/api/instagram/token', { method: 'POST', body: json({ token }) }),
   igManual: (username: string) => request<Channel>('/api/instagram/manual', { method: 'POST', body: json({ username }) }),
   permalink: (id: number, permalink: string) =>
     request<QueueItem>(`/api/queue/${id}/permalink`, { method: 'POST', body: json({ permalink }) }),

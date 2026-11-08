@@ -189,6 +189,7 @@ To go back: delete `api_base_url`, call `close` on the local server, wait 10 min
 | `GET /api/posts/reminders` | Dashboard | `/campaigns` | |
 | `GET /api/publishing/status` | Publishing | `/health` | |
 | `GET /api/publishing/health` | Dashboard → Health | `/health` | |
+| `GET /api/publishing/reach` | Dashboard → Reach | weekly Telegram summary | |
 | `GET /api/publishing/overview` | Accounts | `/dashboard`, `/stats` | |
 | `POST /api/publishing/run` | Health → Run now | — | runs every minute anyway |
 | `POST /api/publishing/audit` | Settings → audit checklist | Laptop | |
@@ -229,11 +230,13 @@ To go back: delete `api_base_url`, call `close` on the local server, wait 10 min
 | `GET /api/batches/files/{path:path}` | batch page | `/batch` sends the files | |
 | `GET /api/instagram/app` | Settings → Instagram | Laptop | Meta app secrets |
 | `POST /api/instagram/app` | Settings → Instagram | Laptop | |
-| `POST /api/instagram/oauth/start` | Accounts → Instagram | Laptop | OAuth |
+| `POST /api/instagram/oauth/start` | Accounts → Instagram | Laptop / phone (Tailscale https) | OAuth |
 | `GET /api/instagram/oauth/callback` | (Meta redirect) | Laptop | |
 | `GET /api/instagram/pick/{pid}` | Accounts → Instagram | Laptop | |
 | `POST /api/instagram/pick/{pid}` | Accounts → Instagram | Laptop | |
 | `POST /api/instagram/manual` | Accounts → Instagram | Laptop | |
+| `POST /api/instagram/token` | Accounts → Instagram (Connect with a token) | Laptop / phone | token exchanged on the laptop |
+| `GET /api/instagram/attempts` | Accounts → Instagram | Laptop / phone | |
 | `GET /api/accounts/{channel_id}/ig-dashboard` | Accounts → Instagram | `/stats`, `/top` | |
 | `GET /api/remote/status` | Settings → Phone | `/app` | |
 | `POST /api/remote/setup` | `clipforge remote setup` | Laptop | |

@@ -46,7 +46,8 @@ def _testing() -> bool:
 PROXY_HEADERS = ("x-forwarded-for", "forwarded", "x-real-ip", "tailscale-user-login", "tailscale-user-name",
                  "cf-connecting-ip", "x-forwarded-host")
 # reachable without a session (health check, the login screen itself, OAuth callbacks which are localhost-only anyway)
-PUBLIC_API = ("/api/health", "/api/auth/status", "/api/auth/login", "/api/auth/setup")
+# the Instagram callback is reached by a cross-site redirect (no SameSite=Strict cookie); it is guarded by its one-time `state`
+PUBLIC_API = ("/api/health", "/api/auth/status", "/api/auth/login", "/api/auth/setup", "/api/instagram/oauth/callback")
 LOCAL_ONLY_PATHS = ("/docs", "/redoc", "/openapi.json")
 # Phase 15b: machine-to-machine endpoints. No browser session / CSRF: every route checks the worker's own key
 # (Authorization: Bearer cfw_…, only its SHA-256 is stored) — see clipforge/server/worker_api.py.

@@ -889,3 +889,65 @@ None is locked private (a lock drops publishAt); Google lifted the unaudited loc
 - `states._has_media`: pasted-link exemption only for accounts with `extra.manual` (converted ones keep their old id).
 - Logical twins match `clip_key` (episode + start/end), not rank (ranks change when selection is re-run).
 - `plan.explore` uses the planner's own gap (`min_gap_hours`), so an explored YouTube slot is never dropped.
+
+
+## IG remote fix + YouTube reach (2026-11-09, done remotely over Tailscale)
+
+### Instagram: evidence (A1)
+- DB: the only Instagram account is `ig:manual:figuringclips.in` (`extra.manual = true`, assisted, confirmed). No IG
+  user id, no Page id, no token: `workspace/accounts/instagram/` did not exist. **Facebook Login never completed.**
+- Logs: zero Instagram OAuth lines in `clipforge.log`/`.1`, no related audit events. The callback never logged
+  Meta's `error/error_reason/error_description`, so a failed attempt left no trace (now fixed).
+- Meta app (read-only app-token checks): "Figuring Clips Publisher", category Business, App ID + secret valid
+  (`debug_token` of the app token: valid, type APP). `META_LOGIN_CONFIG_ID` is set, so the dialog uses `config_id`
+  (Facebook Login for Business), not `scope`. A live `debug_token`/`me/permissions`/`me/accounts` for a user token
+  was impossible: there is no user token.
+- Meta docs (Facebook Login for Business, read 2026-11-09): `config_id` replaces `scope`. The configuration must be
+  the **User access token** type (system-user tokens are for tech providers). If the user doesn't grant **all** of
+  the configuration's permissions, the app gets **none**. Reels via Facebook Login need instagram_basic,
+  instagram_content_publish and pages_read_engagement, plus pages_show_list to find the Page.
+- Code: a login started from the phone could never work, for three reasons:
+  1. `/oauth/start` refused any host but localhost.
+  2. The redirect URI was hard-coded `http://localhost:8000/…`, so Meta sends the phone to ITS OWN localhost.
+  3. The session cookie is `SameSite=Strict`, so even an https redirect back to the tailnet would arrive without it
+     and get a 401 from `AuthMiddleware`.
+
+### Instagram: what changed (A2)
+- `instagram.public_url` (empty = `https://<laptop>.<tailnet>.ts.net` from `tailscale status --json`, cached 10 min).
+  `ig.redirect_uri(port, host)`:
+  - localhost → `http://localhost:<port>/api/instagram/oauth/callback`;
+  - the tailnet host → `<public_url>/api/instagram/oauth/callback`.
+  The ts.net name only resolves inside the tailnet, which is fine: Meta only redirects the browser.
+  `GET /api/instagram/app` lists both (`redirect_uris`).
+- `/api/instagram/oauth/callback` is in `PUBLIC_API`: a cross-site redirect can't carry a Strict cookie. It is safe
+  because it does nothing without a valid one-time `state`, which only a signed-in user's `/oauth/start` creates.
+  Every other route still needs the session + CSRF.
+- Every start/callback/token attempt goes to `workspace/accounts/instagram/oauth_attempts.json` (last 20, tokens
+  redacted). The Accounts page shows the last failure.
+- Fallback that works 100% remotely: **Connect with a token** (`POST /api/instagram/token`).
+  1. A Graph API Explorer user token goes through `debug_token`: it must be valid, USER type, and from the same app.
+  2. It is exchanged for a long-lived token on the laptop.
+  3. `me/accounts` → the Page with `instagram_business_account` → its Page token → `register_instagram`.
+  4. The manual account is converted IN PLACE (same row id, so queue items and history stay). Mode becomes auto only
+     if every login check passes.
+- `clipforge ig-test <account>`: container + resumable upload + poll until FINISHED. `media_publish` only with
+  `instagram.test_publish_ok: true`. Not run: there is no connected account yet.
+
+### YouTube reach (B)
+- `publish/reach.py` + `clipforge reach-report` + weekly in `runner._v2_housekeeping` (`reach.weekly_report`).
+  Output goes to `workspace/reports/` and `GET /api/publishing/reach`.
+- Analytics quirks found live:
+  - The `video` dimension needs `sort` + `maxResults` (400 "query not supported" otherwise).
+  - The per-video traffic query sometimes returns 500 backendError. It retries 3×, then counts the video as
+    "unknown", never as 0.
+  - Data lags 2–3 days.
+- Findings (REACH_REPORT.md): 0 invisible; the Shorts feed tested only 2/26 public Shorts; search = 47% of views;
+  median 6.5 views per Short; engaged ÷ views = 0.53.
+- Prompt rules for future clips only (`reach.hook_rule`, `reach.title_rules`). They live in `reach:`, not in
+  prompts/*.md or `select:`, because `fp_select` hashes those: editing them would make re-running an old job
+  re-select its clips. Slots, length and rendering are not changed: n < 5 per group is not evidence.
+
+### Remote-safety notes
+- No ClipForge task existed in Task Scheduler. The app ran in a console started by hand (`start-ui.bat`, 7 Nov).
+  The restart installed `clipforge service` (hidden watchdog, at logon). Windows auto-logon after a reboot was not
+  touched (user-account setting) → TODO_WHEN_HOME.
