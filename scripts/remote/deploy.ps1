@@ -36,7 +36,8 @@ Copy-Item "$Here\rollback.ps1" "$Root\workspace\rollback.ps1" -Force
 & $py -c "import sqlite3,sys; s=sqlite3.connect(sys.argv[1]); d=sqlite3.connect(sys.argv[2]); s.backup(d); d.close(); print('ok')" "$Root\workspace\clipforge.db" "$Root\workspace\backups\clipforge-pre-remote-fix-$stamp.db" | Out-Null
 if (-not (Test-Path "$Root\workspace\backups\clipforge-pre-remote-fix-$stamp.db")) { Say "DB backup FAILED - nothing changed"; exit 1 }
 Copy-Item "$Root\config.yaml" "$Root\workspace\backups\config.yaml.pre-remote-fix" -Force
-if (-not (Test-Path "$Root\workspace\backups\dist-pre-remote-fix")) { Copy-Item "$Root\frontend\dist" "$Root\workspace\backups\dist-pre-remote-fix" -Recurse }
+Remove-Item "$Root\workspace\backups\dist-pre-remote-fix" -Recurse -Force -ErrorAction SilentlyContinue  # always the build being replaced
+Copy-Item "$Root\frontend\dist" "$Root\workspace\backups\dist-pre-remote-fix" -Recurse
 Say "backups done ($stamp)"
 if ((git rev-parse refs/heads/main).Trim() -ne $Old) { Say "main is not at $Old - stop, nothing changed"; exit 1 }
 # 2. code (config.yaml stays exactly as it is)

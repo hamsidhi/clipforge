@@ -951,3 +951,25 @@ None is locked private (a lock drops publishAt); Google lifted the unaudited loc
 - No ClipForge task existed in Task Scheduler. The app ran in a console started by hand (`start-ui.bat`, 7 Nov).
   The restart installed `clipforge service` (hidden watchdog, at logon). Windows auto-logon after a reboot was not
   touched (user-account setting) → TODO_WHEN_HOME.
+
+## Smart daily plan (2026-11-09, `publish/smart.py`, `schedule.smart: true`)
+- Asked for: more than 5 posts a day on both platforms, at times that move with the data (the last 4–5 posts'
+  engagement), morning and evening. The old plan used fixed lists, and its weekly ±30/60-min adaptation never ran:
+  `views_24h` is empty for all 44 Shorts (Analytics lag + no daily rows). The Instagram account used its own fixed
+  3-slot list (`settings.slots`).
+- Audience-online data: YouTube Analytics has no hour dimension. Instagram `online_followers` is missing from Meta's
+  current metric table, its hour time zone isn't documented, and it needs ≥100 followers (checked 2026-11-09). So the
+  activity curve is learned from WHEN OUR POSTS DID WELL, starting from an assumed India curve (labelled as an
+  assumption in the code).
+- Post score = log(1 + views/day over the first 72 h) × engagement (likes + 2·comments + 3·shares + 3·saves per
+  view) × retention (avg view %), relative to the account median. The last 5 posts weigh 1.0; older ones decay
+  (half-life 7 days).
+- Curve = (1 − w)·prior + w·kernel-mean(scores, σ = 60 min) + 0.15/√(1 + n), w = n/(n + 3). The last term is
+  exploration: hours without data get a bonus. One slot a day also shifts ±15/30 min (`explore_shift`).
+- Count: the maximum (`ig_max_per_day`, `yt_max_per_day` ≤ `youtube.daily_safety_limit`), one step down per 25%
+  drop of the last 5 posts' median score vs the 10 before. Picks: best quarter-hours in `smart_window[_yt]`, with
+  the min gap (IG 60, YT 75 min), ≥1 morning slot (07–11) and ≥2 evening slots (18–00:30).
+- Existing queue items keep their times (nothing already uploaded or scheduled moves). New items fit around them,
+  and each new day is planned with the newest data. `smart: false` (global) or `"smart": false` in an account's
+  settings restores the old behaviour. Live preview on 9 Nov: YouTube 8/day from 23 Shorts (best 19–22 h + 08 h);
+  Instagram 9/day from the prior (no Reel data until the account is connected).

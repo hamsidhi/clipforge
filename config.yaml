@@ -124,12 +124,18 @@ schedule:              # Publishing v2: daily plan per platform, IST (slots befo
   day_cutoff: '05:00'
   ig_morning: ['08:00', '09:30', '11:00']
   ig_evening: ['18:00', '19:30', '21:00', '22:15', '23:30', '00:45']
-  ig_min_per_day: 7    # up to ig_max_per_day when approved clips cover today + 1 day of buffer
-  ig_max_per_day: 9
+  ig_min_per_day: 8    # smart: the floor; fixed lists: up to ig_max_per_day when approved clips cover today + 1 day
+  ig_max_per_day: 10   # smart: the normal count per day
   ig_min_gap_minutes: 60
   yt_slots: ['12:30', '15:00', '18:30', '20:30', '22:00']  # 5/day; 6/day adds yt_sixth_slot when views are rising
   yt_sixth_slot: '23:30'
   adapt_min_posts: 20
+  smart: true         # times + posts/day learned from your own posts (publish/smart.py); false = the fixed lists above
+  smart_window: ['07:00', '01:30']     # Instagram: earliest / latest slot (IST)
+  smart_window_yt: ['07:00', '01:00']  # YouTube
+  yt_min_per_day: 6    # smart: fewer only when the last 5 Shorts clearly underperform the 10 before
+  yt_max_per_day: 8    # smart: also capped by youtube.daily_safety_limit
+  yt_min_gap_minutes: 75
 
 ypp:                   # YouTube Partner Program targets — edit if YouTube changes them
   ad_subs: 1000

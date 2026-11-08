@@ -176,12 +176,19 @@ class ScheduleConfig(_Section):
     day_cutoff: str = "05:00"
     ig_morning: list[str] = ["08:00", "09:30", "11:00"]
     ig_evening: list[str] = ["18:00", "19:30", "21:00", "22:15", "23:30", "00:45"]
-    ig_min_per_day: int = Field(7, ge=1, le=12)
-    ig_max_per_day: int = Field(9, ge=1, le=12)
+    ig_min_per_day: int = Field(7, ge=1, le=20)
+    ig_max_per_day: int = Field(9, ge=1, le=20)
     ig_min_gap_minutes: int = 60
     yt_slots: list[str] = ["12:30", "15:00", "18:30", "20:30", "22:00"]
     yt_sixth_slot: str = "23:30"
     adapt_min_posts: int = 20
+    # Smart plan (2026-11-09, publish/smart.py): times + count per day from the account's own results
+    smart: bool = True                  # False = the fixed lists above (+ weekly adaptation)
+    smart_window: list[str] = ["07:00", "01:30"]      # Instagram: earliest / latest slot (IST)
+    smart_window_yt: list[str] = ["07:00", "01:00"]   # YouTube
+    yt_min_per_day: int = Field(6, ge=1, le=20)
+    yt_max_per_day: int = Field(8, ge=1, le=20)       # also capped by youtube.daily_safety_limit
+    yt_min_gap_minutes: int = 75
 
 
 class YppConfig(_Section):

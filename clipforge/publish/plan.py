@@ -116,6 +116,10 @@ def base_slots(platform: str, cfg: Config, count: int) -> list[str]:
 def day_slots(ch: db.Channel, cfg: Config, day: dt.date, now: dt.datetime) -> list[str]:
     """Slots (HH:MM IST) of one plan day for this account, adapted + one exploration slot when there's data."""
     platform = ch.platform or "youtube"
+    if cfg.schedule.smart:
+        from clipforge.publish import smart
+
+        return smart.day_slots(ch, cfg, day, now)
     count = instagram_daily_count(ch, cfg, now) if platform == "instagram" else youtube_daily_count(ch, cfg, now)
     slots = base_slots(platform, cfg, count)
     adapted = (ch.extra.get("adapted_slots") or {}) if cfg.schedule.auto_adapt else {}
@@ -144,7 +148,9 @@ def explore(slots: list[str], platform: str, cfg: Config, day: dt.date) -> list[
 
 
 def min_gap_hours(platform: str, cfg: Config) -> float:
-    return cfg.schedule.ig_min_gap_minutes / 60 if platform == "instagram" else 1.25
+    if platform == "instagram":
+        return cfg.schedule.ig_min_gap_minutes / 60
+    return cfg.schedule.yt_min_gap_minutes / 60 if cfg.schedule.smart else 1.25
 
 
 def preview(ch: db.Channel, cfg: Config, now: dt.datetime, days: int = 2) -> list[dict]:
@@ -155,6 +161,12 @@ def preview(ch: db.Channel, cfg: Config, now: dt.datetime, days: int = 2) -> lis
         day = today + dt.timedelta(days=d)
         sl = day_slots(ch, cfg, day, now)
         out.append({"day": day.isoformat(), "label": day.strftime("%a %d %b"), "slots": sl, "count": len(sl)})
+    if cfg.schedule.smart and out:
+        from clipforge.publish import smart
+
+        ex = smart.explain(ch, cfg, now)
+        out[0]["why"] = (f"{ex['why_count']}. Best hours: {', '.join(ex['best_hours_ist'][:3])} "
+                         f"(learned from {ex['posts_used']} posts).")
     return out
 
 

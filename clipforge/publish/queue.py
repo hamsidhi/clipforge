@@ -266,13 +266,18 @@ def plan_for(ch: db.Channel, cfg: Config, now: dt.datetime) -> slots.Plan:
 
     settings = chs.settings_of(ch, cfg)
     p = slots.Plan.from_settings(settings)
-    if cfg.schedule.enabled and "slots" not in (ch.settings or {}):
+    own_slots = "slots" in (ch.settings or {}) and not (cfg.schedule.smart and (ch.settings or {}).get("smart", True))
+    if cfg.schedule.enabled and not own_slots:  # smart plan also replaces an account's own fixed slot list
         platform = ch.platform or "youtube"
         p.day_plan = lambda day: daily.day_slots(ch, cfg, day, now)
         p.cutoff = cfg.schedule.day_cutoff
         p.min_gap_hours = daily.min_gap_hours(platform, cfg)
         p.slots = daily.base_slots(platform, cfg, 9 if platform == "instagram" else 6)
         p.peak_slots = (["19:30", "21:00", "22:15"] if platform == "instagram" else ["18:30", "20:30"])
+        if cfg.schedule.smart:
+            from clipforge.publish import smart
+
+            p.peak_slots = smart.day_plan(ch, cfg, now.date(), now)["peak"]
     return p
 
 

@@ -63,6 +63,8 @@ api/ (FastAPI) ─┴─> pipeline.py ──> stages/{download, transcribe, anal
 - Instagram remote login: `instagram.public_url` (redirect URI on the tailnet) or "Connect with a token"
   (DECISIONS → IG remote fix).
 - YouTube reach: `publish/reach.py`, `clipforge reach-report`, config `reach:` (weekly Telegram summary).
+- Smart daily plan: `publish/smart.py` (`schedule.smart`): slot times + posts/day learned from the account's own
+  post results (VideoPerf), assumed India curve as the start, exploration bonus; `plan.day_slots` delegates to it.
 
 ## Commands
 ```bash

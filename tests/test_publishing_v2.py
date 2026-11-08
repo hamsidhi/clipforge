@@ -19,7 +19,9 @@ from tests.test_publish import NOW, _seed_episode
 def _env(tmp_path, monkeypatch, extra: str = "", mode: str = "api"):
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(f"output: {{dir: '{(tmp_path / 'ws').as_posix()}'}}\nllm: {{provider: mock}}\n"
-                        f"publishing: {{mode: {mode}}}\n{extra}", encoding="utf-8")
+                        f"publishing: {{mode: {mode}}}\n{extra}"
+                        # these tests cover the fixed daily lists; the smart plan has its own tests
+                        + ("" if "schedule:" in extra else "schedule: {smart: false}\n"), encoding="utf-8")
     monkeypatch.setattr(config_mod, "DEFAULT_CONFIG_PATH", cfg_path)
     from clipforge.api import db
     from clipforge.publish import runner
