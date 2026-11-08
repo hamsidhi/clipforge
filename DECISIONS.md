@@ -973,3 +973,17 @@ None is locked private (a lock drops publishAt); Google lifted the unaudited loc
   and each new day is planned with the newest data. `smart: false` (global) or `"smart": false` in an account's
   settings restores the old behaviour. Live preview on 9 Nov: YouTube 8/day from 23 Shorts (best 19–22 h + 08 h);
   Instagram 9/day from the prior (no Reel data until the account is connected).
+
+## Instagram profile duplicate guard (2026-11-09, `publish/ig_profile.py`, `instagram.profile_guard: true`)
+- `dedup` already guaranteed one clip = one publication per account inside ClipForge. It didn't know what is on the
+  profile: Reels posted by hand in assisted mode carry hand-written captions, so caption matching found none of the 7
+  (live check). The guard therefore compares VIDEOS: duration (±0.6 s) + dHash of 3 frames at 25/50/75 % (mean ≤ 12
+  of 64 bits). Profile Reels are downloaded once via `media_url` (own media) and cached per media id; clip
+  fingerprints are cached by path + size + mtime. An exact long caption (≥ 40 normalized chars) also counts.
+- Runs in `ig_runner._start_upload` after the queue dedup, before the container: a match becomes SKIPPED_DUPLICATE
+  (reason `on_profile`, link in the message, Telegram notice). If the profile can't be read, the upload waits for
+  the next run, unless the slot is < 10 min away (then it posts: a missed slot is never posted late).
+- Limits: a Reel edited in the Instagram app (music, text, trim) may not match. The Graph API can't delete posts,
+  so duplicates already on the profile are only reported (`clipforge ig-dupes`, GET /api/accounts/{id}/ig-duplicates).
+- Live scan on 9 Nov: 7 Reels, one video posted twice (5 Nov 23:48 + 6 Nov 00:29); none of the 39 queued/draft
+  clips is on the profile.

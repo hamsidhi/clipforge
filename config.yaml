@@ -162,6 +162,7 @@ instagram:             # Instagram Reels (Phase 13) — account + Meta app on th
   test_account_id: ''       # IG user id that may receive ONE live test Reel (empty = live tests never publish)
   public_url: ''            # https base Meta sends remote logins back to (empty = auto: https://<laptop>.<tailnet>.ts.net)
   test_publish_ok: false    # `clipforge ig-test`: true = also publish the test Reel (it goes LIVE on the profile)
+  profile_guard: true       # before each upload: skip a clip already on the profile (same video, e.g. posted by hand)
 
 reach:                 # YouTube reach report (REACH_REPORT.md) + the rules it led to — future clips only
   weekly_report: true  # every 7 days: workspace/reports/REACH_REPORT.md + a Telegram summary

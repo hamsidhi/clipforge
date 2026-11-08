@@ -114,6 +114,7 @@ REASONS: dict[str, tuple[str, tuple[str, ...]]] = {
     "channel_limit": ("Waiting: YouTube's upload limit for this channel", ()),
     "safety_limit": ("Waiting: daily safety limit for uploads", ()),
     "duplicate": ("Skipped: duplicate of another post", ()),
+    "on_profile": ("Skipped: already on your Instagram profile (posted before)", ()),
     "ig_not_ready": ("Instagram account isn't ready for auto-publishing", ("reconnect", "switch_assisted")),
     "upload_failed": ("Upload failed", ("retry", "reschedule")),
     "upload_limit": ("Waiting: YouTube's upload limit for this channel (retries by itself)", ("studio_instead",)),

@@ -221,6 +221,7 @@ class InstagramConfig(_Section):
     test_account_id: str = ""           # an IG user id ClipForge may post ONE live test Reel to (empty = never)
     public_url: str = ""                # https base for logins from the phone (empty = this laptop's Tailscale name)
     test_publish_ok: bool = False       # `clipforge ig-test`: also call media_publish (the Reel goes LIVE)
+    profile_guard: bool = True          # before each upload: skip a clip that is already on the profile (same video)
 
 
 class ReachConfig(_Section):

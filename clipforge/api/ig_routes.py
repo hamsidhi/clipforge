@@ -162,6 +162,19 @@ def ig_token(body: TokenIn) -> dict:
     return res
 
 
+@router.get("/accounts/{account_id}/ig-duplicates", summary="Instagram: Reels posted twice + queue items already on the profile")
+def ig_duplicates(account_id: str) -> dict:
+    from clipforge.publish import ig_profile
+
+    ch = chs.get(account_id)
+    if not ch or ch.platform != "instagram" or ig.is_manual(ch):
+        raise HTTPException(404, "Not a connected Instagram account")
+    try:
+        return ig_profile.scan(ch)
+    except ig.IGError as exc:
+        raise HTTPException(502, str(exc))
+
+
 @router.get("/instagram/attempts", summary="Last Instagram login attempts (no tokens)")
 def ig_attempts() -> list[dict]:
     return ig.attempts()

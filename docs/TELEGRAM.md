@@ -237,6 +237,7 @@ To go back: delete `api_base_url`, call `close` on the local server, wait 10 min
 | `POST /api/instagram/manual` | Accounts → Instagram | Laptop | |
 | `POST /api/instagram/token` | Accounts → Instagram (Connect with a token) | Laptop / phone | token exchanged on the laptop |
 | `GET /api/instagram/attempts` | Accounts → Instagram | Laptop / phone | |
+| `GET /api/accounts/{account_id}/ig-duplicates` | Accounts → Instagram (duplicate check) | `clipforge ig-dupes` | |
 | `GET /api/accounts/{channel_id}/ig-dashboard` | Accounts → Instagram | `/stats`, `/top` | |
 | `GET /api/remote/status` | Settings → Phone | `/app` | |
 | `POST /api/remote/setup` | `clipforge remote setup` | Laptop | |

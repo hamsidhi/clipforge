@@ -415,7 +415,28 @@ def ig_test(account: str = typer.Argument(..., help="Instagram account id (ig:<i
         raise typer.Exit(1)
 
 
+def ig_dupes(account: Optional[str] = typer.Argument(None, help="Instagram account id (default: every connected one)")) -> None:
+    """Instagram: Reels posted more than once, and queued clips that are already on the profile (video match)."""
+    from clipforge.publish import channels as chs
+    from clipforge.publish import ig_profile
+    from clipforge.publish import instagram as ig
+
+    _db()
+    for ch in chs.all_channels():
+        if ch.platform != "instagram" or ig.is_manual(ch) or (account and ch.id != account):
+            continue
+        r = ig_profile.scan(ch)
+        console.print(f"[bold]{ch.title}[/]: {r['profile_reels']} Reels on the profile ({r['checked']} checked by video), "
+                      f"{r['published_by_clipforge']} published by ClipForge")
+        for g in r["duplicates_on_profile"]:
+            console.print(f"  [yellow]posted {len(g)}x[/]: " + " | ".join(f"{x['timestamp'][:16]} {x['permalink']}" for x in g))
+        for x in r["queue_already_on_profile"]:
+            console.print(f"  [yellow]already on profile[/] #{x['id']} {x['title'][:50]} ({x['status']}, {x['why']}): {x['permalink']}")
+        console.print(f"  {r['queue_not_on_profile']} queued/draft clips are not on the profile yet.")
+
+
 def register(app: typer.Typer) -> None:
+    app.command(name="ig-dupes")(ig_dupes)
     app.command(name="reach-report")(reach_report)
     app.command(name="ig-test")(ig_test)
     app.add_typer(channels_app, name="channels")

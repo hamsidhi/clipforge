@@ -172,6 +172,8 @@ def _start_upload(it: db.QueueItem, ch: db.Channel, client: ig.IGClient, token: 
     if twin is not None:
         dedup.mark_skipped(it, twin)
         return False
+    if cfg.instagram.profile_guard and not _profile_ok(it, client, token, ig_id, path, cfg, now, rep):
+        return False
     if not q.claim_for_container(it.id):
         return False
     it = q.get(it.id)  # type: ignore[assignment]
@@ -198,6 +200,32 @@ def _start_upload(it: db.QueueItem, ch: db.Channel, client: ig.IGClient, token: 
     log.info(f"[instagram] uploaded queue item {it.id} → container {it.ig_container_id} "
              f"(publishes {as_utc(it.slot_utc).isoformat()})")  # type: ignore[arg-type]
     return True
+
+
+def _profile_ok(it: db.QueueItem, client: ig.IGClient, token: str, ig_id: str, path, cfg: Config, now: dt.datetime,
+                rep) -> bool:
+    """Profile duplicate guard (ig_profile): is this clip already on the profile (e.g. posted by hand)? Yes →
+    SKIPPED_DUPLICATE with the Reel's link. If the profile can't be read, wait (next run) unless the slot is <10 min
+    away: then post, since a missed slot is never posted late."""
+    from clipforge.publish import ig_profile
+
+    try:
+        media = client.recent_media(ig_id, token, 50)
+        hit = ig_profile.find_on_profile(it, path, media, ig_profile.profile_fps(ig_id, media, cfg), cfg)
+    except Exception as exc:
+        if as_utc(it.slot_utc) - now > dt.timedelta(minutes=10):  # type: ignore[arg-type]
+            log.warning(f"[ig-dupes] profile check for item {it.id} failed ({exc}); trying again next run")
+            return False
+        log.warning(f"[ig-dupes] profile check for item {it.id} failed ({exc}); slot is close, posting anyway")
+        return True
+    if not hit:
+        return True
+    it.permalink = hit.get("permalink", "") or it.permalink
+    _mark(it, "skipped_duplicate", "on_profile",
+          f"Already on your Instagram profile ({hit['why']}): {hit.get('permalink') or hit.get('id')} — not posted again.")
+    rep.notices.append(f"Instagram: “{it.title[:50]}” is already on your profile ({hit['why']}) — skipped, not posted twice.")
+    log.info(f"[ig-dupes] queue item {it.id} already on the profile ({hit['why']}, media {hit.get('id')}) — skipped")
+    return False
 
 
 def _resume_upload(it: db.QueueItem, client: ig.IGClient, token: str, cfg: Config) -> None:

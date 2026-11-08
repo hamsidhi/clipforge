@@ -219,7 +219,8 @@ class GraphIG:
                                                        "access_token": token})
 
     def recent_media(self, ig_id: str, token: str, limit: int = 50) -> list[dict]:
-        d = self._do("GET", f"/{ig_id}/media", params={"fields": "id,permalink,timestamp,caption,media_product_type",
+        d = self._do("GET", f"/{ig_id}/media", params={"fields": "id,permalink,timestamp,caption,media_product_type,"
+                                                                 "media_type,media_url",
                                                        "limit": limit, "access_token": token})
         return d.get("data", [])
 
