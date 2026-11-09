@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import WaveSurfer from 'wavesurfer.js'
 import RegionsPlugin, { type Region } from 'wavesurfer.js/plugins/regions'
-import { Pause, Play } from 'lucide-react'
+import { Flag, FlagTriangleRight, Pause, Play, Rewind } from 'lucide-react'
 import { api } from '@/api/client'
 import { formatTime } from '@/api/hooks'
 import { Button } from '@/components/ui/button'
@@ -16,15 +16,19 @@ interface Props {
   end: number
   sourceDuration: number
   script: string
+  mobile?: boolean
   onChange: (start: number, end: number) => void
 }
 
 /** Source waveform around the clip (±30 s) with draggable start/end handles that snap to words. */
-export default function WaveformTrimmer({ jobId, start, end, sourceDuration, script, onChange }: Props) {
+export default function WaveformTrimmer({ jobId, start, end, sourceDuration, script, mobile = false, onChange }: Props) {
   // window is fixed when the editor opens so dragging doesn't re-fetch constantly
   const [win] = useState(() => ({ a: Math.max(0, start - PAD), b: Math.min(sourceDuration || end + PAD, end + PAD) }))
   // zoom so the clip fills ~60% of the visible strip (both handles on screen), but keep words readable
-  const [PX_PER_SEC] = useState(() => Math.max(28, Math.min(70, ((window.innerWidth - 320) * 0.6) / Math.max(5, end - start))))
+  // phones: no sidebar, and BOTH handles must fit on screen (no sideways scrolling to find the end)
+  const [PX_PER_SEC] = useState(() => mobile
+    ? Math.max(4, Math.min(40, ((window.innerWidth - 40) * 0.72) / Math.max(5, end - start)))
+    : Math.max(28, Math.min(70, ((window.innerWidth - 320) * 0.6) / Math.max(5, end - start))))
   const containerRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const regionRef = useRef<Region | null>(null)
@@ -142,6 +146,28 @@ export default function WaveformTrimmer({ jobId, start, end, sourceDuration, scr
     cb.current(Math.round(s * 1000) / 1000, Math.round(e * 1000) / 1000)
   }
 
+  const playFrom = async (t: number) => {
+    const el = audioRef.current
+    if (!el) return
+    el.currentTime = Math.max(win.a, t)
+    try {
+      await el.play()
+      setPlaying(true)
+    } catch {
+      setPlaying(false)
+    }
+  }
+  // phones: set an edge to where the video is right now (snapped to a word)
+  const setHere = (edge: 'start' | 'end') => {
+    const el = audioRef.current
+    if (!el) return
+    const t = snap(el.currentTime, edge)
+    const s = edge === 'start' ? t : start
+    const e = edge === 'end' ? t : end
+    if (e - s < 5) return
+    cb.current(Math.round(s * 1000) / 1000, Math.round(e * 1000) / 1000)
+  }
+
   const toggle = async () => {
     const el = audioRef.current
     if (!el) return
@@ -157,6 +183,50 @@ export default function WaveformTrimmer({ jobId, start, end, sourceDuration, scr
     } catch {
       setPlaying(false)
     }
+  }
+
+  if (mobile) {
+    const now = playhead ?? start
+    return (
+      <div className="space-y-3">
+        <div className="relative overflow-hidden rounded-xl bg-black">
+          <video ref={audioRef} src={`/api/jobs/${jobId}/source-video#t=${start.toFixed(2)}`} preload="metadata" playsInline
+            className="aspect-video w-full object-contain" onPause={() => setPlaying(false)} />
+          <div className="absolute top-2 left-2 rounded bg-black/70 px-2 py-0.5 text-xs text-white tabular-nums">{formatTime(now)}</div>
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          <Button variant="secondary" className="h-11" onClick={toggle}>{playing ? <Pause /> : <Play />}{playing ? 'Pause' : 'Play clip'}</Button>
+          <Button variant="outline" className="h-11" onClick={() => playFrom(start)}><Rewind /> Start</Button>
+          <Button variant="outline" className="h-11" onClick={() => playFrom(end - 3)}>Last 3 s</Button>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <Button variant="outline" className="h-11" onClick={() => setHere('start')}><Flag /> Start here</Button>
+          <Button variant="outline" className="h-11" onClick={() => setHere('end')}><FlagTriangleRight /> End here</Button>
+        </div>
+        <div className="rounded-xl border p-2">
+          <div className="mb-2 text-center text-sm tabular-nums">
+            {formatTime(start)} → {formatTime(end)} · <span className="font-semibold">{(end - start).toFixed(1)} s</span>
+          </div>
+          {(['start', 'end'] as const).map((edge) => (
+            <div key={edge} className="mb-1 grid grid-cols-[3rem_repeat(4,1fr)] items-center gap-1">
+              <span className="text-xs text-muted-foreground capitalize">{edge}</span>
+              {[-2, -0.5, 0.5, 2].map((d) => (
+                <Button key={d} size="sm" variant="outline" className="h-10 px-0" onClick={() => nudge(edge, d)}>{d > 0 ? '+' : '−'}{Math.abs(d)} s</Button>
+              ))}
+            </div>
+          ))}
+        </div>
+        <div ref={scrollRef} className="overflow-x-auto rounded-xl border bg-muted/30">
+          <div className="relative pt-2 pb-1" style={{ width: Math.max(len * PX_PER_SEC, 1) }}>
+            {wave.isLoading ? <Skeleton className="h-16" /> : <div ref={containerRef} data-wave="" />}
+            {playhead != null && playhead >= win.a && playhead <= win.b && (
+              <div className="pointer-events-none absolute top-2 h-24 w-0.5 bg-primary" style={{ left: (playhead - win.a) * PX_PER_SEC }} />
+            )}
+          </div>
+        </div>
+        <p className="text-center text-[11px] text-muted-foreground">Drag the yellow box's edges, or use the buttons · always snaps to whole words</p>
+      </div>
+    )
   }
 
   return (

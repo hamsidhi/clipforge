@@ -45,6 +45,18 @@ select:
   rerank_pool: 40      # how many top candidates the re-rank pass looks at
   rerank_context_sec: 20.0  # seconds of context shown before/after each candidate
 
+arcs:                  # arc selection engine (stages/arcs.py): complete ideas, judged; changing this never re-selects old jobs
+  engine: arcs         # arcs | legacy (the old window → snap → rerank selection)
+  profile: auto        # auto | podcast | interview | vlog_challenge | comedy | horror_comedy | gaming
+  max_sec: 90          # hard max per clip (Shorts and Reels allow up to 3 min)
+  min_quality: 7.0     # weighted rubric score a clip needs — fewer clips, never weak padding
+  gate_completeness: 7.0
+  gate_standalone: 7.0
+  max_garbled: 0.15    # max share of low-confidence (garbled) transcript words in a clip
+  judge_pool: 40       # how many candidates the judge scores
+  context_sec: 30      # context shown to the judge before/after each candidate
+  judge_model: ''      # '' = llm.model; a bigger local model (e.g. qwen2.5:14b) judges better, slower
+
 scoring_weights:
   hook: 0.3
   standalone: 0.25

@@ -163,7 +163,7 @@ def test_pipeline_select_with_rerank_mock(tmp_path):
     raw = [LLMCandidate(start=s.start, end=s.end + 25, title="", topic=f"t{i}", scores=Scores(hook=i, standalone=5))
            for i, s in enumerate(SEGS)]
     cfg = Config().with_overrides({"clips.count": 3, "clips.min_sec": 5, "clips.max_count": 25,
-                                   "select.rerank_pool": 5, "clips.max_overlap": 1.0})
+                                   "select.rerank_pool": 5, "clips.max_overlap": 1.0, "arcs.engine": "legacy"})
     pool = refine.score_pool(raw, t.all_words(), None, cfg, 60, t.boundaries())
     short = refine.pick(pool, cfg, target=cfg.select.rerank_pool)
     assert len(short) == 5
@@ -234,7 +234,8 @@ def test_rerank_shortlist_never_smaller_than_clip_count(tmp_path, monkeypatch):
         return real_pick(kept, cfg, target)
 
     monkeypatch.setattr(refine, "pick", spy)
-    cfg = Config().with_overrides({"clips.count": 20, "select.rerank_pool": 10, "select.rerank": True})
+    cfg = Config().with_overrides({"clips.count": 20, "select.rerank_pool": 10, "select.rerank": True,
+                                   "arcs.engine": "legacy"})
     ws = Workspace(tmp_path, "v")
     talk = [seg(i, i * 5.0, "maine apni pehli company mein bahut paisa gawaya aur seekha") for i in range(300)]
     ws.write_json(ws.transcript, Transcript(language="hi", model="x", duration=1500, segments=talk).model_dump())

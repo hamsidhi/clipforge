@@ -184,7 +184,7 @@ def _pasted_lines(duration: float) -> str:
 @pytest.fixture
 def est(tmp_path, monkeypatch):
     cfg = Config().with_overrides({"output.dir": str(tmp_path / "ws"), "llm.provider": "mock", "clips.count": 2,
-                                   "clips.min_sec": 20, "clips.max_sec": 40})
+                                   "clips.min_sec": 20, "clips.max_sec": 40, "arcs.engine": "legacy"})
     ws = Workspace(cfg.workspace, "vid")
     ws.write_model(ws.info, VideoInfo(id="vid", title="T", duration=120))
     ti.save_input(ws, _pasted_lines(120), None)

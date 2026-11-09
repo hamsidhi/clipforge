@@ -333,6 +333,31 @@ URL/file ─▶ yt-dlp ─▶ ffmpeg (16 kHz wav) ─▶ faster-whisper (word ti
 (`transcript.source: auto | pasted | youtube | whisper`). Whisper then only re-times the chosen clips (±1.5 s); the
 job page shows which transcript was used and the time saved — about 45 of 54 minutes for a 2 h episode on CPU.
 
+### How clips are chosen (arc engine, `arcs:` in config.yaml)
+
+A good short is one complete idea: the question **and** the whole answer, a story **and** its outcome, a claim
+**and** its reasoning. ClipForge looks for those, not for a punchy line:
+
+1. **Structure.** Questions and topic blocks (a new question = a new block; chapters count too). Garbled
+   transcript (low Whisper confidence) is marked and never becomes a clip.
+2. **Outline.** One line per block, written once per episode and shown to every later LLM call, so no part of the
+   episode is judged blind.
+3. **Candidates.** Each question with its full answer. Long answers are split into self-contained parts that end
+   where a thought ends. The model's own picks are expanded to their question and to a thought end.
+4. **Judge.** Each candidate is scored 0–10 on hook, completeness, standalone, value, flow and trend, with
+   ±30 s of context. If the answer continues after the end, the end is extended (up to 90 s) and judged again.
+5. **Gates.** Completeness ≥ 7, standalone ≥ 7, never ending mid-answer, overall score ≥ `arcs.min_quality`
+   (7.0). Fewer clips is better than weak ones.
+
+**Content profiles** (`arcs.profile`): `auto` detects podcast / interview / vlog_challenge / comedy / horror_comedy
+/ gaming from the title and the amount of speech. Comedy, challenge and gaming profiles also use audio peaks
+(laughs, screams, explosions) with their build-up and reaction. `arcs.engine: legacy` restores the old selection.
+Check a job with `python scripts/eval_clips.py workspace/<video_id>`. It lists clips that end mid-answer, gate
+pass %, and agreement with your 👍/👎 (approve/reject).
+
+Clipping big creators (MrBeast, CarryMinati…): only under their official clipping campaigns or with permission,
+and always keep the credit line.
+
 For design decisions and the reasons behind them, see [DECISIONS.md](DECISIONS.md) and [CLAUDE.md](CLAUDE.md).
 
 ## 7. Troubleshooting

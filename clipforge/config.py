@@ -84,6 +84,22 @@ class SelectConfig(_Section):
     rerank_context_sec: float = Field(20, ge=0, le=60)  # context shown before/after each candidate
 
 
+class ArcsConfig(_Section):
+    """Arc selection engine (2026-11-09, stages/arcs.py). Its own section on purpose: the select-stage fingerprint
+    hashes `clips:`/`select:`, so changing these never re-selects (and re-ranks) an existing job's clips."""
+
+    engine: Literal["arcs", "legacy"] = "arcs"   # legacy = the old window → snap → rerank selection
+    profile: Literal["auto", "podcast", "interview", "vlog_challenge", "comedy", "horror_comedy", "gaming"] = "auto"
+    max_sec: float = Field(90, ge=20, le=180)    # hard max for arc clips (Shorts and Reels allow 3 min)
+    min_quality: float = Field(7.0, ge=0, le=10) # weighted rubric score a clip needs; fewer clips, never padding
+    gate_completeness: float = 7.0
+    gate_standalone: float = 7.0
+    max_garbled: float = 0.15                    # max share of low-confidence (garbled) words in a clip
+    judge_pool: int = Field(40, ge=5, le=120)    # candidates the judge looks at
+    context_sec: float = Field(30, ge=0, le=90)  # context the judge sees before/after a candidate
+    judge_model: str = ""                        # "" = llm.model; e.g. qwen2.5:14b for a stronger judge
+
+
 class ScoringWeights(_Section):
     hook: float = 0.3
     standalone: float = 0.25
@@ -338,6 +354,7 @@ class Config(_Section):
     transcript: TranscriptConfig = TranscriptConfig()
     llm: LLMConfig = LLMConfig()
     select: SelectConfig = SelectConfig()
+    arcs: ArcsConfig = ArcsConfig()
     scoring_weights: ScoringWeights = ScoringWeights()
     reframe: ReframeConfig = ReframeConfig()
     captions: CaptionsConfig = CaptionsConfig()

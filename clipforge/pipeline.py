@@ -262,19 +262,33 @@ def select(ws: Workspace, cfg: Config, reporter: ProgressReporter | None = None,
         reporter.stage("select", "skipped", "kept hand-edited candidates.json")
         return load_candidates(ws)
 
+    locked = queued_ranks(ws.video_id)
+    if locked and not force and ws.candidates.exists():
+        # clips of this job are in the publish queue: a new selection would re-rank them (and drop their renders)
+        log.warning(f"{len(locked)} clip(s) of this job are in the publish queue — keeping the current selection "
+                    "(re-select explicitly to add new clips; queued ones are always kept).")
+        ws.mark_done("select", fp)
+        reporter.stage("select", "skipped", "clips are in the publish queue")
+        return load_candidates(ws)
+
     llm = get_llm(cfg)  # only now: a cached selection must not need a running LLM
     reporter.stage("select", "running", f"{llm.name}:{llm.model}")
     info = load_info(ws)
     transcript = load_transcript(ws)
     raw, failed, num_ctx = select_clips.run(ws, cfg, llm, reporter, info, transcript)
     energy = ws.read_model(ws.energy, EnergyData) if ws.energy.exists() else None
-    pool = refine.score_pool(raw, transcript.all_words(), energy, cfg, info.duration, transcript.boundaries())
-    if cfg.select.rerank and pool:  # re-score the best few with context, then the usual diversity pick
-        final_n = min(cfg.clips.count, cfg.clips.max_count)
-        shortlist = refine.pick(pool, cfg, target=max(cfg.select.rerank_pool, final_n))  # never fewer than the output
-        select_clips.rerank(ws, cfg, llm, reporter, info, transcript, shortlist, num_ctx)
-        pool = shortlist
-    cands = refine.pick(pool, cfg)
+    if cfg.arcs.engine == "arcs":
+        cands = select_arcs(ws, cfg, llm, reporter, info, transcript, raw, energy)
+    else:
+        pool = refine.score_pool(raw, transcript.all_words(), energy, cfg, info.duration, transcript.boundaries())
+        if cfg.select.rerank and pool:  # re-score the best few with context, then the usual diversity pick
+            final_n = min(cfg.clips.count, cfg.clips.max_count)
+            shortlist = refine.pick(pool, cfg, target=max(cfg.select.rerank_pool, final_n))  # never fewer than the output
+            select_clips.rerank(ws, cfg, llm, reporter, info, transcript, shortlist, num_ctx)
+            pool = shortlist
+        cands = refine.pick(pool, cfg)
+    if locked:
+        cands = keep_locked(load_candidates(ws) if ws.candidates.exists() else [], cands, locked)
     if not cands:
         raise RuntimeError("No usable clips were found. Check the transcript, try another LLM provider, "
                            "or lower clips.min_sec in config.yaml.")
@@ -284,7 +298,7 @@ def select(ws: Workspace, cfg: Config, reporter: ProgressReporter | None = None,
         clip_whisper.ensure_exact(ws, cfg, transcript, [(c.start, c.end) for c in cands], reporter)
         cands = clip_whisper.resnap(cands, transcript, cfg, info.duration)
     select_clips.write_titles(ws, cfg, llm, reporter, info, transcript, cands, num_ctx)
-    _drop_stale_renders(ws, cands)
+    _drop_stale_renders(ws, cands, locked)
     save_candidates(ws, cands)
     if failed:
         # keep what we have, but don't mark the stage done: the next run retries only the failed windows
@@ -296,13 +310,66 @@ def select(ws: Workspace, cfg: Config, reporter: ProgressReporter | None = None,
     return cands
 
 
-def _drop_stale_renders(ws: Workspace, cands: list[ClipCandidate]) -> None:
-    """After a new selection, remove renders whose rank now holds a different clip (keep identical ones)."""
+def queued_ranks(video_id: str) -> set[int]:
+    """Ranks of this job's clips that are in the publish queue (any state but cancelled): never re-rank/re-render."""
+    try:
+        from sqlmodel import select as q_select
+
+        from clipforge.api import db
+
+        with db.session() as s:
+            rows = s.exec(q_select(db.QueueItem).where(db.QueueItem.video_id == video_id)).all()
+        return {r.rank for r in rows if r.status != "cancelled"}
+    except Exception as exc:  # no DB (plain CLI use): nothing is queued
+        log.debug(f"queue lookup skipped: {exc}")
+        return set()
+
+
+def keep_locked(old: list[ClipCandidate], new: list[ClipCandidate], locked: set[int]) -> list[ClipCandidate]:
+    """Explicit re-select of a job with queued clips: queued clips keep their rank, times and text; new clips that
+    don't overlap them are added after the highest rank."""
+    keep = [c for c in old if c.rank in locked]
+    nxt = max([c.rank for c in old] + [0]) + 1
+    out = list(keep)
+    for c in new:
+        if any(min(c.end, k.end) - max(c.start, k.start) > 0.2 * min(c.end - c.start, k.end - k.start) for k in keep):
+            continue
+        c.rank = nxt
+        nxt += 1
+        out.append(c)
+    return out
+
+
+def select_arcs(ws: Workspace, cfg: Config, llm, reporter, info, transcript, raw, energy) -> list[ClipCandidate]:
+    """Arc engine (stages/arcs.py) with the job's content profile; stats in select_cache/arcs_stats.json."""
+    from clipforge.stages import arcs, profiles
+
+    prof, why = profiles.resolve(cfg.arcs.profile, info, transcript)
+    log.info(f"Content profile: {prof.name} ({why})")
+    judge_llm = llm
+    if cfg.arcs.judge_model and cfg.arcs.judge_model != getattr(llm, "model", ""):
+        from clipforge.llm import get_provider
+
+        judge_llm = get_provider(cfg.llm.model_copy(update={"model": cfg.arcs.judge_model}))
+    cands, stats = arcs.select(ws, cfg, llm, judge_llm, reporter, info, transcript, raw,
+                               energy.peaks if energy else [], prof)
+    stats.update({"profile": prof.name, "profile_why": why, "judge_model": getattr(judge_llm, "model", "")})
+    (ws.select_cache / "arcs_stats.json").write_text(json.dumps(stats, indent=1), encoding="utf-8")
+    if not cands:
+        log.warning("No clip passed the quality gates — the episode may have little complete content.")
+    return cands
+
+
+def _drop_stale_renders(ws: Workspace, cands: list[ClipCandidate], locked: set[int] | None = None) -> None:
+    """After a new selection, remove renders whose rank now holds a different clip (keep identical ones). Clips in
+    the publish queue (`locked` ranks) are never touched."""
     by_rank = {c.rank: c for c in cands}
     for f in ws.clips_dir.glob("*.mp4"):
         try:
             rank = int(f.name.split("_", 1)[0])
         except ValueError:
+            continue
+        if locked and rank in locked:
             continue
         work = ws.clips_dir / "_work" / f"{rank:02d}"
         prev = {}
@@ -315,7 +382,7 @@ def _drop_stale_renders(ws: Workspace, cands: list[ClipCandidate]) -> None:
 
 
 def _clip_fp(c: ClipCandidate, cfg: Config, words_sig: str) -> str:
-    data = c.model_dump(exclude={"rank", "approved", "score", "why", "scores", "topic"})
+    data = c.model_dump(exclude={"rank", "approved", "score", "why", "scores", "topic", "rubric"})
     return fingerprint("render-v1", data, cfg.captions.model_dump(), cfg.render.model_dump(), cfg.reframe.model_dump(), words_sig)
 
 

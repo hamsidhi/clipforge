@@ -195,6 +195,7 @@ class ClipCandidate(BaseModel):
     caption_style: CaptionStyle = CaptionStyle()
     word_edits: dict[str, str] = {}  # "<word index in clip>" -> replacement text
     crop_overrides: list[CropOverride] = []
+    rubric: dict = {}  # arc engine: judge scores (hook, completeness, standalone, value, flow, trend), kind, block, notes
 
     @property
     def duration(self) -> float:

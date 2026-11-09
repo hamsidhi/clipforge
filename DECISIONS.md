@@ -987,3 +987,19 @@ None is locked private (a lock drops publishAt); Google lifted the unaudited loc
   so duplicates already on the profile are only reported (`clipforge ig-dupes`, GET /api/accounts/{id}/ig-duplicates).
 - Live scan on 9 Nov: 7 Reels, one video posted twice (5 Nov 23:48 + 6 Nov 00:29); none of the 39 queued/draft
   clips is on the profile.
+
+## Clip quality: root causes (2026-11-09, evidence from `scripts/trace_selection.py`)
+Traced every final clip of two cached episodes (Sam Altman `TjPPIf-M6KE`: 20 clips; Huberman `Y566_T-YlNQ`: 25 clips)
+back to the raw LLM span (`llm_candidates.json`), with every boundary change and the 30 s after the end.
+
+| # | suspect | verdict | evidence |
+|---|---|---|---|
+| 3 | selection by punchy line, not complete idea | **CONFIRMED, main cause** | raw LLM spans: median 14.4 s / 20.0 s; 32 of 47 and 48 of 97 shorter than the 20 s minimum, 17 and 22 under 10 s. The model picks a line, not an idea. |
+| — | the minimum length then moves the end to an arbitrary point | **CONFIRMED** (follows from 3) | 11 of 20 (Altman) and 8 of 25 final clips had their END pushed > 3 s past the LLM's end, only to reach 20 s. #6 "High Bar for AI Products": raw 6.9 s → 21.4 s, ends "some of which people will look at and say". The answer continues in the next segment. |
+| 4 | Whisper segment end treated as sentence end | **CONFIRMED** | 17 of 20 and 20 of 25 clips end without . ? ! (e.g. #2 ends "…the most important and useful thing i can imagine doing it's incredibly"). |
+| 1 | 59 s hard cap | confirmed, minor | 1 of 20 and 2 of 25 clips cut > 3 s by the cap. It cut the best-scored clip (#1, raw 75 s → 57.5 s, ends "and putting it out in different ways"). |
+| new | garbled transcript (Whisper hallucinates on Hindi turns) | **CONFIRMED** | Devanagari segments in the romanized transcript have mean word probability 0.30 vs 0.90–0.99 elsewhere; 2 of 20 and 9 of 25 clips start or end inside such text → titles like "Biltabad Chee.d". Nothing checked this. |
+| 6 | no final setup → answer → payoff check | **CONFIRMED** (by design) | refine/rerank score hook/standalone/emotion/value/controversy only; nothing checks that the answer is complete or that the clip ends on a conclusion. |
+| 2 | 8-min window blindness | partial | 4 of 47 / 11 of 97 raw spans end ≤ 20 s before a window edge (≈2–3× chance). There is no episode outline: the model never knows what the episode is about. |
+| 5 | compact format / filler strip / prefilter | not the cause of cut endings | these only change what the model reads; the cut endings come from 3 + 4 + the length policy. Kept for speed, but the new judge sees full text + ±30 s context. |
+| 7 | 7B model capacity | not provable from these traces | measured in the before/after (larger judge, if one fits). |

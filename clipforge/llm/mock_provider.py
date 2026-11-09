@@ -81,7 +81,26 @@ class MockProvider(LLMProvider):
             return json.dumps({"clips": [{"id": n, "score": 5 + n % 4, "hook": 6, "standalone": 6} for n in ids]})
         if task == "titles":
             return json.dumps(self._titles(prompt), ensure_ascii=False)
+        if task == "outline":
+            ids = [int(n) for n in re.findall(r"^BLOCK (\d+) ", prompt, re.MULTILINE)]
+            return json.dumps({"blocks": [{"id": n, "summary": f"block {n}", "interest": 6 + n % 3} for n in ids]})
+        if task == "judge":
+            return json.dumps(self._judge(prompt))
         return json.dumps(self._select(prompt))
+
+    @staticmethod
+    def _judge(prompt: str) -> dict:
+        """Clip lines a..b; 'answer continues' when the last clip line has no sentence end; 'weak' text scores low."""
+        m = re.search(r"The clip is lines (\d+)\.\.(\d+)", prompt)
+        a, b = (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+        lines = dict(re.findall(r"^[ <>](\d+)\| (.*)$", prompt, re.MULTILINE))
+        body = " ".join(lines.get(str(i), "") for i in range(a, b + 1))
+        last = lines.get(str(b), "").rstrip()
+        cont = not re.search(r"[.?!]$", last)
+        weak = "smalltalk" in body
+        base = 3 if weak else 8
+        return {"hook": base, "completeness": 4 if cont else base, "standalone": base, "value": base, "flow": base,
+                "trend": 6, "start_id": a, "end_id": b, "answer_continues": cont, "title": "Mock arc", "why": "mock"}
 
     @staticmethod
     def _titles(prompt: str) -> dict:

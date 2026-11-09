@@ -2,6 +2,24 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "exp-ui",
+      "runtimeExecutable": "D:\\clipforge\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": ["-m", "clipforge", "ui", "--no-browser", "--port", "8100"],
+      "env": {
+        "CLIPFORGE_CONFIG": "D:\\clipforge\\.claude\\worktrees\\pensive-torvalds-a0d253\\_exp_ws\\config.yaml",
+        "CLIPFORGE_ENV": "D:\\clipforge\\.claude\\worktrees\\pensive-torvalds-a0d253\\_exp_ws\\.env",
+        "CLIPFORGE_NO_TICKER": "1",
+        "PYTHONPATH": "D:\\clipforge\\.claude\\worktrees\\pensive-torvalds-a0d253"
+      },
+      "port": 8100
+    },
+    {
+      "name": "frontend-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "frontend", "run", "dev"],
+      "port": 5173
+    },
+    {
       "name": "clipforge-ui",
       "runtimeExecutable": "E:\\youtube\\clipforge\\.venv\\Scripts\\clipforge.exe",
       "runtimeArgs": ["ui", "--no-browser", "--port", "8000"],

@@ -228,7 +228,9 @@ HOOK_RULE = ("EXTRA RULE (data from this channel: about half of all viewers leav
              "below 6 for any clip whose first sentence is a question to the guest, a greeting, or 'so/haan/achha'.")
 TITLE_RULES = ("EXTRA RULES (data from this channel: YouTube search brings the most views): put the guest's name in "
                "the title when the clip is about their story, opinion or numbers (e.g. 'Sam Altman ...', 'Bryson ...'); "
-               "use words people would type into search; no 'Topic: Subtitle' colon pattern; never invent words.")
+               "use words people would type into search; no 'Topic: Subtitle' colon pattern; never invent words. "
+               "Use ONLY numbers, names and claims that are in the clip text: the examples above are only examples "
+               "(nobody in this clip lost 5 crore unless the clip says so).")
 
 
 def with_reach_rules(template: str, cfg: Config, kind: str) -> str:

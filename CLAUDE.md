@@ -66,6 +66,16 @@ api/ (FastAPI) ─┴─> pipeline.py ──> stages/{download, transcribe, anal
 - Smart daily plan: `publish/smart.py` (`schedule.smart`): slot times + posts/day learned from the account's own
   post results (VideoPerf), assumed India curve as the start, exploration bonus; `plan.day_slots` delegates to it.
 
+### Clip selection: arc engine (2026-11-09, `stages/arcs.py`, `stages/profiles.py`, config `arcs:`)
+- `pipeline.select` → `select_arcs` when `arcs.engine: arcs` (default; `legacy` = old window/snap/rerank path).
+  Structure (questions, topic blocks, garbled segs) → outline (LLM, cached `select_cache/outline_*`) → candidates
+  (Q&A units, sub-arcs, expanded window picks, audio-peak moments) → judge (LLM, cached `judge_*`, ±30 s context,
+  extends the end when the answer continues) → gates + `min_quality` + one clip per block. Rubric in
+  `ClipCandidate.rubric`; titles still come from `write_titles`.
+- `arcs:` is NOT in `fp_select` on purpose. `pipeline.queued_ranks`: a job with clips in the publish queue never
+  re-selects unless forced, and then `keep_locked` keeps queued clips (rank, times, files).
+- Evidence/eval: `scripts/trace_selection.py`, `scripts/eval_clips.py` (cut-mid-answer, gates, 👍/👎 agreement).
+
 ## Commands
 ```bash
 # setup (Windows: .venv\Scripts\activate)
