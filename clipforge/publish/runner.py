@@ -867,6 +867,10 @@ def _refresh_status(ch: db.Channel, client, cfg: Config, now: dt.datetime, rep: 
     if not watch:
         return
     by_id = {v["id"]: v for v in client.videos([it.youtube_video_id for it in watch])}
+    gone = reconcile.drop_deleted(ch.id, client, by_id)  # deleted in Studio → off the queue now, not after the slot
+    if gone:
+        rep.messages.append(f"{ch.title}: {len(gone)} clip(s) deleted on YouTube were removed from the queue")
+        watch = [it for it in watch if it.id not in {g["queue_id"] for g in gone}]
     for it in watch:
         v = by_id.get(it.youtube_video_id)
         if not v:

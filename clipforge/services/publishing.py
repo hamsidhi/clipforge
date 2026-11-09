@@ -568,3 +568,36 @@ def earnings() -> dict:
 
 def when_local(it: db.QueueItem) -> str:
     return utc_to_local(it.slot_utc, zone(it.channel_id)).strftime("%a %d %b %H:%M") if it.slot_utc else "not scheduled"
+
+
+# ============================================================================ clear a day / a week
+def clear_range(start: str, days: int = 1, platform: str = "all", channel_id: str | None = None) -> dict:
+    """Remove every planned post whose slot falls on `start` (YYYY-MM-DD, local zone) … `start + days`. Clips that are
+    not on the platform yet are deleted from the queue. Clips already uploaded to YouTube (private + publishAt) can't
+    be deleted from here (the login has no delete permission): they come back in `on_platform` with Studio links —
+    delete them in Studio, then Sync removes them here. Published posts are history and stay."""
+    from zoneinfo import ZoneInfo
+
+    try:
+        day = dt.date.fromisoformat(start)
+    except ValueError:
+        raise BadRequest("Pick a day (YYYY-MM-DD).") from None
+    if not 1 <= days <= 31:
+        raise BadRequest("Clear 1 to 31 days at a time.")
+    tz = ZoneInfo(zone(channel_id))
+    lo = dt.datetime.combine(day, dt.time(), tz).astimezone(dt.timezone.utc)
+    hi = lo + dt.timedelta(days=days)
+    removed, on_platform = [], []
+    for it in q.items(channel_id):
+        if not it.slot_utc or not lo <= as_utc(it.slot_utc) < hi or it.status in ("published", "skipped_duplicate"):
+            continue
+        if platform != "all" and it.platform != platform:
+            continue
+        if it.status in q.ON_PLATFORM or it.youtube_video_id or it.ig_media_id:
+            on_platform.append({"id": it.id, "platform": it.platform, "title": it.title,
+                                "url": f"https://studio.youtube.com/video/{it.youtube_video_id}/edit"
+                                if it.youtube_video_id else ""})
+            continue
+        q.delete(it.id)  # type: ignore[arg-type]
+        removed.append(it.id)
+    return {"removed": removed, "on_platform": on_platform}

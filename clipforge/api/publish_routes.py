@@ -435,8 +435,10 @@ def queue_publish_now(item_id: int) -> dict:
 class BulkIn(BaseModel):
     ids: list[int] = []
     action: Literal["unschedule", "delete", "shift", "regenerate", "reschedule", "retry", "unbatch", "to_batch",
-                    "reschedule_missed", "retry_failed"]
+                    "reschedule_missed", "retry_failed", "clear"]
     days: float = 1
+    start: Optional[str] = None          # clear: first day (YYYY-MM-DD, IST); `days` = 1 (a day) or 7 (a week)
+    platform: Literal["all", "youtube", "instagram"] = "all"
     channel_id: Optional[str] = None
 
 
@@ -454,6 +456,9 @@ def queue_bulk(body: BulkIn) -> dict:
     done, errors = [], []
     ids = list(body.ids)
     action = body.action
+    if action == "clear":  # everything planned on a day / in a week (both platforms unless one is picked)
+        res = pub.clear_range(body.start or "", int(body.days), body.platform, body.channel_id)
+        return {"done": res["removed"], "errors": [], "on_platform": res["on_platform"]}
     if action in ("reschedule_missed", "retry_failed"):  # "all of them" — no ids needed
         # only clips that certainly aren't on the platform: "interrupted", "batched_in_api", "Uploaded in Studio? not
         # linked" etc. may already be uploaded — they keep their per-clip buttons (check Studio first)

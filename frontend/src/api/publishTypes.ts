@@ -178,6 +178,7 @@ export interface Batch {
 }
 
 export interface SyncResult {
+  removed?: { queue_id: number; video_id: string; title: string }[]
   matched: { queue_id: number; video_id: string; title: string; score: number; by: string }[]
   unmatched_items: { queue_id: number; title: string }[]
   unmatched_videos: {

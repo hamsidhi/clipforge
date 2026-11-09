@@ -21,6 +21,7 @@ from clipforge.publish import channels as chs
 from clipforge.publish import queue as q
 from clipforge.publish import youtube as yt
 from clipforge.publish.timez import as_utc, now_utc
+from clipforge.utils.log import log
 
 TITLE_MIN = 0.8
 FILE_MATCH = 2.0  # score for an exact file-name match (beats any title score)
@@ -125,6 +126,37 @@ def apply_video(it: db.QueueItem, video: dict) -> db.QueueItem:
     return q.save(it)
 
 
+LIVE_ON_YT = ("uploading", "processing", "scheduled", "uploaded", "locked_private", "needs_manual", "failed", "missed")
+
+
+def drop_deleted(channel_id: str, client: yt.YouTubeClient, known: dict[str, dict] | None = None) -> list[dict]:
+    """Queue items linked to a YouTube video that no longer exists (deleted in Studio) are removed from the queue right
+    away — not only after their slot passed. `known` = videos already fetched (saves a call). Published items stay as
+    history. Safety: if EVERY linked video looks gone (wrong token / API hiccup), nothing is removed."""
+    linked = [it for it in q.items(channel_id, LIVE_ON_YT) if it.youtube_video_id and it.status != "uploading"]
+    if not linked:
+        return []
+    known = dict(known or {})
+    ask = [it.youtube_video_id for it in linked if it.youtube_video_id not in known]
+    if ask:
+        known.update({v["id"]: v for v in client.videos(ask)})  # type: ignore[arg-type]
+    gone = [it for it in linked if it.youtube_video_id not in known]
+    if not gone or (len(gone) == len(linked) and len(linked) > 2):
+        if gone:
+            log.warning(f"[sync] {channel_id}: all {len(gone)} linked videos look missing — not removing anything")
+        return []
+    out = []
+    with db.session() as s:
+        for it in gone:
+            row = s.get(db.QueueItem, it.id)
+            if row:
+                out.append({"queue_id": it.id, "video_id": it.youtube_video_id, "title": it.title})
+                s.delete(row)
+        s.commit()
+    log.info(f"[sync] {channel_id}: removed {len(out)} clip(s) deleted on YouTube")
+    return out
+
+
 def sync(channel_id: str, cfg: Config | None = None, client: yt.YouTubeClient | None = None) -> dict:
     from clipforge.publish import runner
 
@@ -135,6 +167,7 @@ def sync(channel_id: str, cfg: Config | None = None, client: yt.YouTubeClient | 
     client = client or yt.client_for(channel_id, cfg)
     ids = client.uploads(ch.uploads_playlist, 100) if ch.uploads_playlist else []
     videos = client.videos(ids) if ids else []
+    removed = drop_deleted(channel_id, client, {v["id"]: v for v in videos})
     known = {it.youtube_video_id for it in q.items(channel_id) if it.youtube_video_id}
     fresh = [v for v in videos if v["id"] not in known]
     waiting = [it for it in q.items(channel_id, WAITING) if not it.youtube_video_id and it.slot_utc]
@@ -155,6 +188,7 @@ def sync(channel_id: str, cfg: Config | None = None, client: yt.YouTubeClient | 
                 runner.apply_state(it, v, expected, None, now)
     shorts = [v for v in left_videos if _duration(v) <= 180]
     return {
+        "removed": removed,
         "matched": [{"queue_id": it.id, "video_id": v["id"], "title": v["snippet"]["title"], "score": s,
                      "by": "file name" if s >= FILE_MATCH else "title"} for it, v, s in pairs],
         "unmatched_items": [{"queue_id": it.id, "title": it.title} for it in left_items],

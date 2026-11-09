@@ -2,12 +2,12 @@ import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  CalendarClock, CalendarDays, ChevronLeft, ChevronRight, Download, FolderUp, Info, List, Loader2, RefreshCw, Sparkles, UploadCloud,
+  CalendarClock, CalendarDays, ChevronLeft, ChevronRight, Download, FolderUp, Info, List, Loader2, RefreshCw, Sparkles, Trash2, UploadCloud,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { istLabel, pub, STATUS_LABEL, STATUS_STYLE, statusLabel, useChannels, usePublishing, useQueue, WEEKDAYS } from '@/api/publish'
 import type { QueueItem, SyncResult } from '@/api/publishTypes'
-import type { BulkAction } from '@/api/publish'
+import type { BulkAction, OnPlatform } from '@/api/publish'
 import FixActions from '@/components/FixActions'
 import PlatformIcon from '@/components/PlatformIcon'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
@@ -53,8 +53,9 @@ function ItemChip({ it, onOpen }: { it: QueueItem; onOpen: () => void }) {
   )
 }
 
-function WeekView({ items, slots, onOpen, onDrop }: {
+function WeekView({ items, slots, onOpen, onDrop, onClear }: {
   items: QueueItem[]; slots: string[]; onOpen: (it: QueueItem) => void; onDrop: (id: number, slotLocal: string) => void
+  onClear: (start: string, days: number, label: string) => void
 }) {
   const [week, setWeek] = useState(() => startOfWeek(new Date()))
   const days = Array.from({ length: 7 }, (_, i) => new Date(week.getFullYear(), week.getMonth(), week.getDate() + i))
@@ -71,6 +72,9 @@ function WeekView({ items, slots, onOpen, onDrop }: {
         <Button size="icon" variant="outline" aria-label="Next week" onClick={() => setWeek(new Date(week.getTime() + 7 * 864e5))}><ChevronRight /></Button>
         <Button size="sm" variant="ghost" onClick={() => setWeek(startOfWeek(new Date()))}>This week</Button>
         <span className="text-sm text-muted-foreground">{days[0].toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} – {days[6].toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })} · IST</span>
+        <Button size="sm" variant="ghost" className="ml-auto text-destructive" onClick={() => onClear(localDate(days[0]), 7, 'this whole week')}>
+          <Trash2 /> Clear week
+        </Button>
       </div>
       <div className="scrollbar-thin overflow-x-auto">
         <div className="grid min-w-[840px] grid-cols-7 gap-2">
@@ -80,7 +84,13 @@ function WeekView({ items, slots, onOpen, onDrop }: {
             const past = key < today
             return (
               <div key={key} className={cn('rounded-xl border p-2', key === today && 'border-primary/50', past && 'opacity-60')}>
-                <div className="mb-2 text-xs font-medium">{WEEKDAYS[i]} <span className="text-muted-foreground">{d.getDate()}</span></div>
+                <div className="mb-2 flex items-center justify-between text-xs font-medium">
+                  <span>{WEEKDAYS[i]} <span className="text-muted-foreground">{d.getDate()}</span></span>
+                  {!past && dayItems.some((it) => it.status !== 'published') && (
+                    <button className="text-[10px] text-destructive hover:underline" aria-label={`Clear ${WEEKDAYS[i]} ${d.getDate()}`}
+                      onClick={() => onClear(key, 1, `${WEEKDAYS[i]} ${d.getDate()}`)}>Clear day</button>
+                  )}
+                </div>
                 <div className="space-y-1.5">
                   {slots.map((s) => {
                     const at = dayItems.filter((it) => it.slot_local!.slice(11) === s)
@@ -176,6 +186,9 @@ function SyncDialog({ result, onClose }: { result: SyncResult | null; onClose: (
         <DialogHeader><DialogTitle>Sync with YouTube</DialogTitle></DialogHeader>
         {result && (
           <div className="space-y-3 text-sm">
+            {!!result.removed?.length && (
+              <p>Removed <b>{result.removed.length}</b> clip(s) you deleted in YouTube Studio from the schedule.</p>
+            )}
             <p>Linked <b>{result.matched.length}</b> upload(s) to your queue{result.matched.some((m) => m.by === 'file name') ? ' (recognised by file name)' : ''}.</p>
             {result.unmatched_items.length > 0 && (
               <div>
@@ -211,6 +224,29 @@ function SyncDialog({ result, onClose }: { result: SyncResult | null; onClose: (
   )
 }
 
+function StillOnYouTube({ items, onClose }: { items: OnPlatform[]; onClose: () => void }) {
+  return (
+    <Dialog open={items.length > 0} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>{items.length} already uploaded — delete them in YouTube Studio</DialogTitle></DialogHeader>
+        <p className="text-sm text-muted-foreground">
+          These are already on YouTube (private, scheduled), so YouTube will post them unless you delete them there. ClipForge's
+          YouTube login can upload but not delete. Delete them in Studio, then press <b>Sync with YouTube</b> — they leave this list at once.
+        </p>
+        <ul className="max-h-72 space-y-1 overflow-y-auto text-sm">
+          {items.map((it) => (
+            <li key={it.id} className="flex items-center gap-2">
+              <PlatformIcon platform={it.platform} className="size-4 shrink-0" />
+              <span className="min-w-0 flex-1 truncate">{it.title}</span>
+              {it.url && <a className="shrink-0 text-primary underline" href={it.url} target="_blank" rel="noreferrer">Open in Studio</a>}
+            </li>
+          ))}
+        </ul>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 export default function Schedule() {
   const qc = useQueryClient()
   const [channelId, setChannelId] = useState<string>()
@@ -240,6 +276,23 @@ export default function Schedule() {
     onError: (e) => toast.error(e.message),
   })
   const refresh = () => qc.invalidateQueries({ queryKey: ['queue', channelId] })
+  const [onYt, setOnYt] = useState<OnPlatform[]>([])
+  const clear = useMutation({
+    mutationFn: ({ start, days }: { start: string; days: number }) =>
+      pub.bulk({ action: 'clear', start, days, platform, channel_id: all ? undefined : channelId }),
+    onSuccess: (r) => {
+      toast.success(`${r.done.length} planned post(s) removed`, {
+        description: r.on_platform?.length ? `${r.on_platform.length} are already on YouTube — delete those in Studio.` : undefined,
+      })
+      setOnYt(r.on_platform ?? [])
+      qc.invalidateQueries({ queryKey: ['queue'] })
+    },
+    onError: (e) => toast.error(e.message),
+  })
+  const askClear = (start: string, days: number, label: string) => {
+    const where = platform === 'all' ? (all ? 'every account' : ch?.title ?? 'this account') : platform === 'youtube' ? 'YouTube' : 'Instagram'
+    if (window.confirm(`Remove everything planned for ${label} (${where})? Already-published posts stay.`)) clear.mutate({ start, days })
+  }
 
   const auto = useMutation({
     mutationFn: async () => {
@@ -272,7 +325,18 @@ export default function Schedule() {
     onError: (e) => toast.error(e.message),
   })
   const doSync = useMutation({
-    mutationFn: () => pub.sync(channelId!),
+    mutationFn: async () => {
+      if (!all) return pub.sync(channelId!)
+      const merged: SyncResult = { removed: [], matched: [], unmatched_items: [], unmatched_videos: [] }
+      for (const c of channels.filter((c) => c.platform !== 'instagram')) {
+        const r = await pub.sync(c.id)
+        merged.removed!.push(...(r.removed ?? []))
+        merged.matched.push(...r.matched)
+        merged.unmatched_items.push(...r.unmatched_items)
+        merged.unmatched_videos.push(...r.unmatched_videos)
+      }
+      return merged
+    },
     onSuccess: (r) => {
       setSync(r)
       refresh()
@@ -330,7 +394,7 @@ export default function Schedule() {
             ) : (
               <Button variant="outline" onClick={() => run.mutate()} disabled={run.isPending}><UploadCloud /> Run scheduler now</Button>
             )}
-            {!all && !isIg && (
+            {!isIg && (
               <Button variant="outline" onClick={() => doSync.mutate()} disabled={!channelId || doSync.isPending}>
                 {doSync.isPending ? <Loader2 className="animate-spin" /> : <RefreshCw />} Sync with YouTube
               </Button>
@@ -424,7 +488,7 @@ export default function Schedule() {
             </div>
           </div>
           <TabsContent value="week">
-            <WeekView items={planned} slots={allSlots} onOpen={setOpen} onDrop={(id, slot) => move.mutate({ id, slot })} />
+            <WeekView items={planned} slots={allSlots} onOpen={setOpen} onDrop={(id, slot) => move.mutate({ id, slot })} onClear={askClear} />
           </TabsContent>
           <TabsContent value="list"><ListView items={planned} onOpen={setOpen} channelId={channelId!} /></TabsContent>
         </Tabs>
@@ -434,6 +498,7 @@ export default function Schedule() {
       </div>
       <QueueItemDialog item={open ? items.find((i) => i.id === open.id) ?? open : null} onClose={() => setOpen(null)} />
       <SyncDialog result={sync} onClose={() => setSync(null)} />
+      <StillOnYouTube items={onYt} onClose={() => setOnYt([])} />
     </>
   )
 }

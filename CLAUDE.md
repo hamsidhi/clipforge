@@ -174,6 +174,10 @@ uploaded = private/unlisted by the user's choice (never goes public by itself)
   `publishing.late_policy` (next_slot | publish_now | ask) when a slot is <15 min away or passed.
 - Assisted mode: before flagging anything, `reconcile.sync` runs (throttled to 30 min). It matches Studio uploads by
   `fileDetails.fileName` (clip file / batch file), then by title (hashtags stripped). YouTube's publishAt wins over our slot.
+- `reconcile.drop_deleted` (Sync + every status refresh): a linked video missing on YouTube (deleted in Studio) leaves the
+  queue at once, not after its slot; never when ALL (>2) linked videos look missing. Bulk `clear` (Schedule → Clear day /
+  Clear week, `services.publishing.clear_range`) deletes planned posts; ones already on YouTube are listed with Studio
+  links (the token has no delete scope).
 - `runner.apply_state` stores the verified YouTube state in `yt_state_json` after every upload/refresh.
 - `workspace/scheduler_state.json` = last run (source app/task/daemon) for the Health panel (`/api/publishing/health`).
 - Worker ticks every 60 s (first tick 5 s after start = catch-up); YouTube status refresh is throttled to 10 min.

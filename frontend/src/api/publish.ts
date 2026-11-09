@@ -7,8 +7,9 @@ import type {
 
 const json = (body: unknown) => JSON.stringify(body)
 
+export interface OnPlatform { id: number; platform: string; title: string; url: string }
 export type BulkAction =
-  | 'unschedule' | 'delete' | 'shift' | 'regenerate' | 'reschedule' | 'retry' | 'unbatch' | 'to_batch'
+  | 'clear' | 'unschedule' | 'delete' | 'shift' | 'regenerate' | 'reschedule' | 'retry' | 'unbatch' | 'to_batch'
   | 'reschedule_missed' | 'retry_failed'
 
 export const pub = {
@@ -41,8 +42,9 @@ export const pub = {
   regenerate: (id: number) => request<QueueItem>(`/api/queue/${id}/regenerate`, { method: 'POST' }),
   unschedule: (id: number) => request<QueueItem>(`/api/queue/${id}/unschedule`, { method: 'POST' }),
   remove: (id: number) => request<{ ok: boolean }>(`/api/queue/${id}`, { method: 'DELETE' }),
-  bulk: (body: { ids?: number[]; action: BulkAction; days?: number; channel_id?: string }) =>
-    request<{ done: number[]; errors: { id: number | null; error: string }[]; batches?: { relative: string; url: string }[] }>(
+  bulk: (body: { ids?: number[]; action: BulkAction; days?: number; channel_id?: string; start?: string; platform?: 'all' | 'youtube' | 'instagram' }) =>
+    request<{ done: number[]; errors: { id: number | null; error: string }[]; batches?: { relative: string; url: string }[]
+      on_platform?: OnPlatform[] }>(
       '/api/queue/bulk', { method: 'POST', body: json(body) }),
   reschedule: (id: number) => request<QueueItem>(`/api/queue/${id}/reschedule`, { method: 'POST' }),
   retry: (id: number) => request<QueueItem>(`/api/queue/${id}/retry`, { method: 'POST' }),
