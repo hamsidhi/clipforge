@@ -277,6 +277,8 @@ class TelegramConfig(_Section):
     notify_quota: bool = True
     daily_summary: bool = True
     daily_summary_time: str = "22:00"   # IST
+    chat: bool = True                   # plain messages → the local LLM answers or runs ONE normal command
+    chat_model: str = ""                # "" = llm.model (keep it small: every message is one LLM call)
     # Phase 15: full remote control
     api_base_url: str = "https://api.telegram.org"   # self-hosted Bot API server (2 GB files), e.g. http://127.0.0.1:8081
     clips_to_send: int = Field(5, ge=0, le=25)       # clip cards sent when a job finishes (album + one card each)

@@ -81,6 +81,19 @@ class MockProvider(LLMProvider):
             return json.dumps({"clips": [{"id": n, "score": 5 + n % 4, "hook": 6, "standalone": 6} for n in ids]})
         if task == "titles":
             return json.dumps(self._titles(prompt), ensure_ascii=False)
+        if task == "chat":
+            last = prompt.rsplit("User: ", 1)[-1].split("\n", 1)[0].lower()
+            if "approve" in last:
+                ids = re.findall(r"\b(\d+)\b", last)
+                cj = re.search(r"current job in this chat: (\d+)", prompt)
+                return json.dumps({"action": "command", "command": "approve",
+                                   "args": ((cj.group(1) + " ") if cj else "") + ",".join(ids), "reply": "Approving them"})
+            if "queue" in last or "next" in last:
+                return json.dumps({"action": "command", "command": "queue", "args": "", "reply": ""})
+            if "delete" in last:
+                ids = re.findall(r"\b(\d+)\b", last)
+                return json.dumps({"action": "command", "command": "delete", "args": " ".join(ids), "reply": ""})
+            return json.dumps({"action": "answer", "reply": "Hi! I can show jobs, clips and the queue."})
         if task == "outline":
             ids = [int(n) for n in re.findall(r"^BLOCK (\d+) ", prompt, re.MULTILINE)]
             return json.dumps({"blocks": [{"id": n, "summary": f"block {n}", "interest": 6 + n % 3} for n in ids]})

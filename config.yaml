@@ -204,6 +204,8 @@ telegram:              # bot token lives in .env (TELEGRAM_BOT_TOKEN); pair it i
   notify_quota: true
   daily_summary: true
   daily_summary_time: '22:00'  # IST
+  chat: true           # write normally: the local LLM answers, or runs ONE command (shown, with its usual checks)
+  chat_model: ''       # '' = llm.model
   api_base_url: https://api.telegram.org  # self-hosted Bot API server for 2 GB files, e.g. http://127.0.0.1:8081
   clips_to_send: 5     # clip cards sent when a job finishes (thumbnail album + one card per clip)
   progress_every_sec: 8  # live job progress message: edited at most this often

@@ -26,7 +26,7 @@ from clipforge.notify.tg_core import (ALIASES, CALLBACKS, COMMANDS, MENU_TEXT, R
 from clipforge.utils.log import log
 
 # importing the handler modules registers their commands / buttons / steps
-from clipforge.notify import tg_admin, tg_clips, tg_jobs, tg_publish  # noqa: E402,F401  isort: skip
+from clipforge.notify import tg_admin, tg_chat, tg_clips, tg_jobs, tg_publish  # noqa: E402,F401  isort: skip
 
 API = CLOUD_API
 LEASE_SECONDS = 300  # poller lease; renewed before every update
@@ -215,6 +215,8 @@ class Bot:
         if m:
             tg_jobs.start_wizard(ctx, url=m.group(0))
             return "link → new job"
+        if text and load_config().telegram.chat:  # chat mode: plain words → an answer or ONE normal command
+            return tg_chat.reply(ctx, text, self._run_command)
         ctx.send("Send me a YouTube link or a video to start a job — or /help, /menu.")
         return "text"
 

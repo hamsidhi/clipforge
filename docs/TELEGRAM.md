@@ -30,6 +30,7 @@ Telegram Bot API **outbound** (long polling). Nothing on your computer is opened
 | `/words 3` · `/word 3 "galti" "galat"` · `/word 3 #12 galat` | numbered caption words · fix a word (every match / by number) | |
 | `/render 3` · `/render changed` · `/render 12 approved` | re-render; the new version is sent here with **↩ Undo** | |
 | `/text 3` | copy-ready title, YouTube description, Instagram caption, ≤ 5 lowercase hashtags (long-press a block to copy) | |
+| `/where 12` · `/where 12-3` | where a job's / clip's files are on the laptop + app links (also: "where are the clips?") | |
 | `/meta 12-3` · `/meta 12` | the same publishing text for one clip, or every approved clip of job 12; writes missing metadata first (owner) | |
 | (automatic) | every clip video and clip card is followed by a reply with its publishing text (YouTube title, description, Instagram caption, hashtags, tags) — one tap on a block copies it | |
 | (automatic) | longer than 4096 characters → split between sections; no metadata yet → "Metadata not ready — /meta 12-3 to generate" | |
@@ -327,3 +328,10 @@ bot [video]: 🔁 New version of #1 · Paisa kaise banta hai · 0:18  [↩ Undo]
 Limits used (checked against core.telegram.org on 2026-11-04, Bot API 10.3): text 4,096 chars, captions 1,024,
 callback data 64 bytes, albums 2–10, cloud uploads 50 MB / downloads 20 MB, local server 2,000 MB uploads,
 ~1 msg/s per chat, ~30 msg/s overall, 20/min in groups, `retry_after` on 429.
+
+## Chat mode (2026-11-09, `notify/tg_chat.py`, `telegram.chat: true`)
+Write normally ("show me the clips of the Sam Altman episode", "approve 1, 2 and 3", "where are those clips?",
+"what's posting next?"). The local LLM picks ONE command and the bot shows it ("→ /approve 12 1,2,3") before
+running it through the normal path: viewer chats stay read-only, dangerous actions still ask Yes → YES → PIN.
+Questions without a matching command get a short answer. "Where are the clips / links" is answered without the LLM.
+The last 6 exchanges are remembered per chat (tgkv), so follow-ups like "approve those" work.

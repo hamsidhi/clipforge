@@ -304,7 +304,7 @@ def test_conversation_timeout_and_cancel(tg, monkeypatch):
     real_now = st.now
     monkeypatch.setattr(st, "now", lambda: real_now() + dt.timedelta(minutes=11))
     send(b, fake, "A new title after the timeout")
-    assert st.get_conversation(OWNER) is None and "YouTube link" in fake.last_text()  # treated as plain text
+    assert st.get_conversation(OWNER) is None and "I can show jobs" in fake.last_text()  # plain text → chat mode
 
 
 # ============================================================================ files: fallback chain + file_id cache
