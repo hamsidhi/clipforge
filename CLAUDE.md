@@ -175,7 +175,7 @@ uploaded = private/unlisted by the user's choice (never goes public by itself)
 - Assisted mode: before flagging anything, `reconcile.sync` runs (throttled to 30 min). It matches Studio uploads by
   `fileDetails.fileName` (clip file / batch file), then by title (hashtags stripped). YouTube's publishAt wins over our slot.
 - `reconcile.drop_deleted` (Sync + every status refresh): a linked video missing on YouTube (deleted in Studio) leaves the
-  queue at once, not after its slot; never when ALL (>2) linked videos look missing. Bulk `clear` (Schedule → Clear day /
+  queue at once, not after its slot; if none come back, only when the channel's upload list still answers. Bulk `clear` (Schedule → Clear day /
   Clear week, `services.publishing.clear_range`) deletes planned posts; ones already on YouTube are listed with Studio
   links (the token has no delete scope).
 - `runner.apply_state` stores the verified YouTube state in `yt_state_json` after every upload/refresh.

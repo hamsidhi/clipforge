@@ -45,3 +45,21 @@ def test_sync_removes_clip_deleted_in_studio_before_its_slot(env):  # noqa: F811
     assert [r["queue_id"] for r in res["removed"]] == [a.id]
     assert q.get(a.id) is None and q.get(b.id)
 
+
+
+def test_all_deleted_in_studio_are_removed_but_not_on_an_empty_answer(env):  # noqa: F811
+    from clipforge.publish import queue as q, reconcile, runner
+
+    cfg, fake, (a, b) = _one_channel_two_items(env)
+    runner.run_once(cfg, now=NOW)
+    ids = [q.get(a.id).youtube_video_id, q.get(b.id).youtube_video_id]
+    saved = dict(fake.store), list(fake.order)
+    fake.store.clear()
+    fake.order.clear()                     # API answers nothing at all → keep everything
+    assert reconcile.drop_deleted("UCtest", fake) == [] and q.get(a.id) and q.get(b.id)
+    fake.store, fake.order = saved         # the channel answers, but both videos were deleted in Studio
+    for v in ids:
+        fake.store.pop(v)
+        fake.order.remove(v)
+    fake.add_video("other1", "Some other upload", 30)
+    assert len(reconcile.drop_deleted("UCtest", fake)) == 2 and q.get(a.id) is None and q.get(b.id) is None

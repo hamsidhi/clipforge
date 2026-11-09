@@ -132,7 +132,8 @@ LIVE_ON_YT = ("uploading", "processing", "scheduled", "uploaded", "locked_privat
 def drop_deleted(channel_id: str, client: yt.YouTubeClient, known: dict[str, dict] | None = None) -> list[dict]:
     """Queue items linked to a YouTube video that no longer exists (deleted in Studio) are removed from the queue right
     away — not only after their slot passed. `known` = videos already fetched (saves a call). Published items stay as
-    history. Safety: if EVERY linked video looks gone (wrong token / API hiccup), nothing is removed."""
+    history. Safety: when YouTube returns none of them, they're only removed if the channel's upload list still answers
+    (so a wrong token / empty API answer never wipes the queue)."""
     linked = [it for it in q.items(channel_id, LIVE_ON_YT) if it.youtube_video_id and it.status != "uploading"]
     if not linked:
         return []
@@ -141,10 +142,13 @@ def drop_deleted(channel_id: str, client: yt.YouTubeClient, known: dict[str, dic
     if ask:
         known.update({v["id"]: v for v in client.videos(ask)})  # type: ignore[arg-type]
     gone = [it for it in linked if it.youtube_video_id not in known]
-    if not gone or (len(gone) == len(linked) and len(linked) > 2):
-        if gone:
-            log.warning(f"[sync] {channel_id}: all {len(gone)} linked videos look missing — not removing anything")
+    if not gone:
         return []
+    if not known:  # nothing came back at all: only trust it if the channel's upload list answers (right token, API up)
+        ch = chs.get(channel_id)
+        if not (ch and ch.uploads_playlist and client.uploads(ch.uploads_playlist, 5)):
+            log.warning(f"[sync] {channel_id}: YouTube returned none of {len(gone)} linked videos and no uploads — not removing")
+            return []
     out = []
     with db.session() as s:
         for it in gone:
