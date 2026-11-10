@@ -96,6 +96,28 @@ def _filter_dir(target: Path, cwd: Path) -> str:
     return escape_filter_path(target)
 
 
+OPENING_START = 0.06  # the first frame already shows a thin slit of the clip (a pure-black first frame looks broken)
+
+
+def opening_filters(src: str, out: str, W: int, H: int, fps: int, kind: str, secs: float) -> list[str]:
+    """Opening reveal: two dark panels cover the frame and slide apart (ease-out) over `secs`, before the captions are
+    burned (so the hook title shows over the dark screen while it opens). split_v = left/right, split_h = top/bottom."""
+    T = max(0.2, float(secs))
+    x = f"min(t/{T:.3f},1)"  # inside '…' quotes: commas need no escaping
+    p = f"({OPENING_START}+{1 - OPENING_START}*{x}*{x}*(3-2*{x}))"  # smoothstep: slow start, slow finish
+    if kind == "split_h":
+        size, a, b = f"{W}x{H // 2 + 2}", f"x=0:y='-h*{p}'", f"x=0:y='H/2+h*{p}'"
+    else:
+        size, a, b = f"{W // 2 + 2}x{H}", f"x='-w*{p}':y=0", f"x='W/2+w*{p}':y=0"
+    dur = f"{T + 0.1:.3f}"
+    return [
+        f"color=c=0x0b0b0f:s={size}:r={fps}:d={dur}[opa]",
+        f"color=c=0x0b0b0f:s={size}:r={fps}:d={dur}[opb]",
+        f"[{src}][opa]overlay={a}:eval=frame:eof_action=pass:enable='lt(t,{T:.3f})'[opx]",
+        f"[opx][opb]overlay={b}:eval=frame:eof_action=pass:enable='lt(t,{T:.3f})',format=yuv420p[{out}]",
+    ]
+
+
 def build_filtergraph(plan: CropPlan, ass_path: Path | None, work: Path, cfg: Config,
                       loud: dict | None) -> tuple[str, str, str]:
     """Return (filter_complex, video_label, audio_label)."""
@@ -138,6 +160,9 @@ def build_filtergraph(plan: CropPlan, ass_path: Path | None, work: Path, cfg: Co
         vlabel = "vc"
     else:
         vlabel = "v0"
+    if r.opening != "none":
+        parts += opening_filters(vlabel, "vop", W, H, fps, r.opening, r.opening_seconds)
+        vlabel = "vop"
     if ass_path is not None:
         from clipforge.config import FONTS_DIR
 

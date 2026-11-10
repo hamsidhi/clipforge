@@ -598,6 +598,6 @@ def clear_range(start: str, days: int = 1, platform: str = "all", channel_id: st
                                 "url": f"https://studio.youtube.com/video/{it.youtube_video_id}/edit"
                                 if it.youtube_video_id else ""})
             continue
-        q.delete(it.id)  # type: ignore[arg-type]
+        q.delete(it.id, "cleared")  # type: ignore[arg-type]
         removed.append(it.id)
     return {"removed": removed, "on_platform": on_platform}

@@ -37,8 +37,10 @@ Write:
 - "summary": 1-2 short lines that tease the clip's payoff (no hashtags).
 - "tags": 8-12 search tags (lowercase, no #), mixing the topic, the guest's field and generic podcast tags.
 - "hashtags": 3 lowercase hashtags (with #) about the topic, e.g. "#business".
+- "pin_comment": one short question (max 90 characters) viewers will want to answer about THIS clip's idea — an
+  opinion or a choice (e.g. "Would you take this risk at 25?"), never "like and subscribe". Same language rule as the titles.
 
-Return JSON only: {{"titles": ["...","...","..."], "summary": "...", "tags": ["..."], "hashtags": ["#..."]}}"""
+Return JSON only: {{"titles": ["...","...","..."], "summary": "...", "tags": ["..."], "hashtags": ["#..."], "pin_comment": "..."}}"""
 
 
 class MetaReply(BaseModel):
@@ -46,6 +48,21 @@ class MetaReply(BaseModel):
     summary: str
     tags: list[str]
     hashtags: list[str]
+    pin_comment: str = ""
+
+
+PIN_TEMPLATES = {
+    "en": ["Do you agree with this? Yes or no 👇", "Would you do the same in his place? 👇",
+           "What's your take on this? 👇", "Is he right, or is this overrated? 👇"],
+    "hi": ["Aap iss baat se agree karte ho? Yes ya no 👇", "Aap unki jagah hote toh kya karte? 👇",
+           "Iss pe aapki kya raay hai? 👇", "Sahi bola ya overrated? 👇"],
+}
+
+
+def pin_fallback(title: str, lang: str) -> str:
+    """A question to pin when the LLM gave none (stable per title, so it doesn't change between calls)."""
+    opts = PIN_TEMPLATES["en" if lang == "en" else "hi"]
+    return opts[sum(map(ord, title or "")) % len(opts)]
 
 
 def _norm(t: str) -> str:
@@ -183,6 +200,7 @@ def generate(clip: ClipCandidate, info: VideoInfo, words: list[Word], settings: 
         "title": best, "description": build_description(summary, credit, settings.get("description_template", ""), hashtags),
         "tags": tags, "variants": variants[:5], "ig_caption": ig, "category_id": str(settings.get("category_id", "27")),
         "used_llm": reply is not None,
+        "pin_comment": truncate((reply.pin_comment if reply else "").strip().strip('"'), 120) or pin_fallback(best, spoken),
     }
 
 

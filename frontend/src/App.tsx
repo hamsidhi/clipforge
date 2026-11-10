@@ -13,6 +13,7 @@ import Channels from '@/pages/Channels'
 import Schedule from '@/pages/Schedule'
 import Batches from '@/pages/Batches'
 import PublishDashboard from '@/pages/PublishDashboard'
+import History from '@/pages/History'
 import Login from '@/pages/Login'
 import Share from '@/pages/Share'
 import More from '@/pages/More'
@@ -39,6 +40,7 @@ export default function App() {
         <Route path="schedule" element={<Schedule />} />
         <Route path="batches" element={<Batches />} />
         <Route path="dashboard" element={<PublishDashboard />} />
+        <Route path="history" element={<History />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

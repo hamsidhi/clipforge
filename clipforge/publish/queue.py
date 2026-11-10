@@ -59,12 +59,16 @@ def save(item: db.QueueItem) -> db.QueueItem:
     if not item.idempotency_key and item.clip_key:  # one publication per (clip, platform, account)
         item.idempotency_key = f"{item.platform}:{item.channel_id}:{item.clip_key}"
     with db.session() as s:
-        old = s.exec(select(db.QueueItem.status).where(db.QueueItem.id == item.id)).first() if item.id else None
+        prev = s.exec(select(db.QueueItem.status, db.QueueItem.slot_utc).where(db.QueueItem.id == item.id)).first()             if item.id else None
+        old, old_slot = (prev[0], prev[1]) if prev else (None, None)
         states.check(old, item.status, item=item)
         s.add(item)
         s.commit()
         s.refresh(item)
-        return item
+    from clipforge.publish import history
+
+    history.on_save(old, old_slot, item)
+    return item
 
 
 def claim_for_container(item_id: int) -> bool:
@@ -136,12 +140,16 @@ def clip_language(it: db.QueueItem, cfg: Config | None = None) -> str:
     return it.spoken_lang
 
 
-def delete(item_id: int) -> None:
+def delete(item_id: int, why: str = "removed") -> None:
+    """`why` = the history event: removed | cleared."""
+    from clipforge.publish import history
+
     with db.session() as s:
         it = s.get(db.QueueItem, item_id)
         if it:
             if it.status in ON_PLATFORM:
                 raise QueueError("This clip is already on the platform — delete it there (YouTube Studio / Instagram).")
+            history.record(it, why)
             s.delete(it)
             s.commit()
 
@@ -246,6 +254,7 @@ def generate_metadata(item_id: int, cfg: Config | None = None, llm=None) -> db.Q
     it.title, it.description = meta["title"], meta["description"]
     it.tags_json, it.variants_json = json.dumps(meta["tags"], ensure_ascii=False), json.dumps(meta["variants"], ensure_ascii=False)
     it.ig_caption, it.category_id = meta["ig_caption"], meta["category_id"]
+    it.pin_comment = meta.get("pin_comment", "")
     if it.platform == "instagram":
         it.meta_status = "ready" if it.ig_caption else "failed"
         it.error = "" if it.ig_caption else "Couldn't write a caption — write one."

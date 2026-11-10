@@ -388,7 +388,9 @@ def _clip_fp(c: ClipCandidate, cfg: Config, words_sig: str) -> str:
     data = c.model_dump(exclude={"rank", "approved", "score", "why", "scores", "topic", "rubric"})
     if data.get("caption_lang") == "auto":
         data.pop("caption_lang")  # the default leaves old fingerprints untouched (no surprise re-renders)
-    return fingerprint("render-v1", data, cfg.captions.model_dump(), cfg.render.model_dump(), cfg.reframe.model_dump(), words_sig)
+    # opening reveal settings are left out: switching them must not re-render existing (maybe scheduled) clips
+    rnd = cfg.render.model_dump(exclude={"opening", "opening_seconds"})
+    return fingerprint("render-v1", data, cfg.captions.model_dump(), rnd, cfg.reframe.model_dump(), words_sig)
 
 
 def render(ws: Workspace, cfg: Config, reporter: ProgressReporter | None = None, only: list[int] | None = None,

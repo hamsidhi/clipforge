@@ -384,6 +384,39 @@ get different scores. Respond with ONLY a JSON object with these keys (numbers, 
 {{"hook":<0-10>,"completeness":<0-10>,"standalone":<0-10>,"value":<0-10>,"flow":<0-10>,"trend":<0-10>,"start_id":<line id>,"end_id":<line id>,"answer_continues":<true|false>,"title":"<title>","why":"<one line>"}}"""
 
 
+SOFT_OPENERS = {"so", "and", "but", "yeah", "yes", "yep", "ok", "okay", "right", "well", "like", "um", "umm", "uh",
+                "uhh", "hmm", "basically", "actually", "see", "look", "toh", "matlab", "haan", "han", "ha",
+                "achha", "acha", "accha", "dekho", "na", "aur", "par", "lekin", "means", "i mean"}
+
+
+def soft_start(words, end: float, min_sec: float, max_skip: int = 3) -> float | None:
+    """Start time of the first real word when a clip opens with up to `max_skip` filler/connector words ("So… and…
+    yeah"), as long as the clip stays at least `min_sec` long. None = keep the start. Pure."""
+    skip = 0
+    for w in words[:max_skip]:
+        if w.text.strip(" .,!?;:-…\"'").lower() in SOFT_OPENERS:
+            skip += 1
+        else:
+            break
+    if not skip or skip >= len(words) or end - words[skip].start < min_sec:
+        return None
+    return words[skip].start
+
+
+def length_bonus(dur: float, a_cfg) -> float:
+    """Ranking nudge toward short clips (Shorts/Reels hold viewers best at 20-40 s): +weight inside ideal_sec,
+    fading to 0 at 60 s, -weight past 60 s. The quality floor (min_quality) still uses the plain score."""
+    lo, hi = (list(a_cfg.ideal_sec) + [20, 40])[:2]
+    w = a_cfg.length_weight
+    if lo <= dur <= hi:
+        return w
+    if dur < lo:
+        return w * max(0.0, 1 - (lo - dur) / max(lo, 1))
+    if dur <= 60:
+        return w * max(0.0, (60 - dur) / max(60 - hi, 1))
+    return -w
+
+
 def judge_lines(st: Structure, a: int, b: int, ctx_sec: float) -> tuple[str, int, int]:
     lo = a
     while lo > 0 and st.start(a) - st.start(lo - 1) <= ctx_sec:
@@ -519,7 +552,7 @@ def select(ws, cfg: Config, llm, judge_llm, reporter: ProgressReporter, info: Vi
 
     # final set: quality floor, one clip per block unless both strong, no time overlap, best first
     final: list[Arc] = []
-    for x in sorted(judged, key=lambda x: -x.score):
+    for x in sorted(judged, key=lambda x: -(x.score + length_bonus(st.span(x.a, x.b), a_cfg))):
         if x.score < a_cfg.min_quality or len(final) >= min(cfg.clips.count, cfg.clips.max_count):
             continue
         sx = (st.start(x.a), st.end(x.b))
@@ -533,6 +566,11 @@ def select(ws, cfg: Config, llm, judge_llm, reporter: ProgressReporter, info: Vi
     out = []
     for r, x in enumerate(final, 1):
         s0 = max(0.0, st.start(x.a) - 0.15)
+        if a_cfg.trim_soft_start:
+            s1 = soft_start(st.segs[x.a].words, st.end(x.b), min_sec)
+            if s1 is not None and s1 - 0.1 > s0:
+                x.notes.append(f"start trimmed {s0:.1f}→{s1 - 0.1:.1f} s (soft opener)")
+                s0 = round(s1 - 0.1, 2)
         nxt = st.start(x.b + 1) if x.b + 1 < len(st.segs) else st.end(x.b) + 1
         e0 = min(st.end(x.b) + 0.3, nxt - 0.05) if nxt > st.end(x.b) else st.end(x.b)
         rb = x.rubric

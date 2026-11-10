@@ -18,6 +18,7 @@ import re
 from clipforge.api import db
 from clipforge.config import Config, load_config
 from clipforge.publish import channels as chs
+from clipforge.publish import history
 from clipforge.publish import queue as q
 from clipforge.publish import youtube as yt
 from clipforge.publish.timez import as_utc, now_utc
@@ -155,6 +156,7 @@ def drop_deleted(channel_id: str, client: yt.YouTubeClient, known: dict[str, dic
             row = s.get(db.QueueItem, it.id)
             if row:
                 out.append({"queue_id": it.id, "video_id": it.youtube_video_id, "title": it.title})
+                history.record(it, "deleted_on_platform", "deleted in YouTube Studio; removed from the queue by Sync")
                 s.delete(row)
         s.commit()
     log.info(f"[sync] {channel_id}: removed {len(out)} clip(s) deleted on YouTube")

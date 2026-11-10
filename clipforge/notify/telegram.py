@@ -476,6 +476,38 @@ def on_render(job_id: int, ranks: list[int] | None, ok: bool, error: str = "") -
         log.warning(f"[telegram] render notification failed: {exc}")
 
 
+def pin_text(it) -> str:
+    from clipforge.publish import metadata_opt
+
+    return it.pin_comment or metadata_opt.pin_fallback(it.title, it.spoken_lang or "hi")
+
+
+def reach_tips(it) -> str:
+    """What to do in the first hour after a post goes live (comments early = more reach)."""
+    return (f"📌 Post + pin this as the first comment:\n{pin_text(it)}\n\n"
+            "💬 Reply to every comment in the first hour.")
+
+
+def ig_post_kit(it) -> str:
+    """Assisted Instagram: everything needed to post the Reel by hand, Trial first."""
+    from clipforge.publish.timez import utc_to_local
+
+    from sqlmodel import select
+
+    from clipforge.api import db
+
+    when = utc_to_local(it.slot_utc).strftime("%H:%M") if it.slot_utc else "now"
+    with db.session() as s:
+        job = s.exec(select(db.Job).where(db.Job.video_id == it.video_id).order_by(db.Job.id.desc())).first()  # type: ignore[union-attr]
+    get = f"/where {job.id}-{it.rank}" if job else "the app → Schedule → Instagram kit"
+    return (f"📲 Time to post on Instagram ({when} IST): {it.title}\n\n"
+            f"1. Get the video: {get}\n"
+            "2. New Reel → Advanced settings → turn ON “Trial” (shows it to non-followers first)\n"
+            f"3. Caption (copy):\n{(it.ig_caption or it.title)[:1500]}\n\n"
+            f"4. After posting, comment + pin:\n{pin_text(it)}\n\n"
+            f"5. Send the Reel link back: /link {it.id} https://www.instagram.com/reel/…")
+
+
 def on_run_report(rep) -> None:
     """Called after every scheduler run: published / failed / missed / re-login / quota."""
     try:
@@ -488,9 +520,13 @@ def on_run_report(rep) -> None:
             it = q.get(iid)
             if it:
                 link = it.permalink or (f"https://youtube.com/shorts/{it.youtube_video_id}" if it.youtube_video_id else "")
-                b.notify("published", f"🚀 Published on {it.platform.title()}: {it.title}\n{link}", key=f"pub:{iid}")
+                b.notify("published", f"🚀 Published on {it.platform.title()}: {it.title}\n{link}\n\n" + reach_tips(it),
+                         key=f"pub:{iid}")
         for iid in [*rep.failed, *rep.missed]:
             it = q.get(iid)
+            if it and it.reason == "ig_assisted":  # time to post a Reel by hand: send the whole kit
+                b.notify("publish_failed", ig_post_kit(it), key=f"kit:{iid}:{it.slot_utc}")
+                continue
             if it:
                 b.notify("publish_failed", f"⚠️ {it.platform.title()} — {it.title}: {scrub(it.error)[:300]}\nSend /needsyou for one-tap fixes.",
                          key=f"fail:{iid}:{it.status}:{it.reason}")

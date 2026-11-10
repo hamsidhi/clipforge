@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
-  BarChart3, ChevronRight, Download, FolderUp, HeartPulse, LogOut, Plus, Settings as SettingsIcon, Smartphone, Tv,
+  BarChart3, ChevronRight, Download, FolderUp, HeartPulse, History, LogOut, Plus, Settings as SettingsIcon, Smartphone, Tv,
 } from 'lucide-react'
 import { request } from '@/api/client'
 import { PageHeader } from '@/components/common'
@@ -10,6 +10,7 @@ import { useInstallPrompt } from '@/lib/pwa'
 const LINKS = [
   { to: '/new', label: 'New job', icon: Plus },
   { to: '/channels', label: 'Accounts', icon: Tv },
+  { to: '/history', label: 'History (every post)', icon: History },
   { to: '/batches', label: 'Batches & kits', icon: FolderUp },
   { to: '/tracker', label: 'Tracker', icon: BarChart3 },
   { to: '/settings', label: 'Settings', icon: SettingsIcon },

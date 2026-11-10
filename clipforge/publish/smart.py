@@ -215,7 +215,9 @@ def day_plan(ch: db.Channel, cfg: Config, day: dt.date, now: dt.datetime) -> dic
     n, why = daily_count(platform, c["posts"], cfg)
     a, b = window(platform, cfg)
     gap = cfg.schedule.ig_min_gap_minutes if platform == "instagram" else cfg.schedule.yt_min_gap_minutes
-    times = explore_shift(pick_times(c["value"], n, a, b, gap), c["data_weight"], day, a, b, gap)
+    # 1-2 posts/day: both go to the best (evening) times — a morning test slot only pays off with more posts
+    morning = 0 if n <= 2 else 1
+    times = explore_shift(pick_times(c["value"], n, a, b, gap, morning=morning), c["data_weight"], day, a, b, gap)
     slots = [_fmt(m) for m in times]
     ranked = sorted(times, key=lambda m: c["value"][(m % 1440) // BIN], reverse=True)
     return {"slots": slots, "count": n, "why_count": why, "peak": [_fmt(m) for m in ranked[:max(2, n // 3)]],

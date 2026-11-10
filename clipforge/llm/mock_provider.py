@@ -68,7 +68,7 @@ class MockProvider(LLMProvider):
                 "titles": [f"{base} — the real story", f"Why {base.lower()}?", f"{base}: 3 lessons"],
                 "summary": f"{base}. Watch till the end.",
                 "tags": ["podcast", "business", "india", "startup", "money"],
-                "hashtags": ["#business", "#startup", "#india"],
+                "hashtags": ["#business", "#startup", "#india"], "pin_comment": f"Do you agree: {base.lower()}?",
             })
         if task == "metadata":
             return json.dumps({

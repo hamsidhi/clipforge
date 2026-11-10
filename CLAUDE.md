@@ -84,6 +84,19 @@ api/ (FastAPI) ─┴─> pipeline.py ──> stages/{download, transcribe, anal
   the LLM, spreads words over each line's time, caches in `clips/_work/NN/caption_<lang>.json`; "auto" is excluded
   from the render fingerprint (no surprise re-renders).
 
+### Reach upgrade (2026-11-10)
+- Posting volume cut to 2 YouTube + 2 Instagram/day (`schedule.*_per_day`); with ≤2/day `smart.day_plan` puts both in
+  the evening. 7–9 reposted clips/day made both platforms treat the account as a repost page.
+- Render: `render.opening` (split_v | split_h | none, `opening_seconds`) = dark panels that slide open (smoothstep)
+  before captions are burned. Excluded from the render fingerprint: existing/scheduled clips are never re-rendered for it.
+- Arcs: `arcs.ideal_sec` + `length_weight` (rank nudge to 20–40 s), `trim_soft_start` (`arcs.soft_start`: drop
+  "so/and/yeah/matlab" openers).
+- `QueueItem.pin_comment` (LLM in `metadata_opt`, `pin_fallback` templates); Telegram sends it with every publish, and
+  assisted Instagram gets `telegram.ig_post_kit` (Trial ON, caption, pin, `/link <id> <reel url>`).
+- History/audit: `publish/history.py` + `HistoryEvent` table, written from `queue.save/delete`, `drop_deleted`,
+  `clear_range`; one-time `backfill()` from VideoPerf/UploadLedger/queue. Page `/history`, API
+  `/api/publishing/history`, Telegram `/history`. Never edit or delete history rows (except Disconnect = privacy).
+
 ## Commands
 ```bash
 # setup (Windows: .venv\Scripts\activate)

@@ -88,6 +88,13 @@ def publishing_health() -> dict:
     return pub.health()
 
 
+@router.get("/publishing/history", summary="Post history / audit log: every post and every change, newest day first")
+def publishing_history(days: int = 30, platform: str = "all", channel_id: Optional[str] = None) -> dict:
+    from clipforge.publish import history
+
+    return {"days": history.days(max(1, min(days, 365)), platform, channel_id)}
+
+
 @router.get("/publishing/reach", summary="Latest YouTube reach report (weekly; Dashboard)")
 def publishing_reach() -> dict:
     from clipforge.publish import reach
@@ -280,6 +287,8 @@ def delete_channel(channel_id: str) -> dict:
                 s.delete(snap)
         for d in s.exec(select(db.ChannelDaily).where(db.ChannelDaily.channel_id == channel_id)).all():
             s.delete(d)
+        for h in s.exec(select(db.HistoryEvent).where(db.HistoryEvent.channel_id == channel_id)).all():
+            s.delete(h)  # the post history of a disconnected account goes too (same privacy rule)
         s.commit()
     if ch.platform == "instagram":
         from clipforge.publish import instagram as ig

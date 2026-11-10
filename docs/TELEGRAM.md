@@ -191,6 +191,7 @@ To go back: delete `api_base_url`, call `close` on the local server, wait 10 min
 | `GET /api/publishing/status` | Publishing | `/health` | |
 | `GET /api/publishing/health` | Dashboard → Health | `/health` | |
 | `GET /api/publishing/reach` | Dashboard → Reach | weekly Telegram summary | |
+| `GET /api/publishing/history` | History | `/history` | |
 | `GET /api/publishing/overview` | Accounts | `/dashboard`, `/stats` | |
 | `POST /api/publishing/run` | Health → Run now | — | runs every minute anyway |
 | `POST /api/publishing/audit` | Settings → audit checklist | Laptop | |

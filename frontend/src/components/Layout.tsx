@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import {
-  BarChart3, CalendarClock, Clapperboard, Download, Film, FolderUp, HeartPulse, LayoutGrid, LineChart, Loader2, MoreHorizontal, Plus,
+  BarChart3, CalendarClock, Clapperboard, Download, Film, FolderUp, HeartPulse, History, LayoutGrid, LineChart, Loader2, MoreHorizontal, Plus,
   Settings as SettingsIcon, Tv,
 } from 'lucide-react'
 import { useInstallPrompt } from '@/lib/pwa'
@@ -22,6 +22,7 @@ const GROUPS = [
       { to: '/schedule', label: 'Schedule', icon: CalendarClock },
       { to: '/batches', label: 'Batches', icon: FolderUp },
       { to: '/dashboard', label: 'Dashboard', icon: LineChart },
+      { to: '/history', label: 'History', icon: History },
       { to: '/tracker', label: 'Tracker', icon: BarChart3 },
       { to: '/channels', label: 'Accounts', icon: Tv },
     ],

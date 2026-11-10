@@ -56,6 +56,9 @@ arcs:                  # arc selection engine (stages/arcs.py): complete ideas, 
   judge_pool: 40       # how many candidates the judge scores
   context_sec: 30      # context shown to the judge before/after each candidate
   judge_model: ''      # '' = llm.model; a bigger local model (e.g. qwen2.5:14b) judges better, slower
+  ideal_sec: [20, 40]  # reach: clips this long rank higher (short Shorts/Reels hold viewers best)
+  length_weight: 0.5   # rank bonus inside ideal_sec (and the same penalty past 60 s); 0 = off
+  trim_soft_start: true # clips start on the first real word (drops "so / and / yeah / matlab" openers)
 
 scoring_weights:
   hook: 0.3
@@ -97,6 +100,8 @@ render:
   audio_bitrate: 192k
   use_nvenc: auto      # auto | true | false
   workers: auto
+  opening: split_v     # every new render starts on a dark screen that splits open: split_v (left/right) | split_h (top/bottom) | none
+  opening_seconds: 1.2 # how long the split takes (slow, smooth); existing renders are never redone for this
 
 output:
   dir: workspace
@@ -136,8 +141,8 @@ schedule:              # Publishing v2: daily plan per platform, IST (slots befo
   day_cutoff: '05:00'
   ig_morning: ['08:00', '09:30', '11:00']
   ig_evening: ['18:00', '19:30', '21:00', '22:15', '23:30', '00:45']
-  ig_min_per_day: 8    # smart: the floor; fixed lists: up to ig_max_per_day when approved clips cover today + 1 day
-  ig_max_per_day: 10   # smart: the normal count per day
+  ig_min_per_day: 2    # reach (2026-11-10): few, strong posts — 7-9/day of reposted clips made the account look like a repost page
+  ig_max_per_day: 2    # smart: the normal count per day
   ig_min_gap_minutes: 60
   yt_slots: ['12:30', '15:00', '18:30', '20:30', '22:00']  # 5/day; 6/day adds yt_sixth_slot when views are rising
   yt_sixth_slot: '23:30'
@@ -145,8 +150,8 @@ schedule:              # Publishing v2: daily plan per platform, IST (slots befo
   smart: true         # times + posts/day learned from your own posts (publish/smart.py); false = the fixed lists above
   smart_window: ['07:00', '01:30']     # Instagram: earliest / latest slot (IST)
   smart_window_yt: ['07:00', '01:00']  # YouTube
-  yt_min_per_day: 6    # smart: fewer only when the last 5 Shorts clearly underperform the 10 before
-  yt_max_per_day: 8    # smart: also capped by youtube.daily_safety_limit
+  yt_min_per_day: 2    # reach: 2 strong Shorts/day beat 6-8 weak ones on a new channel
+  yt_max_per_day: 2    # smart: also capped by youtube.daily_safety_limit
   yt_min_gap_minutes: 75
 
 ypp:                   # YouTube Partner Program targets — edit if YouTube changes them

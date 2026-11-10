@@ -336,7 +336,16 @@ def _link(ctx: Ctx, args: str) -> None:
     if len(parts) != 2 or not parts[0].isdigit():
         ctx.send("Usage: <code>/link 41 https://youtube.com/shorts/abc123</code>")
         return
-    it = pub.wrap(reconcile.link, int(parts[0]), parts[1])
+    from clipforge.publish import queue as q
+
+    cur = q.get(int(parts[0]))
+    if cur and cur.platform == "instagram":  # assisted Reel posted by hand: track it by its link
+        from clipforge.api.ig_routes import PermalinkIn, ig_permalink
+
+        ig_permalink(cur.id, PermalinkIn(permalink=parts[1]))  # type: ignore[arg-type]
+        it = q.get(cur.id) or cur
+    else:
+        it = pub.wrap(reconcile.link, int(parts[0]), parts[1])
     ctx.send(f"🔗 Linked {esc(it.title[:60])} → {status_line(it)}.")
 
 
@@ -479,6 +488,29 @@ def _stats(ctx: Ctx, args: str) -> None:
     for plat, d in s.items():
         lines.append(f"{_plat(plat)} {NAME.get(plat, plat)}: {d['posts']} posts · {d['views']:,} views · {d['likes']:,} likes")
     ctx.send("\n".join(lines))
+
+
+@command("history", role="viewer", group="Status", help="what was posted each day (and every change)",
+         usage="/history  ·  /history 7")
+def _history(ctx: Ctx, args: str) -> None:
+    from clipforge.publish import history
+
+    n = int(args) if args.strip().isdigit() else 3
+    days = [d for d in history.days(max(1, min(n, 30))) if d["posts"] or d["events"]]
+    if not days:
+        ctx.send("📜 No history yet.")
+        return
+    lines = [f"📜 <b>History — last {n} day(s)</b>"]
+    for d in days[:n]:
+        lines.append(f"\n<b>{d['date']}</b> · {d['published']} published · {d['views']:,} views")
+        for p in d["posts"][:12]:
+            v = f" · {p['views']:,} views" if p["views"] is not None else ""
+            lines.append(f"{_plat(p['platform'])} {p['time']} {esc(p['title'][:50])}{v}")
+        other = [e for e in d["events"] if e["event"] in ("removed", "cleared", "deleted_on_platform", "failed", "missed", "moved")]
+        if other:
+            lines.append(f"<i>{len(other)} change(s): " + ", ".join(sorted({e['label'].lower() for e in other})) + "</i>")
+    lines.append("\nFull log: app → History")
+    ctx.send("\n".join(lines)[:3900])
 
 
 @command("top", role="viewer", group="Status", help="top posts (28 days)")

@@ -12,7 +12,19 @@ export type BulkAction =
   | 'clear' | 'unschedule' | 'delete' | 'shift' | 'regenerate' | 'reschedule' | 'retry' | 'unbatch' | 'to_batch'
   | 'reschedule_missed' | 'retry_failed'
 
+export interface HistoryPost {
+  time: string; platform: string; account: string; title: string; link: string
+  views: number | null; likes: number | null; comments: number | null; queue_id: number | null
+}
+export interface HistoryEvent {
+  at: string; time: string; event: string; label: string; platform: string; account: string; title: string
+  detail: string; slot: string; link: string; queue_id: number | null
+}
+export interface HistoryDay { date: string; posts: HistoryPost[]; events: HistoryEvent[]; published: number; views: number }
+
 export const pub = {
+  history: (days: number, platform: string) =>
+    request<{ days: HistoryDay[] }>(`/api/publishing/history?days=${days}&platform=${platform}`),
   status: () => request<PublishingStatus>('/api/publishing/status'),
   uploadClientSecret: (file: File) =>
     request<{ type: string; client_id: string }>('/api/publishing/client-secret', { method: 'POST', body: file }),

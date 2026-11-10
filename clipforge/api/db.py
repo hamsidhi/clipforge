@@ -150,6 +150,7 @@ class QueueItem(SQLModel, table=True):
     pub_key: str = Field(default="", index=True)
     intent: str = "original"                   # original | republish:<n>
     spoken_lang: str = ""                      # "en" | "hi": the clip's spoken language (YouTube audio language)
+    pin_comment: str = ""                      # reach: a question to post + pin as the first comment (LLM, or a template)
     created_at: dt.datetime = Field(default_factory=now)
     updated_at: dt.datetime = Field(default_factory=now)
 
@@ -209,6 +210,28 @@ class VideoPerf(SQLModel, table=True):
     reach: int = 0
     permalink: str = ""
     updated_at: dt.datetime = Field(default_factory=now)
+
+
+class HistoryEvent(SQLModel, table=True):
+    """Audit log of everything that happened to a post (2026-11-10): added, moved, uploaded, scheduled, published,
+    failed, removed, deleted on the platform… One row per change; never edited or deleted (queue rows can be).
+    Written by publish/history.py from queue.save / delete / sync; old posts were back-filled once."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    at: dt.datetime = Field(default_factory=now, index=True)
+    platform: str = Field(default="youtube", index=True)
+    channel_id: str = Field(default="", index=True)
+    queue_id: Optional[int] = Field(default=None, index=True)
+    clip_key: str = ""
+    video_id: str = ""                         # source episode (YouTube id of the podcast)
+    title: str = ""
+    event: str = Field(default="", index=True) # added | moved | uploading | scheduled | published | failed | missed |
+                                               # needs_manual | removed | deleted_on_platform | cleared | …
+    status: str = ""                           # queue status after the change
+    slot_utc: Optional[dt.datetime] = None
+    post_id: str = ""                          # YouTube video id / ig:<media id>
+    link: str = ""
+    detail: str = ""
 
 
 class UploadLedger(SQLModel, table=True):
