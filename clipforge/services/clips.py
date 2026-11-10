@@ -33,6 +33,7 @@ class ClipPatch(BaseModel):
     clear_layout: bool = False
     caption_style: Optional[CaptionStyle] = None
     word_edits: Optional[dict[str, str]] = None
+    caption_lang: Optional[Literal["auto", "en", "hinglish"]] = None
     crop_overrides: Optional[list[CropOverride]] = None
     snap: bool = True
 

@@ -386,6 +386,8 @@ def _drop_stale_renders(ws: Workspace, cands: list[ClipCandidate], locked: set[i
 
 def _clip_fp(c: ClipCandidate, cfg: Config, words_sig: str) -> str:
     data = c.model_dump(exclude={"rank", "approved", "score", "why", "scores", "topic", "rubric"})
+    if data.get("caption_lang") == "auto":
+        data.pop("caption_lang")  # the default leaves old fingerprints untouched (no surprise re-renders)
     return fingerprint("render-v1", data, cfg.captions.model_dump(), cfg.render.model_dump(), cfg.reframe.model_dump(), words_sig)
 
 
@@ -455,9 +457,18 @@ def render(ws: Workspace, cfg: Config, reporter: ProgressReporter | None = None,
     # --- captions
     reporter.stage("captions", "running")
     ass_paths: dict[int, Path] = {}
+    from clipforge.stages import caption_lang
+
+    llm_box: list = []
+
+    def llm_once():  # loaded only when a clip needs its captions translated (and not cached yet)
+        if not llm_box:
+            llm_box.append(get_llm(cfg, required=False))
+        return llm_box[0]
+
     for c, _ in todo:
         script = captions.resolve_style(cfg.captions, c.caption_style).script
-        cw = captions.clip_words(words, c, script)
+        cw = caption_lang.caption_words(ws.work_dir(c.rank), c, words, llm_once) or captions.clip_words(words, c, script)
         p = ws.work_dir(c.rank) / "captions.ass"
         p.write_text(captions.build_ass(cw, c, cfg.captions, cfg.render.width, cfg.render.height), encoding="utf-8-sig")
         ass_paths[c.rank] = p

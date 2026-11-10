@@ -194,6 +194,7 @@ class ClipCandidate(BaseModel):
     layout: Layout | None = None
     caption_style: CaptionStyle = CaptionStyle()
     word_edits: dict[str, str] = {}  # "<word index in clip>" -> replacement text
+    caption_lang: Literal["auto", "en", "hinglish"] = "auto"  # auto = as spoken; else translated (stages/caption_lang.py)
     crop_overrides: list[CropOverride] = []
     rubric: dict = {}  # arc engine: judge scores (hook, completeness, standalone, value, flow, trend), kind, block, notes
 

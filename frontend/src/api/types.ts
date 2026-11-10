@@ -1,3 +1,4 @@
+export type CaptionLang = 'auto' | 'en' | 'hinglish'
 export type JobStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
 
 export interface JobSettings {
@@ -100,6 +101,7 @@ export interface Clip {
   layout: Layout | null
   caption_style: CaptionStyle
   word_edits: Record<string, string>
+  caption_lang?: CaptionLang
   crop_overrides: CropOverride[]
   rendered: boolean
   stale: boolean

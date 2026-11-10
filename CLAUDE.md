@@ -76,6 +76,14 @@ api/ (FastAPI) ─┴─> pipeline.py ──> stages/{download, transcribe, anal
   re-selects unless forced, and then `keep_locked` keeps queued clips (rank, times, files).
 - Evidence/eval: `scripts/trace_selection.py`, `scripts/eval_clips.py` (cut-mid-answer, gates, 👍/👎 agreement).
 
+### Caption language (2026-11-10)
+- `whisper.language: smart` (default): `transcribe.episode_language` samples 8 windows → en|hi for the whole episode;
+  `clip_whisper.clip_language` re-transcribes clips in the transcript's real language. `utils.text.spoken_language`
+  (per clip) drives hook/title/metadata language rules and YouTube `defaultAudioLanguage` (`QueueItem.spoken_lang`).
+- Per clip `caption_lang: auto | en | hinglish` (editor → Style): `stages/caption_lang.py` translates sentence lines with
+  the LLM, spreads words over each line's time, caches in `clips/_work/NN/caption_<lang>.json`; "auto" is excluded
+  from the render fingerprint (no surprise re-renders).
+
 ## Commands
 ```bash
 # setup (Windows: .venv\Scripts\activate)

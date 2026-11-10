@@ -94,6 +94,9 @@ class MockProvider(LLMProvider):
                 ids = re.findall(r"\b(\d+)\b", last)
                 return json.dumps({"action": "command", "command": "delete", "args": " ".join(ids), "reply": ""})
             return json.dumps({"action": "answer", "reply": "Hi! I can show jobs, clips and the queue."})
+        if task == "caption_translate":
+            ids = [int(n) for n in re.findall(r"^(\d+)\| ", prompt, re.MULTILINE)]
+            return json.dumps({"lines": [{"id": n, "text": f"translated {n}"} for n in ids]})
         if task == "outline":
             ids = [int(n) for n in re.findall(r"^BLOCK (\d+) ", prompt, re.MULTILINE)]
             return json.dumps({"blocks": [{"id": n, "summary": f"block {n}", "interest": 6 + n % 3} for n in ids]})

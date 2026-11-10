@@ -78,15 +78,16 @@ def clip_out(job: db.Job, ws: Workspace, c: ClipCandidate, metas_: dict[int, Cli
     rj = work / "render.json"
     if f and rj.exists():
         prev = json.loads(rj.read_text(encoding="utf-8")).get("candidate", {})
-        keys = ("start", "end", "title", "hook", "layout", "caption_style", "word_edits", "crop_overrides")
-        stale = any(prev.get(k) != c.model_dump().get(k) for k in keys)
+        keys = ("start", "end", "title", "hook", "layout", "caption_style", "word_edits", "crop_overrides", "caption_lang")
+        now = c.model_dump()
+        stale = any(prev.get(k, "auto" if k == "caption_lang" else None) != now.get(k) for k in keys)
     cid = f"{job.id}-{c.rank}"
     v = int(rendered_at or 0)
     return {
         "id": cid, "job_id": job.id, "rank": c.rank, "start": c.start, "end": c.end, "duration": c.duration,
         "title": c.title, "hook": c.hook, "topic": c.topic, "why": c.why, "score": c.score, "scores": c.scores.model_dump(),
         "enabled": c.enabled, "approved": c.approved, "layout": c.layout, "caption_style": c.caption_style.model_dump(),
-        "word_edits": c.word_edits, "crop_overrides": [o.model_dump() for o in c.crop_overrides],
+        "word_edits": c.word_edits, "caption_lang": c.caption_lang, "crop_overrides": [o.model_dump() for o in c.crop_overrides],
         "rendered": f is not None, "stale": stale, "file": f.name if f else None,
         "video_url": f"/api/clips/{cid}/video?v={v}" if f else None,
         "thumbnail_url": f"/api/clips/{cid}/thumbnail?v={v}" if (work / "thumb.jpg").exists() else None,

@@ -6,7 +6,7 @@ import { useIsMobile } from '@/lib/useIsMobile'
 import { toast } from 'sonner'
 import { api, videoSrc } from '@/api/client'
 import { useClips, useJobEvents } from '@/api/hooks'
-import type { CaptionStyle, ClipDetail, CropOverride as Override, Layout } from '@/api/types'
+import type { CaptionLang, CaptionStyle, ClipDetail, CropOverride as Override, Layout } from '@/api/types'
 import CaptionStylePicker from '@/components/CaptionStylePicker'
 import { ErrorBox, ScoreBadge } from '@/components/common'
 import CropOverride from '@/components/CropOverride'
@@ -32,13 +32,14 @@ interface Draft {
   title: string
   hook: string
   word_edits: Record<string, string>
+  caption_lang: CaptionLang
   caption_style: CaptionStyle
   layout: Layout | null
   crop_overrides: Override[]
 }
 
 const draftOf = (c: ClipDetail): Draft => ({
-  start: c.start, end: c.end, title: c.title, hook: c.hook, word_edits: { ...c.word_edits },
+  start: c.start, end: c.end, title: c.title, hook: c.hook, word_edits: { ...c.word_edits }, caption_lang: c.caption_lang ?? 'auto',
   caption_style: { ...c.caption_style }, layout: c.layout, crop_overrides: [...c.crop_overrides],
 })
 
@@ -246,6 +247,19 @@ function ClipEditor({ clipId }: { clipId: string }) {
                 {clip.why && <p className="text-xs text-muted-foreground"><span className="font-medium">Why the AI picked it:</span> {clip.why}</p>}
               </>)
   const stylePanel = (<>
+                <div className="space-y-2">
+                  <Label>Caption language</Label>
+                  <ToggleGroup type="single" variant="outline" value={draft.caption_lang}
+                    onValueChange={(v) => v && set('caption_lang', v as CaptionLang)}>
+                    <ToggleGroupItem value="auto" className="px-3">As spoken</ToggleGroupItem>
+                    <ToggleGroupItem value="en" className="px-3">English</ToggleGroupItem>
+                    <ToggleGroupItem value="hinglish" className="px-3">Hinglish</ToggleGroupItem>
+                  </ToggleGroup>
+                  <p className="text-xs text-muted-foreground">
+                    As spoken: English speech → English, Hindi speech → Hinglish. Picking the other language translates the
+                    captions (local AI) when you save &amp; re-render; timing stays in sync with the speech.
+                  </p>
+                </div>
                 <CaptionStylePicker value={style.preset ?? 'bold-yellow-pop'} onChange={(k) => set('caption_style', { ...style, preset: k })} />
                 <div className="grid gap-5 sm:grid-cols-2">
                   <div className="space-y-2">
