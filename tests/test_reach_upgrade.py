@@ -3,6 +3,8 @@ kit, and the post history / audit log."""
 
 from __future__ import annotations
 
+import datetime as dt
+
 from tests.test_publish import NOW, _one_channel_two_items, env  # noqa: F401
 
 
@@ -96,11 +98,17 @@ def test_backfill_runs_once_from_old_stats(env):  # noqa: F811
 
     with db.session() as s:
         s.add(db.VideoPerf(youtube_video_id="old1", channel_id="UCtest", title="Old short", published_at=NOW, views=42))
+        s.add(db.VideoPerf(youtube_video_id="gone1", channel_id="UCtest", title="Deleted one", published_at=NOW))
+        s.add(db.VideoPerf(youtube_video_id="later1", channel_id="UCtest", title="Future one",
+                           published_at=NOW + dt.timedelta(days=2)))
         s.commit()
-    assert history.backfill() >= 1
+    assert history.backfill({"old1", "later1"}, now=NOW) >= 3
     assert history.backfill() == 0                   # once
-    posts = [p for d in history.days(3650, now=NOW) for p in d["posts"]]
-    assert any(p["title"] == "Old short" and p["views"] == 42 for p in posts)
+    days = history.days(3650, now=NOW)
+    posts = [p for d in days for p in d["posts"]]
+    assert [p["title"] for p in posts] == ["Old short"] and posts[0]["views"] == 42
+    evs = {e["title"]: e["event"] for d in days for e in d["events"]}
+    assert evs["Deleted one"] == "deleted_on_platform" and evs["Future one"] == "scheduled"
 
 
 def test_two_posts_a_day_both_in_the_evening():

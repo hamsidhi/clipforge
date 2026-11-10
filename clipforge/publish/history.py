@@ -78,8 +78,12 @@ def _ist(t: dt.datetime | None) -> str:
 
 
 # ----------------------------------------------------------------------------- back-fill (once)
-def backfill() -> int:
-    """Rebuild the history before this log existed. Runs once (a `backfill_done` marker row). Returns rows added."""
+def backfill(live_youtube: set[str] | None = None, now: dt.datetime | None = None) -> int:
+    """Rebuild the history before this log existed. Runs once (a `backfill_done` marker row). Returns rows added.
+    `live_youtube` = YouTube ids that still exist (from the API): an old stats row whose video is gone was deleted in
+    Studio (often before it went live) → logged as deleted, not published. Stats rows dated in the future were only
+    scheduled."""
+    now = now or now_utc()
     with db.session() as s:
         if s.exec(select(db.HistoryEvent.id).where(db.HistoryEvent.event == "backfill_done").limit(1)).first() is not None:
             return 0
@@ -105,13 +109,21 @@ def backfill() -> int:
             if not p.published_at:
                 continue
             it = items.get(p.queue_id or -1)
-            rows.append(db.HistoryEvent(at=as_utc(p.published_at), platform=p.platform or "youtube", channel_id=p.channel_id,
+            yt_row = (p.platform or "youtube") == "youtube"
+            event, at, why = "published", as_utc(p.published_at), "backfill"
+            if yt_row and live_youtube is not None and p.youtube_video_id not in live_youtube:
+                event, at = "deleted_on_platform", min(at, now)
+                why = f"was set for {_ist(p.published_at)} IST; deleted in YouTube Studio"
+            elif at > now:
+                event, at, why = "scheduled", now, f"set for {_ist(p.published_at)} IST"
+            rows.append(db.HistoryEvent(at=at, platform=p.platform or "youtube", channel_id=p.channel_id,
                                         queue_id=p.queue_id, clip_key=it.clip_key if it else "",
-                                        video_id=it.video_id if it else "", title=p.title, event="published",
-                                        status="published", post_id=p.youtube_video_id,
+                                        video_id=it.video_id if it else "", title=p.title, event=event,
+                                        status=event, slot_utc=p.published_at if event != "published" else None,
+                                        post_id=p.youtube_video_id,
                                         link=p.permalink or (f"https://youtube.com/shorts/{p.youtube_video_id}"
-                                                             if (p.platform or "youtube") == "youtube" else ""),
-                                        detail="backfill"))
+                                                             if yt_row else ""),
+                                        detail=why))
         rows.append(db.HistoryEvent(event="backfill_done", detail="backfill"))
         for r in rows:
             s.add(r)
@@ -146,7 +158,7 @@ def days(n: int = 30, platform: str = "all", channel_id: str | None = None, now:
             "account": names.get(e.channel_id, e.channel_id), "title": e.title, "detail": "" if e.detail == "backfill" else e.detail,
             "slot": _ist(e.slot_utc), "link": e.link, "queue_id": e.queue_id})
         key = e.post_id or f"q{e.queue_id}:{e.platform}"
-        if e.event == "published" and key not in seen_posts:
+        if e.event == "published" and key not in seen_posts and as_utc(e.at) <= now:
             seen_posts.add(key)
             p = perf.get(e.post_id) if e.post_id else None
             d["posts"].append({
