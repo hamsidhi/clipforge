@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from clipforge.llm.base import LLMError, LLMProvider, strict_schema
 from clipforge.models import ClipCandidate, VideoInfo, Word
-from clipforge.utils.text import normalize_hashtags, truncate
+from clipforge.utils.text import language_rule, normalize_hashtags, spoken_language, truncate
 from clipforge.utils.timecode import words_in_range
 
 TITLE_MAX = 70
@@ -140,15 +140,15 @@ def generate(clip: ClipCandidate, info: VideoInfo, words: list[Word], settings: 
              llm: LLMProvider | None, existing_titles: list[str]) -> dict[str, Any]:
     """Returns fields for a QueueItem: title, description, tags, variants, ig_caption, category_id."""
     text = " ".join(w.display("roman") for w in words_in_range(words, clip.start, clip.end))
-    language = settings.get("title_language", "hinglish")
+    spoken = spoken_language([w.text for w in words_in_range(words, clip.start, clip.end)])
+    language = "english" if spoken == "en" else settings.get("title_language", "hinglish")
     reply: MetaReply | None = None
     if llm is not None:
         try:
             reply = llm.complete_json(
                 PROMPT.format(episode=info.title, title=clip.title, hook=clip.hook, topic=clip.topic,
                               text=truncate(text, 1500), language=language,
-                              language_rule="Hinglish in Latin script is welcome." if language == "hinglish"
-                              else "English only."),
+                              language_rule=language_rule(spoken)),
                 MetaReply, retries=2, task="ytmeta", json_schema=strict_schema(MetaReply))
         except LLMError:
             reply = None

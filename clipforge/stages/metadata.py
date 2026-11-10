@@ -12,10 +12,11 @@ from pydantic import BaseModel
 from clipforge.llm.base import LLMError, LLMProvider
 from clipforge.models import ClipCandidate, ClipMetadata, VideoInfo, Word
 from clipforge.utils.log import log
-from clipforge.utils.text import normalize_hashtags, truncate
+from clipforge.utils.text import language_rule, normalize_hashtags, spoken_language, truncate
 from clipforge.utils.timecode import words_in_range
 
-PROMPT = """You write social-media copy for a vertical short cut from a Hinglish podcast.
+PROMPT = """You write social-media copy for a vertical short cut from a podcast.
+{language_rule}
 
 Podcast: {podcast} — {channel}
 Clip title: {title}
@@ -24,7 +25,7 @@ What is said in the clip:
 \"\"\"{text}\"\"\"
 
 Return JSON:
-{{"yt_description": "2-3 sentences for YouTube Shorts (Hinglish ok), no hashtags",
+{{"yt_description": "2-3 sentences for YouTube Shorts, no hashtags",
   "ig_caption": "2-3 short lines for Instagram + a call to action (e.g. 'Follow for more'), may use 1-2 emojis, no hashtags",
   "hashtags": ["5 lowercase hashtags without spaces, relevant to the topic, e.g. podcast, business"]}}"""
 
@@ -61,7 +62,8 @@ def build(clip: ClipCandidate, file: Path | None, info: VideoInfo, words: list[W
     if llm is not None:
         try:
             meta = llm.complete_json(
-                PROMPT.format(podcast=info.title, channel=info.channel, title=clip.title, hook=clip.hook,
+                PROMPT.format(language_rule=language_rule(spoken_language([w.text for w in words_in_range(words, clip.start, clip.end)])),
+                              podcast=info.title, channel=info.channel, title=clip.title, hook=clip.hook,
                               text=truncate(text, 1500)),
                 MetaOut, retries=2, task="metadata",
             )

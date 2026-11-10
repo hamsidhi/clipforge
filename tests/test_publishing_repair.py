@@ -226,7 +226,7 @@ def test_upload_body_fields(api, monkeypatch):
     it = q.get(it.id)
     it.title = "x" * 150
     body = runner.upload_body(it, {"language": "hi"}, it.slot_utc, synthetic=True)
-    assert len(body["snippet"]["title"]) == 100 and body["snippet"]["defaultAudioLanguage"] == "hi"
+    assert len(body["snippet"]["title"]) == 100 and body["snippet"]["defaultAudioLanguage"] == "en"  # English clip text → en
     assert body["snippet"]["categoryId"] and isinstance(body["snippet"]["tags"], list)
     st = body["status"]
     assert st["privacyStatus"] == "private" and st["publishAt"].endswith("Z")

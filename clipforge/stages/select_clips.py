@@ -20,6 +20,7 @@ from clipforge.llm.mock_provider import romanize_word
 from clipforge.models import ClipCandidate, LLMCandidate, RawCandidateList, Scores, Segment, Transcript, VideoInfo
 from clipforge.utils.ffmpeg import Timer
 from clipforge.utils.log import ProgressReporter, check_cancel, log
+from clipforge.utils.text import spoken_language
 from clipforge.utils.timecode import words_in_range
 from clipforge.workspace import Workspace, fingerprint
 
@@ -391,8 +392,12 @@ def write_titles(ws: Workspace, cfg: Config, llm: LLMProvider, reporter: Progres
     for b in range(0, len(todo), TITLE_BATCH):
         batch = todo[b:b + TITLE_BATCH]
         texts = [clip_text(transcript, c.start, c.end, latin) for c in batch]
-        body = "\n\n".join(f"CLIP {n} ({c.end - c.start:.0f} s, topic: {c.topic or '-'}):\n\"\"\"{t}\"\"\""
-                           for n, (c, t) in enumerate(zip(batch, texts), 1))
+        words = transcript.all_words()
+        langs = [spoken_language([w.text for w in words_in_range(words, c.start, c.end)]) for c in batch]
+        body = "\n\n".join(f"CLIP {n} ({c.end - c.start:.0f} s, topic: {c.topic or '-'}, "
+                           f"{'spoken in ENGLISH: hook and title in English only' if lg == 'en' else 'spoken in Hindi: hook and title in Hinglish, Latin script'})"
+                           f":\n\"\"\"{t}\"\"\""
+                           for n, (c, t, lg) in enumerate(zip(batch, texts, langs), 1))
         prompt = template.format(podcast_title=info.title, channel=info.channel or "unknown", n=len(batch), clips=body)
         batches.append((b, batch, texts, prompt))
     predict = TITLE_TOKENS_PER_CLIP * TITLE_BATCH + 64

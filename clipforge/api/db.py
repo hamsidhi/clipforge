@@ -149,6 +149,7 @@ class QueueItem(SQLModel, table=True):
     # Publishing v2: publication identity (one per clip render × platform × account × intent; unique when set)
     pub_key: str = Field(default="", index=True)
     intent: str = "original"                   # original | republish:<n>
+    spoken_lang: str = ""                      # "en" | "hi": the clip's spoken language (YouTube audio language)
     created_at: dt.datetime = Field(default_factory=now)
     updated_at: dt.datetime = Field(default_factory=now)
 

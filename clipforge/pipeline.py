@@ -112,9 +112,12 @@ def fp_transcribe(ws: Workspace, cfg: Config) -> str:
     from clipforge.stages.transcript_input import input_signature
 
     extra = input_signature(ws, cfg.transcript.source)  # "" for auto without a pasted transcript: old caches stay valid
+    wcfg = cfg.whisper.model_dump()
+    if wcfg.get("language") == "smart":  # 2026-11-10 default change hi → smart: don't silently re-transcribe old jobs
+        wcfg["language"] = "hi"
     if extra:
-        return fingerprint(cfg.whisper.model_dump(), _size(ws.audio), extra)
-    return fingerprint(cfg.whisper.model_dump(), _size(ws.audio))
+        return fingerprint(wcfg, _size(ws.audio), extra)
+    return fingerprint(wcfg, _size(ws.audio))
 
 
 def fp_analyze(ws: Workspace) -> str:

@@ -59,11 +59,42 @@ def load_model(cfg: WhisperConfig, reporter: ProgressReporter):
     return model, model_name, device
 
 
+def episode_language(model, audio: np.ndarray, reporter: ProgressReporter | None = None, samples: int = 8) -> str:
+    """'en' or 'hi' for the whole episode, from `samples` 30-s windows spread over it (not just the intro: a Hindi
+    host's intro must not turn an English interview into Hindi). Forcing 'hi' on English speech makes Whisper write
+    Devanagari gibberish, which then shows up as nonsense Hinglish captions — this picks the language actually spoken."""
+    sr, win = 16000, 30 * 16000
+    n = len(audio)
+    if n <= win:
+        starts = [0]
+    else:
+        starts = [int((n - win) * (i + 0.5) / samples) for i in range(samples)]
+    score = {"hi": 0.0, "en": 0.0}
+    for s in starts:
+        try:
+            _, _, probs = model.detect_language(audio[s:s + win])
+        except Exception as exc:  # very old faster-whisper / odd audio: keep the safe old default
+            log.warning(f"[transcribe] language detection failed ({exc}); using Hindi")
+            return "hi"
+        p = dict(probs)
+        # Urdu/Punjabi/Marathi etc. are what Whisper calls Hinglish speech surprisingly often → count them as Hindi
+        score["hi"] += sum(p.get(k, 0.0) for k in ("hi", "ur", "pa", "mr", "ne", "bn", "gu"))
+        score["en"] += p.get("en", 0.0)
+    lang = "en" if score["en"] > score["hi"] else "hi"
+    msg = f"Spoken language: {'English' if lang == 'en' else 'Hindi/Hinglish'} (en {score['en']:.1f} vs hi {score['hi']:.1f} over {len(starts)} samples)"
+    log.info(f"[transcribe] {msg}")
+    if reporter:
+        reporter.log(msg)
+    return lang
+
+
 def run(ws: Workspace, cfg: WhisperConfig, reporter: ProgressReporter, duration: float) -> Transcript:
     model, model_name, device = load_model(cfg, reporter)
 
-    language = None if cfg.language in ("auto", "", None) else cfg.language
     audio = load_wav(ws.audio)
+    language = None if cfg.language in ("auto", "", None) else cfg.language
+    if cfg.language == "smart":
+        language = episode_language(model, audio, reporter)
     total = len(audio) / 16000 or duration or 1
 
     # resume from a checkpoint (a crash/cancel an hour into a long episode shouldn't lose that hour)

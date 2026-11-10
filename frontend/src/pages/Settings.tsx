@@ -196,7 +196,7 @@ export default function Settings() {
                 options={[['auto', 'Auto'], ['small', 'small (fast, poor Hindi)'], ['medium', 'medium'], ['large-v3-turbo', 'large-v3-turbo (best on CPU)'], ['large-v3', 'large-v3 (GPU)']]} />
             </Row>
             <Row label="Language">
-              <Sel value={v('whisper', 'language')} onChange={(x) => set('whisper', 'language', x)} options={[['hi', 'Hindi / Hinglish'], ['en', 'English'], ['auto', 'Auto-detect']]} />
+              <Sel value={v('whisper', 'language')} onChange={(x) => set('whisper', 'language', x)} options={[['smart', 'Smart: what the speakers speak (recommended)'], ['hi', 'Always Hindi / Hinglish'], ['en', 'Always English'], ['auto', 'Whisper auto (first 30 s only)']]} />
             </Row>
           </CardContent>
         </Card>

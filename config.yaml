@@ -11,7 +11,7 @@ clips:
 
 whisper:
   model: auto          # auto -> large-v3 on CUDA, large-v3-turbo on CPU. Or: small, medium, large-v3, large-v3-turbo
-  language: hi         # hi, en, or auto
+  language: smart      # smart = what the speakers actually speak (English → English, Hindi → Hinglish) | hi | en | auto
   compute_type: auto   # auto -> float16 on CUDA, int8 on CPU
   vad: true
   beam_size: auto      # auto -> 5 on GPU, 1 on CPU

@@ -17,6 +17,8 @@ from clipforge.publish import channels as chs
 from clipforge.publish import metadata_opt, slots
 from clipforge.publish.timez import as_utc, now_utc, quota_day, utc_to_local
 from clipforge.utils.log import log
+from clipforge.utils.text import spoken_language
+from clipforge.utils.timecode import words_in_range
 
 ACTIVE = ("draft", "queued", "uploading", "ready", "scheduled", "uploaded", "published", "needs_manual",
           "locked_private", "missed", "failed")
@@ -114,6 +116,26 @@ def release(it: db.QueueItem) -> None:
     it.lease_owner, it.lease_expires_at = "", None
 
 
+def clip_language(it: db.QueueItem, cfg: Config | None = None) -> str:
+    """The clip's spoken language ('en' | 'hi'), computed once from its transcript words and stored on the item."""
+    if it.spoken_lang:
+        return it.spoken_lang
+    try:
+        ws, c = candidate_for(it, cfg or load_config())
+        words = pipeline.load_transcript(ws).all_words()
+        it.spoken_lang = spoken_language([w.text for w in words_in_range(words, c.start, c.end)])
+    except Exception as exc:  # episode files gone: fall back to the account's language setting
+        log.warning(f"[queue] item {it.id}: couldn't detect the spoken language ({exc})")
+        return ""
+    with db.session() as s:
+        row = s.get(db.QueueItem, it.id)
+        if row:
+            row.spoken_lang = it.spoken_lang
+            s.add(row)
+            s.commit()
+    return it.spoken_lang
+
+
 def delete(item_id: int) -> None:
     with db.session() as s:
         it = s.get(db.QueueItem, item_id)
@@ -209,6 +231,7 @@ def generate_metadata(item_id: int, cfg: Config | None = None, llm=None) -> db.Q
     ws, c = candidate_for(it, cfg)
     info = pipeline.load_info(ws)
     words = pipeline.load_transcript(ws).all_words()
+    it.spoken_lang = spoken_language([w.text for w in words_in_range(words, c.start, c.end)])
     if llm is None:
         llm = pipeline.get_llm(cfg, required=False)
     from clipforge.publish import llm_budget

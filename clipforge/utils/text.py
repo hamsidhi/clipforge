@@ -87,3 +87,30 @@ def extract_json(text: str) -> dict | list:
 def truncate(text: str, n: int) -> str:
     text = text.strip()
     return text if len(text) <= n else text[: n - 1].rstrip() + "…"
+
+
+# Roman-Hindi function words that are (almost) never English words — "to", "so", "main", "ho" are left out on purpose.
+HINDI_MARKERS = frozenset(
+    "hai hain hoon hun tha thi the_ ki ka ke ko se mein mai nahi nahin kya kyun kyunki aur bhi toh yeh ye woh wo "
+    "jo kuch bahut matlab accha acha haan bhai yaar kar karte karna kiya hota hoga raha rahe rahi sab apna apne "
+    "unka uska humko mujhe tumhe aap hum".replace("the_ ", "").split())
+
+
+def spoken_language(words: list[str]) -> str:
+    """'hi' when the clip is spoken in Hindi/Hinglish, else 'en'. Words are Whisper's own text (Devanagari for Hindi
+    speech) or Roman Hinglish (pasted transcripts). An English clip has ~1-4% such words, a Hinglish one 20%+."""
+    toks = [re.sub(r"[^\wऀ-ॿ]", "", w.lower()) for w in words]
+    toks = [t for t in toks if t]
+    if not toks:
+        return "hi"
+    hindi = sum(1 for t in toks if is_devanagari(t) or t in HINDI_MARKERS)
+    return "hi" if hindi / len(toks) >= 0.12 else "en"
+
+
+def language_rule(lang: str) -> str:
+    """One prompt line that keeps all copy in the clip's own spoken language."""
+    if lang == "en":
+        return ("LANGUAGE: this clip is spoken in ENGLISH, so write it in plain English only — no Hindi or Hinglish "
+                "words at all.")
+    return ("LANGUAGE: this clip is spoken in Hindi/Hinglish, so write it in Hinglish in Latin script (Roman letters, "
+            "like people text in India) — never Devanagari, never pure English.")

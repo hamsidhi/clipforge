@@ -46,7 +46,7 @@ class ClipsConfig(_Section):
 
 class WhisperConfig(_Section):
     model: str = "auto"
-    language: str = "hi"
+    language: str = "smart"  # smart = sampled over the episode (en|hi) | hi | en | auto (Whisper: first 30 s)
     compute_type: str = "auto"
     vad: bool = True
     beam_size: int | Literal["auto"] = "auto"  # auto -> 5 on GPU, 1 (greedy, ~2x faster) on CPU

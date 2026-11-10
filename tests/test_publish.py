@@ -265,7 +265,7 @@ def test_e2e_queue_schedule_upload_batch_reconcile_dashboard(env):
     assert len(rep.uploaded) == 6 and not rep.failed
     body = fake.uploaded_bodies[0]
     assert body["status"]["privacyStatus"] == "private" and body["status"]["publishAt"].endswith("Z")
-    assert body["status"]["selfDeclaredMadeForKids"] is False and body["snippet"]["defaultLanguage"] == "hi"
+    assert body["status"]["selfDeclaredMadeForKids"] is False and body["snippet"]["defaultLanguage"] == "en"  # fixture clips are English speech
     # after the slots pass, YouTube publishes them; the next run notices
     later = NOW + dt.timedelta(days=3)
     fake.publish_due(later)

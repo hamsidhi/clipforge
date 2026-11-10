@@ -15,6 +15,7 @@ import time
 from clipforge.config import Config
 from clipforge.models import ClipCandidate, Segment, Transcript, Word
 from clipforge.utils.log import NullReporter, ProgressReporter, check_cancel, log
+from clipforge.utils.text import spoken_language
 from clipforge.workspace import Workspace, fingerprint
 
 CACHE_DIR = "clip_whisper"
@@ -26,6 +27,18 @@ def _covered(t: Transcript, a: float, b: float) -> bool:
 
 def _key(a: float, b: float) -> str:
     return f"{a:09.2f}_{b:09.2f}"
+
+
+def clip_language(t: Transcript, configured: str) -> str:
+    """Language for re-transcribing clip ranges. Whisper transcripts: the language Whisper used. Pasted / YouTube
+    transcripts: read from their own text (English captions → 'en'), never a blanket 'hi' — forcing Hindi on English
+    speech gives Devanagari gibberish captions."""
+    if t.source == "whisper" and t.language in ("hi", "en"):
+        return t.language
+    if configured in ("hi", "en"):
+        return configured
+    words = [w.text for s in t.segments[:600] for w in s.words] or " ".join(s.text for s in t.segments[:600]).split()
+    return spoken_language(words)
 
 
 def transcribe_range(ws: Workspace, cfg: Config, a: float, b: float, language: str, state: dict) -> list[Segment]:
@@ -111,7 +124,7 @@ def ensure_exact(ws: Workspace, cfg: Config, t: Transcript, ranges: list[tuple[f
             todo.append((round(a, 2), round(b, 2), s, e))
     if not todo:
         return False
-    lang = t.language if t.language and len(t.language) <= 3 else cfg.whisper.language
+    lang = clip_language(t, cfg.whisper.language)
     fp = fingerprint("clip-whisper-v1", cfg.whisper.model_dump(), lang)
     state: dict = {"reporter": reporter}
     spent = 0.0

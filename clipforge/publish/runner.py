@@ -39,7 +39,7 @@ class RunReport:
 def upload_body(it: db.QueueItem, settings: dict, slot: dt.datetime, synthetic: bool = False) -> dict:
     """privacy 'scheduled' (default): private + publishAt, so YouTube itself makes it public at the slot.
     'public' is only uploaded at the slot (laptop must be on); 'private'/'unlisted' never go public by themselves."""
-    lang = settings.get("language", "hi")
+    lang = it.spoken_lang or settings.get("language", "hi")  # the clip's own spoken language (English clip → en)
     privacy = it.privacy or "scheduled"
     status: dict = {"privacyStatus": "private" if privacy == "scheduled" else privacy,
                     "selfDeclaredMadeForKids": False, "containsSyntheticMedia": bool(synthetic), "embeddable": True}
@@ -671,6 +671,7 @@ def _upload_due(ch: db.Channel, client, cfg: Config, now: dt.datetime, rep: RunR
             continue  # changed under us between the read and the claim
         it = q.get(item_id)
         settings = chs.settings_of(live_ch, cfg)
+        q.clip_language(it, cfg)
         body = upload_body(it, settings, slot, cfg.publishing.contains_synthetic_media)
         publish_at = slot if "publishAt" in body["status"] else None
         done += 1
