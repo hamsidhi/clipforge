@@ -184,7 +184,7 @@ def pick_times(values: list[float], count: int, start: int, end: int, gap: int,
     for zone, need in ((MORNING, morning), (EVENING, evening)):
         zc = sorted([c for c in cands if zone[0] <= c[1] <= zone[1]], reverse=True)
         for _, m in zc:
-            if sum(1 for c in chosen if zone[0] <= c <= zone[1]) >= min(need, count - len(chosen)):
+            if sum(1 for c in chosen if zone[0] <= c <= zone[1]) >= need or len(chosen) >= count:
                 break
             if ok(m, chosen):
                 chosen.append(m)

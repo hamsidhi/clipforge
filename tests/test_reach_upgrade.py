@@ -101,3 +101,11 @@ def test_backfill_runs_once_from_old_stats(env):  # noqa: F811
     assert history.backfill() == 0                   # once
     posts = [p for d in history.days(3650, now=NOW) for p in d["posts"]]
     assert any(p["title"] == "Old short" and p["views"] == 42 for p in posts)
+
+
+def test_two_posts_a_day_both_in_the_evening():
+    from clipforge.publish.smart import pick_times, prior_bins
+
+    two = pick_times(prior_bins(), 2, 7 * 60, 25 * 60, 75, morning=0)
+    assert len(two) == 2 and all(18 * 60 <= m <= 24 * 60 + 30 for m in two)
+    assert len(pick_times(prior_bins(), 5, 7 * 60, 25 * 60, 75)) == 5
