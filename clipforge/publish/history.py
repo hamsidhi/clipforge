@@ -113,9 +113,9 @@ def backfill(live_youtube: set[str] | None = None, now: dt.datetime | None = Non
             event, at, why = "published", as_utc(p.published_at), "backfill"
             if yt_row and live_youtube is not None and p.youtube_video_id not in live_youtube:
                 event, at = "deleted_on_platform", min(at, now)
-                why = f"was set for {_ist(p.published_at)} IST; deleted in YouTube Studio"
+                why = "deleted in YouTube Studio"
             elif at > now:
-                event, at, why = "scheduled", now, f"set for {_ist(p.published_at)} IST"
+                event, at, why = "scheduled", now, ""
             rows.append(db.HistoryEvent(at=at, platform=p.platform or "youtube", channel_id=p.channel_id,
                                         queue_id=p.queue_id, clip_key=it.clip_key if it else "",
                                         video_id=it.video_id if it else "", title=p.title, event=event,
