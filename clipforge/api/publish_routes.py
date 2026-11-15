@@ -159,15 +159,45 @@ def list_channels() -> list[dict]:
 @router.post("/channels/oauth/start", summary="Get the Google consent URL for adding/reconnecting a channel")
 def oauth_start(request: Request) -> dict:
     host = request.url.hostname or ""
-    if host not in ("localhost", "127.0.0.1", "::1"):
-        raise HTTPException(400, "Add channels from the laptop itself (open http://localhost:8000) — Google only "
-                                 "redirects desktop-app logins back to localhost.")
-    port = request.url.port or 80
-    redirect = f"http://{'localhost' if host == 'localhost' else '127.0.0.1'}:{port}/api/oauth/callback"
+    local = host in ("localhost", "127.0.0.1", "::1")
+    if local:
+        port = request.url.port or 80
+        redirect = f"http://{'localhost' if host == 'localhost' else '127.0.0.1'}:{port}/api/oauth/callback"
+    else:
+        # From the phone / another laptop: Google still sends the login to the laptop's localhost, which that device
+        # can't open. The user copies that (failed) page's address and pastes it back here -> /channels/oauth/finish.
+        redirect = "http://localhost:8000/api/oauth/callback"  # any localhost port is valid for a desktop client
     try:
-        return {"url": chs.start_oauth(redirect)}
+        return {"url": chs.start_oauth(redirect), "paste": not local}
     except FileNotFoundError as exc:
         raise HTTPException(400, str(exc))
+
+
+class OauthFinishIn(BaseModel):
+    url: str
+
+
+@router.post("/channels/oauth/finish", summary="Finish adding a channel from another device (pasted address)")
+def oauth_finish(body: OauthFinishIn) -> dict:
+    from urllib.parse import parse_qs, urlparse
+
+    raw = body.url.strip()
+    q = parse_qs(urlparse(raw).query)
+    if q.get("error"):
+        raise HTTPException(400, f"Google said: {q['error'][0]}. Press Add channel and try again.")
+    state, code = (q.get("state") or [""])[0], (q.get("code") or [""])[0]
+    if not state or not code:
+        raise HTTPException(400, "That isn't the right address. Copy the whole address of the page that opened after "
+                                 "you allowed access (it starts with http://localhost and contains code=).")
+    try:
+        res = chs.finish_oauth(raw, state)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        raise HTTPException(400, f"Google refused the login ({exc}). Press Add channel and try again.")
+    if "pick" in res:
+        return {"pick": res["pick"]}
+    return {"connected": res["connected"][0]["id"]}
 
 
 @router.get("/oauth/callback", include_in_schema=False)

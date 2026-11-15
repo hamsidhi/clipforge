@@ -24,11 +24,55 @@ import { cn } from '@/lib/utils'
 
 async function connect() {
   try {
-    const { url } = await pub.oauthStart()
-    window.location.href = url
+    const { url, paste } = await pub.oauthStart()
+    // Another device: Google sends the login to the laptop's localhost -> the user pastes that address back to us.
+    if (paste) window.dispatchEvent(new CustomEvent('yt-paste', { detail: url }))
+    else window.location.href = url
   } catch (e) {
     toast.error((e as Error).message)
   }
+}
+
+function PasteLoginDialog({ url, onClose, onPick }: { url: string; onClose: () => void; onPick: (pid: string) => void }) {
+  const qc = useQueryClient()
+  const [addr, setAddr] = useState('')
+  const m = useMutation({
+    mutationFn: () => pub.oauthFinish(addr),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ['channels'] })
+      onClose()
+      if (r.pick) onPick(r.pick)
+      else toast.success('Channel connected — confirm it before the first upload')
+    },
+    onError: (e) => toast.error((e as Error).message),
+  })
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Add a YouTube channel</DialogTitle>
+          <DialogDescription>Two steps. Works from your phone or any other device.</DialogDescription>
+        </DialogHeader>
+        <ol className="list-decimal space-y-3 pl-5 text-sm">
+          <li>
+            <a href={url} target="_blank" rel="noreferrer" className="font-medium text-primary underline">Open Google login</a>{' '}
+            → pick the Google account → pick the <b>channel</b> → Continue → tick every box → Continue.
+          </li>
+          <li>
+            A page that <b>doesn't load</b> opens ("This site can't be reached"). That's expected. Copy its <b>whole
+            address</b> from the address bar and paste it here:
+            <Textarea className="mt-2 font-mono text-xs" rows={3} value={addr} onChange={(e) => setAddr(e.target.value)}
+              placeholder="http://localhost:8000/api/oauth/callback?state=…&code=…" />
+          </li>
+        </ol>
+        <DialogFooter>
+          <Button onClick={() => m.mutate()} disabled={!addr.includes('code=') || m.isPending}>
+            {m.isPending ? <Loader2 className="animate-spin" /> : <Plus />} Connect channel
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
 }
 
 async function connectInstagram() {
@@ -543,17 +587,23 @@ export default function Channels() {
   const yt = (data ?? []).filter((c) => !isIg(c))
   const igs = (data ?? []).filter(isIg)
   const remote = !['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname)
+  const [pasteUrl, setPasteUrl] = useState('')
+  useEffect(() => {
+    const h = (e: Event) => setPasteUrl((e as CustomEvent<string>).detail)
+    window.addEventListener('yt-paste', h)
+    return () => window.removeEventListener('yt-paste', h)
+  }, [])
   return (
     <>
       <PageHeader
         title="Accounts"
         description="YouTube channels and Instagram accounts ClipForge posts to. Logins stay on this computer."
-        actions={tab === 'youtube' ? <Button onClick={connect} disabled={!!noSecret || remote}><Plus /> Add channel</Button> : undefined}
+        actions={<Button onClick={connect} disabled={!!noSecret}><Plus /> Add YouTube channel</Button>}
       />
       {remote && (
         <div className="mb-5 flex items-start gap-3 rounded-xl border border-sky-500/30 bg-sky-500/10 p-4 text-sm">
           <Laptop className="mt-0.5 size-4 shrink-0" />
-          <div>Connect accounts on the laptop: Google and Meta send logins back to <code>localhost</code>. Everything else works from here.</div>
+          <div>Adding a YouTube channel from here: press <b>Add YouTube channel</b> and follow the 2 steps (you paste one address back).</div>
         </div>
       )}
       <Tabs value={tab} onValueChange={setTab}>
@@ -579,12 +629,12 @@ export default function Channels() {
             {status.scope_help.map((s) => (
               <div key={s.scope}><code className="text-foreground">{s.scope.split('/').pop()}</code> — {s.why}</div>
             ))}
-            <div>Add channels from this laptop (http://localhost:8000): Google sends the login back to localhost.</div>
+            <div>On another device you paste the login page's address back (Google only sends logins to the laptop).</div>
           </CollapsibleContent>
         </Collapsible>
       )}
       {error ? <ErrorBox error={error} /> : isLoading ? <Skeleton className="h-40 rounded-xl" /> : !yt.length ? (
-        <EmptyState icon={Tv} title="No channels yet" action={<Button onClick={connect} disabled={!!noSecret || remote}><Plus /> Add channel</Button>}>
+        <EmptyState icon={Tv} title="No channels yet" action={<Button onClick={connect} disabled={!!noSecret}><Plus /> Add YouTube channel</Button>}>
           Connect the YouTube channel(s) you post Shorts to. You can add several (Brand Accounts too).
         </EmptyState>
       ) : (
@@ -592,6 +642,7 @@ export default function Channels() {
       )}
         </TabsContent>
       </Tabs>
+      {pasteUrl && <PasteLoginDialog url={pasteUrl} onClose={() => setPasteUrl('')} onPick={(p) => setParams({ pick: p }, { replace: true })} />}
       {pid && <PickDialog pid={pid} onDone={() => setParams({}, { replace: true })} />}
       {igPid && <IgPickDialog pid={igPid} onDone={() => setParams({ tab: 'instagram' }, { replace: true })} />}
       {status?.worker.current && (

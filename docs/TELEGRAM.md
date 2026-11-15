@@ -211,7 +211,8 @@ To go back: delete `api_base_url`, call `close` on the local server, wait 10 min
 | `POST /api/publishing/audit` | Settings → audit checklist | Laptop | |
 | `POST /api/publishing/client-secret` | Settings | Laptop | a secret file |
 | `GET /api/channels` | Accounts | `/accounts` | |
-| `POST /api/channels/oauth/start` | Accounts → Add | Laptop | OAuth never through chat |
+| `POST /api/channels/oauth/start` | Accounts → Add YouTube channel | Laptop / phone (paste flow) | OAuth never through chat |
+| `POST /api/channels/oauth/finish` | Accounts → Add YouTube channel (pasted address) | Phone / other device | OAuth never through chat |
 | `GET /api/oauth/callback` | (Google redirect) | Laptop | |
 | `GET /api/channels/pick/{pid}` | Accounts → Add | Laptop | |
 | `POST /api/channels/pick/{pid}` | Accounts → Add | Laptop | |

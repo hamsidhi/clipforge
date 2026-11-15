@@ -34,7 +34,9 @@ export const pub = {
     request<PublishingStatus>('/api/publishing/audit', { method: 'POST', body: json({ status, applied_on }) }),
 
   channels: () => request<Channel[]>('/api/channels'),
-  oauthStart: () => request<{ url: string }>('/api/channels/oauth/start', { method: 'POST' }),
+  oauthStart: () => request<{ url: string; paste?: boolean }>('/api/channels/oauth/start', { method: 'POST' }),
+  oauthFinish: (url: string) =>
+    request<{ connected?: string; pick?: string }>('/api/channels/oauth/finish', { method: 'POST', body: json({ url }) }),
   pickOptions: (pid: string) =>
     request<{ id: string; title: string; handle: string; thumbnail: string }[]>(`/api/channels/pick/${pid}`),
   pick: (pid: string, channel_id: string) =>

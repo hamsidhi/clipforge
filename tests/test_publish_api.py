@@ -101,3 +101,33 @@ def test_full_flow(api):
     assert c.patch("/api/channels/UCapi", json={"paused": True}).json()["paused"] is True
     assert c.patch("/api/channels/UCapi", json={"settings": {"bogus": 1}}).status_code == 400
     assert c.get("/api/queue.csv").status_code == 200
+
+
+def test_add_channel_from_other_device(api, monkeypatch):
+    """Remote 'Add YouTube channel': start gives a localhost-redirect URL + paste flag; finish takes the pasted address."""
+    from clipforge.publish import channels as chs
+
+    c, _ = api
+    seen = {}
+
+    def start(redirect):
+        seen["redirect"] = redirect
+        return "https://accounts.google.com/o/oauth2/auth?x=1"
+
+    def finish(url, state):
+        seen["finish"] = (url, state)
+        if state == "old":
+            raise ValueError("This login link expired or was already used — start 'Add channel' again.")
+        return {"connected": [{"id": "UCnew"}]}
+
+    monkeypatch.setattr(chs, "start_oauth", start)
+    monkeypatch.setattr(chs, "finish_oauth", finish)
+    r = c.post("/api/channels/oauth/start")  # TestClient's host is "testserver" = not localhost = another device
+    assert r.json()["paste"] is True and seen["redirect"] == "http://localhost:8000/api/oauth/callback"
+    assert c.post("/api/channels/oauth/finish", json={"url": "http://localhost:8000/x"}).status_code == 400
+    assert c.post("/api/channels/oauth/finish",
+                  json={"url": "http://localhost:8000/api/oauth/callback?error=access_denied"}).status_code == 400
+    ok = c.post("/api/channels/oauth/finish", json={"url": " http://localhost:8000/api/oauth/callback?state=s1&code=abc "})
+    assert ok.status_code == 200 and ok.json() == {"connected": "UCnew"} and seen["finish"][1] == "s1"
+    bad = c.post("/api/channels/oauth/finish", json={"url": "http://localhost:8000/api/oauth/callback?state=old&code=abc"})
+    assert bad.status_code == 400 and "expired" in bad.json()["detail"]
