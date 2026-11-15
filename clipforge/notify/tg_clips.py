@@ -150,8 +150,16 @@ def _clips_page(ctx: Ctx, p: dict) -> None:
     clips_page(ctx, int(p["j"]), p.get("f", "all"), int(p.get("p", 0)))
 
 
-@command("clip", role="viewer", group="Clips", help="one clip card", usage="/clip 12-3")
+@command("clip", role="viewer", group="Clips", help="one clip card — or, while you're live, clip that moment",
+         usage="/clip 12-3  ·  live: /clip [note]")
 def _clip_cmd(ctx: Ctx, args: str) -> None:
+    import re as _re
+
+    from clipforge.notify import tg_live
+
+    if not _re.match(r"^\s*\d+(-\d+)?\s*$", args or "") and tg_live.live_running():
+        tg_live.mark(ctx, args.strip())  # live: "/clip" or "/clip what a play"
+        return
     if not args.strip():
         ctx.send("Usage: <code>/clip 12-3</code> (job 12, clip 3)")
         return

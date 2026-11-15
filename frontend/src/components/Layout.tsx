@@ -3,7 +3,7 @@ import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import {
   BarChart3, CalendarClock, Clapperboard, Download, Film, FolderUp, HeartPulse, History, LayoutGrid, LineChart, Loader2, MoreHorizontal, Plus,
-  Settings as SettingsIcon, Tv,
+  Radio, Settings as SettingsIcon, Tv,
 } from 'lucide-react'
 import { useInstallPrompt } from '@/lib/pwa'
 import { cn } from '@/lib/utils'
@@ -14,6 +14,7 @@ const GROUPS = [
     items: [
       { to: '/', label: 'Jobs', icon: LayoutGrid, end: true },
       { to: '/new', label: 'New job', icon: Plus },
+      { to: '/live', label: 'Live', icon: Radio },
     ],
   },
   {

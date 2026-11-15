@@ -49,9 +49,10 @@ const MAIN = [
   ['08-settings', '/settings'],
   ['09-system-check', '/system'],
 ]
-const pages = { phase12: PHASE12, phase13: PHASE13, phase14: PHASE14 }[set] ?? MAIN
+const LIVE = [['01-live', '/live']]
+const pages = { phase12: PHASE12, phase13: PHASE13, phase14: PHASE14, live: LIVE }[set] ?? MAIN
 const mobile = set === 'phase12' ? ['01-channels', '02-schedule-week', '04-dashboard', '03-batches']
-  : set === 'phase13' ? PHASE13.map((p) => p[0]) : set === 'phase14' ? PHASE14.map((p) => p[0])
+  : set === 'phase13' ? PHASE13.map((p) => p[0]) : set === 'phase14' ? PHASE14.map((p) => p[0]) : set === 'live' ? ['01-live']
   : ['01-dashboard', '04-gallery', '05-clip-editor', '02-new-job']
 const desktopOnly = set === 'phase14' ? [] : null  // phase14 = phone screenshots
 

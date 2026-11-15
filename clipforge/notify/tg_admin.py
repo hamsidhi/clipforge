@@ -11,7 +11,7 @@ from clipforge.notify.tg_core import (COMMANDS, DANGERS, MENU_TEXT, Ctx, audit, 
 MENU = [["📋 Jobs", "🎬 Clips", "📅 Queue"], ["⚠️ Needs you", "❤️ Health", "📊 Stats"], ["🖥 Server", "❓ Help"]]
 MENU_TEXT.update({"📋 Jobs": "jobs", "🎬 Clips": "clips", "📅 Queue": "queue", "⚠️ Needs you": "needsyou",
                   "❤️ Health": "health", "📊 Stats": "stats", "🖥 Server": "server", "❓ Help": "help"})
-GROUP_ORDER = ["Jobs", "Clips", "Publishing", "Status", "Bot"]
+GROUP_ORDER = ["Jobs", "Clips", "Publishing", "Status", "Live", "Bot"]
 INTRO = ("🤖 <b>ClipForge</b> — your podcast → Shorts studio, from your phone.\n"
          "• Paste a YouTube link (or send a video) to start a job.\n"
          "• When clips are ready they arrive here as cards: preview, approve, edit, schedule.\n"
@@ -48,7 +48,15 @@ def help_text(role: str) -> str:
 
 @command("help", role="viewer", group="Bot", help="everything the bot can do, with examples", aliases=("start",))
 def _help(ctx: Ctx, args: str) -> None:
-    ctx.send(help_text(ctx.role))
+    # longer than one Telegram message: split between sections, never inside one
+    chunks: list[str] = []
+    for part in help_text(ctx.role).split("\n\n"):
+        if chunks and len(chunks[-1]) + len(part) + 2 <= 3900:
+            chunks[-1] += "\n\n" + part
+        else:
+            chunks.append(part)
+    for c in chunks:
+        ctx.send(c)
 
 
 @command("menu", role="viewer", group="Bot", help="show the quick-action keyboard")

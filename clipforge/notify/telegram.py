@@ -26,7 +26,7 @@ from clipforge.notify.tg_core import (ALIASES, CALLBACKS, COMMANDS, MENU_TEXT, R
 from clipforge.utils.log import log
 
 # importing the handler modules registers their commands / buttons / steps
-from clipforge.notify import tg_admin, tg_chat, tg_clips, tg_jobs, tg_publish  # noqa: E402,F401  isort: skip
+from clipforge.notify import tg_admin, tg_chat, tg_clips, tg_jobs, tg_live, tg_publish  # noqa: E402,F401  isort: skip
 
 API = CLOUD_API
 LEASE_SECONDS = 300  # poller lease; renewed before every update

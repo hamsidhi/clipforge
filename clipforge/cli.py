@@ -254,6 +254,9 @@ _register_remote(app)
 from clipforge.cli_server import register as _register_server  # noqa: E402
 
 _register_server(app)
+from clipforge.cli_live import register as _register_live  # noqa: E402
+
+_register_live(app)
 
 
 def main() -> None:

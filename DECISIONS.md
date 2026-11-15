@@ -1003,3 +1003,42 @@ back to the raw LLM span (`llm_candidates.json`), with every boundary change and
 | 2 | 8-min window blindness | partial | 4 of 47 / 11 of 97 raw spans end ≤ 20 s before a window edge (≈2–3× chance). There is no episode outline: the model never knows what the episode is about. |
 | 5 | compact format / filler strip / prefilter | not the cause of cut endings | these only change what the model reads; the cut endings come from 3 + 4 + the length policy. Kept for speed, but the new judge sees full text + ±30 s context. |
 | 7 | 7B model capacity | not provable from these traces | measured in the before/after (larger judge, if one fits). |
+
+## Live gaming (2026-11-15, `clipforge/live/`, config `live:`, page `/live`, Telegram `/live` `/clip` `/livestats`)
+Goal: highlight clips WHILE streaming, on the same laptop (Ryzen 7 255, Radeon 780M iGPU), without hurting the game or the stream.
+- **Footage = OBS Replay Buffer** (WebSocket v5 `SaveReplayBuffer`): OBS already encodes the stream; with "use stream
+  encoder" the buffer costs ~nothing. No second capture, no extra encode. The file ends at the save request, so a
+  moment's session time maps to `file_duration - (now - t)`. Fallback without OBS: pull our own HLS at ≤720p with
+  `-c copy` into 10-s segments (yt-dlp gives the URL; `is_live` via yt-dlp, no API quota).
+- **ClipForge never controls the stream**: `obs.ALLOWED` is a whitelist (reads, screenshots, Start/SaveReplayBuffer).
+  StartStream/StopRecord/Set* are refused in code (tested).
+- **Own process** (`clipforge live run`, started by `LiveManager` in the app while `live.enabled`): BELOW_NORMAL,
+  pinned to the last `max_cores` logical CPUs; ffmpeg/whisper children at IDLE. The web app and the live engine never
+  slow each other down. IPC = files: `workspace/live/status.json` (1 Hz) + `commands.jsonl` (tailed from its end, so old
+  commands never replay).
+- **Governor**: total CPU > `cpu_ceiling` for 5 s → detectors drop to manual-only, renders wait; OBS `GetStats` skipped
+  frames rising → everything stops (even manual saves) until clean for 60 s.
+- **Signals are free byproducts**: OBS `InputVolumeMeters` (mic/desktop separately, z-score vs 60 s baseline), Twitch
+  anonymous IRC, YouTube `liveChatMessages` (off by default; never faster than `pollingIntervalMillis`; per-stream unit
+  budget), small HUD screenshots (`GetSourceScreenshot`, 640 px) every 1.5 s, `!clip` from broadcaster/mods/allowed
+  names, `/clip`, CLIP NOW, global hotkey (RegisterHotKey, no keyboard hook).
+- **Scorer**: weighted max per signal kind inside 20 s, capped at 10; must reach `min_score` AND beat (strictly) the
+  stream's own `threshold_pct` percentile after 30 scores (a loud streamer isn't clipped every minute); cooldown 90 s,
+  6/hour; manual always fires; game events ≥ 0.9 (win/ace/clutch/3+ kills) skip the cooldown. Overlapping triggers
+  extend the open moment (≤ `max_clip_sec`).
+- **HUD packs** (`games.py`): first-guess boxes from default HUDs; cheap OpenCV (activity = new bright text, colour
+  share, grey-screen for GTA "WASTED"); OCR (RapidOCR/Tesseract) only when installed and only on rule boxes; optional
+  templates in `assets/live_templates/<pack>/`. They need tuning on real footage — `live simulate` prints what fired.
+- **Render**: AMD AMF + **d3d11va decode** (measured: software decode alone used ~9 cores for 4 s; GPU decode cut
+  ffmpeg CPU 2.4×). 40-s clip under a 6-process CPU load: AMF+GPU decode 5.6 s (7.2× realtime), x264 ultrafast 26.6 s;
+  game-process slowdown ~10 % for those seconds only (laptop power sharing), so ~4× less total impact than x264.
+  Fallback chain: GPU decode → CPU decode → x264.
+- **Titles/hashtags**: deterministic templates per game event (no LLM while live; `allow_llm` exists for later).
+- **Posting**: only accounts with settings `content: gaming` (Live page toggle) — podcast accounts never get live clips.
+  Regular queue (dedup, limits, ledger, state machine). While live: caption line "🔴 LIVE now on … → link", ≤ 1 post per
+  platform per 25 min (later ones are queued AT last+gap: YouTube public at the slot, not private+publishAt, because
+  `q.move` refuses < 30 min). Stream end: not-yet-uploaded posts get "Full stream: …" instead. Category 20 (Gaming).
+  YouTube uploads while the API project is unaudited can be locked private — shown as-is.
+- **Live clips are a pipeline workspace** (`workspace/live_<YYYYmmdd_HHMM>/`, candidates.json + clips/) so the queue,
+  gallery links and history work unchanged; `live.json` holds the live-only data (reason, render stats, posts).
+  Don't re-render them from the gallery (no long source).

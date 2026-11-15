@@ -246,3 +246,39 @@ server:                # Phase 15b housekeeping + backups (server or standalone)
   rclone_remote: ''    # optional off-site copy, e.g. gdrive-crypt:clipforge (an rclone crypt remote on your Drive)
   download_cookies_file: ''  # optional yt-dlp cookies.txt (server only; use a throwaway Google account)
   download_max_attempts: 3   # YouTube bot-check retries (with backoff) before asking you
+
+live:                  # Live gaming mode (2026-11-15): highlight clips while you stream (see HANDOFF_LIVE.md)
+  enabled: false       # watch OBS / your stream links and clip automatically
+  source: obs          # obs = OBS Replay Buffer on this PC (no extra encode) | hls = pull the live stream (720p, copy)
+  stream_urls: []      # your channels, e.g. [https://www.youtube.com/@you, https://www.twitch.tv/you]
+  allow_external_streams: false  # clip other people's streams (only with their permission)
+  replay_buffer_seconds: 120  # what you set in OBS → Settings → Output → Replay Buffer
+  game_pack: auto      # auto | bgmi_pubg | valorant | cs2 | free_fire | gta5 | gta6 | minecraft | generic
+  max_cores: 2         # CPU cores ClipForge may use while you're live
+  cpu_ceiling: 75      # total CPU % above this for 5 s → all live work pauses (the game and stream always win)
+  cooldown_sec: 90     # min gap between automatic clips
+  max_clips_per_hour: 6
+  pre_roll: 20         # seconds before the trigger
+  post_roll: 10        # seconds after the trigger (the payoff)
+  max_clip_sec: 60
+  window_sec: 20       # signals inside this window add up
+  threshold_pct: 92    # adaptive: a moment must beat this percentile of the stream so far…
+  min_score: 4.0       # …and at least this score (0-10)
+  weights: {manual: 10, game_event: 5, audio_mic: 3.5, audio_desktop: 2, chat: 3, speech: 1.5}
+  hud_every_sec: 1.5   # HUD screenshot interval (OBS GetSourceScreenshot, small PNG)
+  captions: true       # mic transcription + captions (skipped when the CPU budget is used up)
+  whisper_model: small # small | base (int8, idle priority)
+  encoder: auto        # auto = AMD AMF on the iGPU when it works, else x264 ultrafast
+  auto_post: false     # post high-confidence clips without asking
+  auto_post_min_score: 8
+  min_post_gap_min: 25 # per platform, while live
+  allow_llm: false     # never run Ollama while live unless this is on
+  hotkey: ctrl+alt+c   # global "clip that" hotkey ('' = off)
+  allowed_clip_commanders: []  # chat names allowed to use !clip (broadcaster + mods always can)
+  hls_buffer_min: 5    # hls source: minutes of stream kept on disk
+  poll_live_min: 2     # without OBS: check stream_urls for "live" this often
+  # obs: WebSocket (OBS → Tools → WebSocket Server); the password goes in .env as OBS_WEBSOCKET_PASSWORD.
+  # facecam_source_names: OBS source names that are your webcam; start_replay_buffer: start it with the stream (never changes its settings)
+  obs: {host: 127.0.0.1, port: 4455, password_env: OBS_WEBSOCKET_PASSWORD, facecam_source_names: [facecam, webcam, camera, cam, face], mic_input_names: [mic, microphone, mic/aux], desktop_input_names: [desktop audio, desktop, game audio], start_replay_buffer: true}
+  # chat: twitch_channel = read Twitch chat anonymously ('' = off); youtube_live = read YouTube live chat with the API (costs quota, budgeted per stream)
+  chat: {twitch_channel: '', youtube_live: false, youtube_poll_min_sec: 15, youtube_units_per_poll: 5, youtube_max_units: 1500, hype_words: [w, op, "🔥", lol, lmao, gg, clip it, clip, insane, omg, pog, poggers, kya baat, bhai, op bolte, "😂", "💀", "🤯", goat]}

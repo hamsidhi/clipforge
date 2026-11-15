@@ -192,6 +192,18 @@ To go back: delete `api_base_url`, call `close` on the local server, wait 10 min
 | `GET /api/publishing/health` | Dashboard → Health | `/health` | |
 | `GET /api/publishing/reach` | Dashboard → Reach | weekly Telegram summary | |
 | `GET /api/publishing/history` | History | `/history` | |
+| `GET /api/live/status` | Live page | `/live` | |
+| `POST /api/live/clip` | Live → CLIP NOW | `/clip [note]` (while live), 🎬 Clip now button, `!clip` in chat, hotkey | |
+| `POST /api/live/control` | Live → Pause / Auto-post | `/live pause`, `/live resume`, `/live auto on\|off` | |
+| `PUT /api/live/settings` | Live → Settings | — | **Laptop**/web: thresholds, sources and OBS settings are easier on a big screen |
+| `GET /api/live/sessions/{sid}/clips/{rank}/video` | Live → clip | the clip preview message | |
+| `GET /api/live/sessions/{sid}/clips/{rank}/thumb` | Live → clip | — | thumbnails only for the web list |
+| `POST /api/live/sessions/{sid}/clips/{rank}/post` | Live → Post now / Queue | ✅ Post now · 🕒 Queue buttons | |
+| `POST /api/live/sessions/{sid}/clips/{rank}/discard` | Live → Discard | ❌ Discard button | |
+| `POST /api/live/sessions/{sid}/bestof` | Live → Make highlight video | 🎞 button in the stream recap | |
+| `GET /api/live/sessions/{sid}/bestof/video` | Live → highlight video | — | a 5–10 min file: too big for Telegram, open it in the app |
+| `PUT /api/live/accounts/{channel_id}` | Live → Gaming accounts | — | **Laptop**/web: which account gets gaming clips is a one-time setup |
+| `GET /api/live/accounts` | Live → Gaming accounts | — | setup list (web) |
 | `GET /api/publishing/overview` | Accounts | `/dashboard`, `/stats` | |
 | `POST /api/publishing/run` | Health → Run now | — | runs every minute anyway |
 | `POST /api/publishing/audit` | Settings → audit checklist | Laptop | |
@@ -336,3 +348,18 @@ Write normally ("show me the clips of the Sam Altman episode", "approve 1, 2 and
 running it through the normal path: viewer chats stay read-only, dangerous actions still ask Yes → YES → PIN.
 Questions without a matching command get a short answer. "Where are the clips / links" is answered without the LLM.
 The last 6 exchanges are remembered per chat (tgkv), so follow-ups like "approve those" work.
+
+
+## Live gaming (2026-11-15)
+
+While you stream, each live clip arrives as a preview with **why** it was clipped (e.g. "kill feed: 3 kills in 6 s +
+chat spike") and **✅ Post now · 🕒 Queue · ✏️ Title · ❌ Discard**. Live clips only go to accounts marked *Gaming*
+(Live page → Gaming accounts). When the stream ends you get a recap with **🎞 Make long highlight video**.
+
+| Command | What it does |
+|---|---|
+| `/live` | status: OBS, replay buffer, game, facecam, CPU/governor, meters, clips (🎬 Clip now button) |
+| `/clip [note]` | while live: clip the last moment (otherwise `/clip 12-3` shows a clip card as before) |
+| `/live pause` · `/live resume` | stop / restart automatic clipping (manual `/clip` keeps working) |
+| `/live auto on` · `/live auto off` | auto-post high-confidence clips for this stream |
+| `/livestats` | clips made, posted and views per stream |

@@ -71,6 +71,10 @@ async def lifespan(app: FastAPI):
         from clipforge.notify import telegram
 
         telegram.bot().start()  # idles until a token is set and telegram.enabled is true
+        if load_config().deployment.mode != "server":
+            from clipforge.live.agent import start_manager
+
+            start_manager()  # live gaming: keeps `clipforge live run` alive while live.enabled (own low-priority process)
     mode = load_config().deployment.mode
     if mode == "server":
         from clipforge.server import dispatch
@@ -111,6 +115,9 @@ def create_app() -> FastAPI:
 
     app.include_router(ig_router)
     app.include_router(remote_router)
+    from clipforge.api.live_routes import router as live_router
+
+    app.include_router(live_router)  # live gaming (2026-11-15)
     from clipforge.server.worker_api import router as server_router
 
     app.include_router(server_router)  # Phase 15b: worker protocol + server admin
