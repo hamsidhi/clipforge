@@ -1,91 +1,89 @@
-# Live gaming mode: handoff (2026-11-15)
+# Live clipping: handoff (2026-11-15)
 
-ClipForge can now make highlight clips **while you stream** on this laptop, and post them while you're still live.
-Code: `clipforge/live/`. Decisions: DECISIONS.md → "Live gaming". Tests: `tests/test_live.py` (18).
+Paste **any streamer's live link** (Twitch, Kick, YouTube live, or anything yt-dlp can read). ClipForge watches the
+stream and drafts vertical highlight clips **while it's live**. You don't stream yourself, and there's no OBS.
+Code: `clipforge/live/`. Decisions: DECISIONS.md → "Live clipping". Tests: `tests/test_live.py` (20).
 
-## 1. What works now
-- **Footage from OBS:** the Replay Buffer is saved the moment a highlight happens. There is no second recording and no
-  extra encode. Without OBS, ClipForge reads your stream link (YouTube/Twitch) at ≤720p.
-- **Highlights are detected by:**
-  - your marks: `/clip [note]` on Telegram, **CLIP NOW** on the Live page, the `Ctrl+Alt+C` hotkey, and `!clip` in
-    chat (only from you, your mods, or names you allow);
-  - loud reactions on your mic and big bursts in game audio;
-  - chat spikes (Twitch is free; YouTube chat is optional because it costs API quota);
-  - game events read from small HUD screenshots: BGMI/PUBG kills and Chicken Dinner, Valorant kills/ACE/clutch/round
-    win, CS2 kills/round win, Free Fire kills/Booyah, GTA "WASTED"/mission passed/busted, Minecraft death.
-- **Clips:**
-  - vertical 1080×1920, with your **facecam on top** (position read from OBS) and **gameplay below**;
-  - "gameplay only" when there's no facecam;
-  - captions and a hook title;
-  - titles and hashtags made from per-game templates (no AI while you play).
-- **Telegram:** each clip arrives with **why** it was clipped and four buttons: ✅ Post now · 🕒 Queue · ✏️ Title ·
-  ❌ Discard. Commands: `/live`, `/live pause|resume`, `/live auto on|off`, `/livestats`.
-- **Posting:**
-  - only to accounts you mark as **Gaming**, never to the podcast accounts;
-  - while you're live, the caption says "🔴 LIVE now on YouTube/Twitch → link";
-  - after the stream, posts not yet uploaded switch to "Full stream: …";
-  - at most 1 post per platform every 25 minutes while live; the rest wait in the queue.
-- **When the stream ends:** you get a recap and a 🎞 **Make long highlight video** button (a 5–10 min best-of).
-- **Safety:**
-  - ClipForge never starts or stops your stream and never touches OBS encoder/bitrate/scenes (enforced in code);
-  - it runs at low priority on 2 CPU cores;
-  - it pauses itself above 75% CPU and stops completely if OBS starts dropping frames.
+## 1. How to use it
+- **Telegram:**
+  - paste a Twitch or Kick channel link, then tap **🔴 Clip this live stream**;
+  - for a YouTube link that is live right now, you also get a "Clip it live instead" button;
+  - or send `/live https://www.twitch.tv/name`.
+- **App → Live:** paste the link and press **Start clipping**.
+- **Up to 3 streams at once** (`live.max_streams`).
+- **Auto-start:** App → Live → Settings → "Auto-start when these channels go live", one link per line.
+- **Each clip arrives on Telegram as a draft:**
+  - shows **why** it was clipped and the streamer's name;
+  - buttons: ✅ Post now · 🕒 Queue · ✏️ Title · ❌ Discard.
+- **Commands:**
+  - `/live`: the streams being watched, with 🎬 Clip now · ⏹ Stop;
+  - `/clip [note]`: clip what just happened;
+  - `/live stop`, `/live pause|resume`, `/live auto on|off`, `/livestats`.
+- **When a stream ends:** you get a recap and 🎞 **Make long highlight video**.
 
-**Time from moment to clip on Telegram** (measured in simulation, captions on): render + captions take **7–11 s**
-after the moment's 10 s "after" window, so a clip arrives about **20–40 s after the moment**, plus upload time to
-Telegram. If the CPU is busy, the work waits until it's free.
+## 2. What makes a clip
+- **Loud moments:** sudden spikes in the stream's audio (screams, laughs, explosions) compared to that stream's normal level.
+- **Chat spikes:** Twitch chat is free and on. YouTube chat uses API quota and stops before eating your upload quota.
+  Kick chat is **off**: Kick changed its chat key (see limits).
+- **Game events** read from the screen:
+  - BGMI/PUBG: kills, Chicken Dinner;
+  - Valorant: kills, ACE, clutch, round win;
+  - CS2: kills, round win;
+  - Free Fire: kills, Booyah;
+  - GTA: WASTED, mission passed, busted;
+  - Minecraft: death.
+  - The game is detected from the stream title.
+- **Your marks:** `/clip` on Telegram or CLIP NOW in the app.
+- **Each stream is judged against itself:** a moment must beat that stream's own normal level (a loud streamer isn't
+  clipped every minute). Limits: 90 s cooldown, max 6 automatic clips per hour per stream.
 
-## 2. Measured cost (this laptop)
-| 40 s clip, 6 busy "game" processes | Render time | ffmpeg CPU | Game slowdown |
-|---|---|---|---|
-| **AMD AMF + iGPU decode** (default) | **5.6 s** (7.2× real time) | ~1.6 cores for 5.6 s | ~10 % for those 5.6 s only |
-| x264 ultrafast (fallback) | 26.6 s | 2 cores for 26.6 s | ~15 % for 26.6 s |
+## 3. What the clip looks like
+- 1080×1920.
+- **Streamer's facecam on top** (found automatically: the face that stays in one place), **gameplay below**.
+- IRL / just-chatting streams: a full-height crop that follows the face.
+- No facecam: gameplay only.
+- Captions burned in, plus a hook title.
+- **Titles are about the streamer**, e.g. "xQc lost it here 💀" or "Mortal got the Chicken Dinner 😭🔥". Never "I/my".
+- **Captions credit and link the streamer:**
+  - while live: "🔴 LIVE now: xQc on Twitch → link" plus "🎥 Credit: xQc";
+  - after the stream: "Full stream: …".
 
-- AMD AMF works on this laptop (h264_amf probed OK). Decoding on the iGPU cut ffmpeg's CPU work by 2.4×.
-- The game benchmark used CPU burners: there's no real game on this PC yet. The game also uses the 780M. AMF and the
-  decoder run on the iGPU's separate video engine (VCN), not on the part that draws the game, but **check FPS in a real
-  15-min test stream**.
-- Detectors cost almost nothing: volume meters come for free from OBS, and one 640 px screenshot every 1.5 s.
+## 4. Tested for real (this laptop, 15 Nov)
+- **Watched xQc live on Twitch and on Kick at the same time:**
+  - CPU while watching: **2–10 %**;
+  - the facecam was found on both;
+  - Twitch chat was read (~15–25 msgs / 10 s).
+- **A `/clip` mark → finished clip in ~80 s**, of which ~10 s is rendering on the iGPU (AMD AMF):
+  - the clip had xQc's cam on top, the game below and captions;
+  - the rest of that time is waiting for the stream's 10-s pieces to finish, plus the 10 s after the moment.
+- **Automatic clips** (simulation, BGMI test stream): 3/3 highlights caught (a kill streak, Chicken Dinner and a mark),
+  and an ordinary loud moment ignored.
+- **xQc's real stream:** no automatic clip in 13 minutes of a calm Zelda session.
+  - The bar is now a little lower (3.5), so one very strong reaction or chat spike is enough.
+  - Watch the first real sessions and tell me if it clips too much or too little.
 
-## 3. Your setup steps (once)
-1. **OBS Studio 30+** → Tools → **WebSocket Server Settings**:
-   - tick Enable, port 4455, Generate/Set a password;
-   - add the password to `D:\clipforge\.env` as `OBS_WEBSOCKET_PASSWORD=yourpassword`.
-2. OBS → Settings → Output → **Replay Buffer**:
-   - Enable;
-   - Maximum Replay Time **120 s**;
-   - encoder **"(Use stream encoder)"**, so it costs nothing extra;
-   - ClipForge starts the buffer with your stream.
-3. Rename your webcam source so its name contains **facecam** or **webcam**.
-4. Create a **gaming YouTube channel** and a **gaming Instagram** account, then connect them:
-   - Accounts page → Add (for YouTube from another device, use the login-link trick from before);
-   - then **Live page → Gaming accounts** → switch them on.
-5. **Live page → Settings:**
-   - Live mode **ON**;
-   - your stream links (`https://www.youtube.com/@you`, `https://www.twitch.tv/you`);
-   - your Twitch name for chat;
-   - **Save**. The app starts the live agent within 15 s.
-6. **Test without streaming:**
-   ```
-   clipforge live sample
-   clipforge live simulate workspace\samples\bgmi_sample.mp4 --facecam sample
-   ```
-   Or use a recording of yours (add `--facecam x,y,w,h` and `--game bgmi_pubg`).
-7. **Real 15-min test stream** (set it to private/unlisted):
-   - play;
-   - type `/clip` once;
-   - check `/live` for CPU and clips;
-   - watch the stream for dropped frames (OBS → Stats).
+## 5. Your setup steps
+1. **Accounts for live clips:** decide which account(s) these clips post to. App → Live → **Accounts for live clips**
+   → switch them on. Until you do, clips stay drafts.
+2. **Paste a live link and watch the first clips arrive on Telegram.** Nothing is posted until you tap Post now or
+   Queue, or turn on Auto-post.
+3. **Optional:** add your favourite streamers to "Auto-start when these channels go live".
 
-## 4. Known limits
-- **Game HUD boxes are first guesses.**
-  - They need tuning on your real footage: run `clipforge live simulate <your recording>` and tell me what it missed.
-  - Installing OCR (`pip install rapidocr-onnxruntime`) makes "WINNER / ACE / WASTED" detection more exact.
-  - BGMI is a phone game; on an emulator (BlueStacks/GameLoop) the HUD layout may differ.
-- **YouTube:**
-  - Uploads made through an unaudited API project may be **locked private**. Live clips then show as such; use
-    assisted/Studio posting until the audit is approved.
-  - Reading YouTube live chat costs quota (budget: 1,500 units per stream).
-- **GTA 6:** a placeholder pack (death screen only), to be updated after launch.
-- **Live clips aren't re-renderable from the Gallery** (there's no long source file). Edit the title before posting.
-- **Hotkey:** `Ctrl+Alt+C` works only while the app runs in your Windows session (it does, via the logon task).
+## 6. Known limits
+- **Copyright:**
+  - clips of other creators can get Content ID claims or strikes;
+  - captions credit and link the streamer, but **ask streamers for permission** where you can;
+  - don't post a channel's clips if it forbids it.
+- **Kick chat is off:**
+  - Kick changed its public chat key and the old one is refused;
+  - Kick streams still clip from audio, game events and `/clip`;
+  - if you find the new key, set `live.chat.kick_pusher_key` and `kick: true`.
+- **YouTube chat** costs API quota: up to 1,500 units per stream, and it stops when fewer than 4,000 units are left
+  for the day, so uploads always have quota.
+- **Game-event screen areas are first guesses:**
+  - run `clipforge live simulate <recording>` on a saved gameplay video to see what fires;
+  - installing OCR (`pip install rapidocr-onnxruntime`) makes WINNER / ACE / WASTED detection more exact.
+- **YouTube uploads** from an unaudited API project may be locked private (same as before).
+- **Live clips can't be re-rendered from the Gallery** (only the stream pieces around each moment are kept, 5 min).
+  Edit the title before posting.
+- **The laptop must be on.** The live agent restarts with the app and resumes the streams it was watching.

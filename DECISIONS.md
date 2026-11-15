@@ -1004,41 +1004,36 @@ back to the raw LLM span (`llm_candidates.json`), with every boundary change and
 | 5 | compact format / filler strip / prefilter | not the cause of cut endings | these only change what the model reads; the cut endings come from 3 + 4 + the length policy. Kept for speed, but the new judge sees full text + ±30 s context. |
 | 7 | 7B model capacity | not provable from these traces | measured in the before/after (larger judge, if one fits). |
 
-## Live gaming (2026-11-15, `clipforge/live/`, config `live:`, page `/live`, Telegram `/live` `/clip` `/livestats`)
-Goal: highlight clips WHILE streaming, on the same laptop (Ryzen 7 255, Radeon 780M iGPU), without hurting the game or the stream.
-- **Footage = OBS Replay Buffer** (WebSocket v5 `SaveReplayBuffer`): OBS already encodes the stream; with "use stream
-  encoder" the buffer costs ~nothing. No second capture, no extra encode. The file ends at the save request, so a
-  moment's session time maps to `file_duration - (now - t)`. Fallback without OBS: pull our own HLS at ≤720p with
-  `-c copy` into 10-s segments (yt-dlp gives the URL; `is_live` via yt-dlp, no API quota).
-- **ClipForge never controls the stream**: `obs.ALLOWED` is a whitelist (reads, screenshots, Start/SaveReplayBuffer).
-  StartStream/StopRecord/Set* are refused in code (tested).
-- **Own process** (`clipforge live run`, started by `LiveManager` in the app while `live.enabled`): BELOW_NORMAL,
-  pinned to the last `max_cores` logical CPUs; ffmpeg/whisper children at IDLE. The web app and the live engine never
-  slow each other down. IPC = files: `workspace/live/status.json` (1 Hz) + `commands.jsonl` (tailed from its end, so old
-  commands never replay).
-- **Governor**: total CPU > `cpu_ceiling` for 5 s → detectors drop to manual-only, renders wait; OBS `GetStats` skipped
-  frames rising → everything stops (even manual saves) until clean for 60 s.
-- **Signals are free byproducts**: OBS `InputVolumeMeters` (mic/desktop separately, z-score vs 60 s baseline), Twitch
-  anonymous IRC, YouTube `liveChatMessages` (off by default; never faster than `pollingIntervalMillis`; per-stream unit
-  budget), small HUD screenshots (`GetSourceScreenshot`, 640 px) every 1.5 s, `!clip` from broadcaster/mods/allowed
-  names, `/clip`, CLIP NOW, global hotkey (RegisterHotKey, no keyboard hook).
-- **Scorer**: weighted max per signal kind inside 20 s, capped at 10; must reach `min_score` AND beat (strictly) the
-  stream's own `threshold_pct` percentile after 30 scores (a loud streamer isn't clipped every minute); cooldown 90 s,
-  6/hour; manual always fires; game events ≥ 0.9 (win/ace/clutch/3+ kills) skip the cooldown. Overlapping triggers
-  extend the open moment (≤ `max_clip_sec`).
-- **HUD packs** (`games.py`): first-guess boxes from default HUDs; cheap OpenCV (activity = new bright text, colour
-  share, grey-screen for GTA "WASTED"); OCR (RapidOCR/Tesseract) only when installed and only on rule boxes; optional
-  templates in `assets/live_templates/<pack>/`. They need tuning on real footage — `live simulate` prints what fired.
-- **Render**: AMD AMF + **d3d11va decode** (measured: software decode alone used ~9 cores for 4 s; GPU decode cut
-  ffmpeg CPU 2.4×). 40-s clip under a 6-process CPU load: AMF+GPU decode 5.6 s (7.2× realtime), x264 ultrafast 26.6 s;
-  game-process slowdown ~10 % for those seconds only (laptop power sharing), so ~4× less total impact than x264.
-  Fallback chain: GPU decode → CPU decode → x264.
-- **Titles/hashtags**: deterministic templates per game event (no LLM while live; `allow_llm` exists for later).
-- **Posting**: only accounts with settings `content: gaming` (Live page toggle) — podcast accounts never get live clips.
-  Regular queue (dedup, limits, ledger, state machine). While live: caption line "🔴 LIVE now on … → link", ≤ 1 post per
-  platform per 25 min (later ones are queued AT last+gap: YouTube public at the slot, not private+publishAt, because
-  `q.move` refuses < 30 min). Stream end: not-yet-uploaded posts get "Full stream: …" instead. Category 20 (Gaming).
-  YouTube uploads while the API project is unaudited can be locked private — shown as-is.
-- **Live clips are a pipeline workspace** (`workspace/live_<YYYYmmdd_HHMM>/`, candidates.json + clips/) so the queue,
-  gallery links and history work unchanged; `live.json` holds the live-only data (reason, render stats, posts).
-  Don't re-render them from the gallery (no long source).
+## Live clipping (2026-11-15, `clipforge/live/`, config `live:`, page `/live`, Telegram `/live` `/clip` `/livestats`)
+Goal: paste OTHER streamers' live links (Twitch / Kick / YouTube live / anything yt-dlp reads) and get vertical highlight
+clips while they're live. (A first version clipped the user's own OBS stream; the user doesn't stream, so OBS, the
+Replay Buffer and the hotkey were removed the same day.)
+- **Footage**: ffmpeg pulls the stream at ≤ `stream_height` with `-c copy` (no re-encode, ~1-2 % CPU) into 10-s `.ts`
+  segments named by wall time; the last `hls_buffer_min` minutes are kept. The media URL comes from yt-dlp and is
+  re-fetched when the puller dies (URLs expire); 5 reconnects, then the stream counts as ended.
+- **Signals from closed segments only** (`SegmentReader`): audio loudness 5×/s (mono 8 kHz decode) and keyframes
+  (`-skip_frame nokey`, 640 px) for game HUD rules + facecam. So audio/video signals arrive 10-20 s late while chat is
+  instant → every signal waits `lag` = 25 s in a buffer and reaches the scorer **in time order** (otherwise chat +
+  audio of the same moment never combine). Moments are saved on the lagged clock; `HlsSource.save` waits until the
+  segment holding the moment's end is closed.
+- **Facecam** (`facecam.py`): YuNet on 10 keyframes; cluster every face by position; the cam is the face in the same
+  spot in ≥ 60 % of frames (game characters and people in videos move or come and go — xQc playing Zelda: Link's big
+  face was picked by "largest face", the clustering picks xQc's cam). Small stable face → facecam box (4.5 face
+  widths, 16:9); big stable face → IRL crop following it; nothing stable → gameplay only. Re-checked every 5 min.
+- **Chat**: Twitch anonymous IRC (free). YouTube: `videos.list(liveStreamingDetails)` → `liveChatMessages.list` with any
+  connected YouTube account (readonly), never faster than `pollingIntervalMillis`, ≤ `youtube_max_units` per stream,
+  stops when the day's quota left < `youtube_keep_units` (uploads first). Kick: public Pusher websocket — Kick changed
+  its key (the known `32cbd69e…` key is refused with 4001), so `chat.kick` is off; the key is a setting; a 4001 stops
+  that stream's chat at once instead of retrying forever. `!clip` counts only from the streamer and their mods.
+- **Scorer** unchanged in spirit (weighted max per kind in 20 s, adaptive per-stream percentile, cooldown, hourly cap,
+  big game events skip the cooldown). Kinds now: manual, game_event, audio (one mixed track), chat. `min_score` 3.5
+  after a real 13-min xQc session produced no automatic clip at 4.0 (a single very strong signal = 3.5).
+- **Titles** are third person with `{streamer}` (never "I/my/we"); every caption credits the streamer and links the
+  live stream ("🔴 LIVE now: <name> on <platform> → url"), swapped to "Full stream: <VOD>" at the end (YouTube watch
+  URL from the broadcast id, Twitch/Kick channel videos page).
+- **Posting** goes only to accounts switched on for live clips (`settings.content: gaming`); drafts by default.
+- **Agent**: one process (BELOW_NORMAL, `max_cores`) watching up to `max_streams`; `streams.json` keeps the watched
+  links so an app restart/deploy resumes them (agent quit ≠ stream ended: no recap, no caption swap).
+- **Measured** (this laptop): two real streams (xQc Twitch + Kick) at 2-10 % CPU; mark → clip ≈ 80 s (render ≈ 10 s
+  with AMF + d3d11va decode, the rest = lag + post-roll + segment close).
+- **Render**: AMF + d3d11va decode (2.4× less ffmpeg CPU than software decode); fallback CPU decode → x264 ultrafast.

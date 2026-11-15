@@ -150,7 +150,7 @@ def _clips_page(ctx: Ctx, p: dict) -> None:
     clips_page(ctx, int(p["j"]), p.get("f", "all"), int(p.get("p", 0)))
 
 
-@command("clip", role="viewer", group="Clips", help="one clip card — or, while you're live, clip that moment",
+@command("clip", role="viewer", group="Clips", help="one clip card — or, while a live stream is watched, clip that moment",
          usage="/clip 12-3  ·  live: /clip [note]")
 def _clip_cmd(ctx: Ctx, args: str) -> None:
     import re as _re

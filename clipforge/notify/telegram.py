@@ -213,7 +213,12 @@ class Bot:
             return "file → new job"
         m = URL_RE.search(text)
         if m:
+            if tg_live.is_live_link(m.group(0)):  # Twitch / Kick channel → live clipping (or a normal job)
+                tg_live.offer(ctx, m.group(0))
+                return "link → live offer"
             tg_jobs.start_wizard(ctx, url=m.group(0))
+            if "youtu" in m.group(0):
+                tg_live.offer_if_youtube_live(ctx, m.group(0))  # a YouTube live link also gets the live offer
             return "link → new job"
         if text and load_config().telegram.chat:  # chat mode: plain words → an answer or ONE normal command
             return tg_chat.reply(ctx, text, self._run_command)

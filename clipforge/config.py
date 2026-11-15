@@ -357,63 +357,49 @@ class ServerConfig(_Section):
         return self
 
 
-class LiveObsConfig(_Section):
-    """OBS WebSocket v5 (built into OBS 28+). ClipForge only reads OBS and saves the Replay Buffer; it never changes the
-    stream, recording, encoder, scenes or sources."""
-
-    host: str = "127.0.0.1"
-    port: int = Field(4455, ge=1, le=65535)
-    password_env: str = "OBS_WEBSOCKET_PASSWORD"   # name of the .env variable holding the OBS WebSocket password
-    facecam_source_names: list[str] = ["facecam", "webcam", "camera", "cam", "face"]  # matched case-insensitively
-    mic_input_names: list[str] = ["mic", "microphone", "mic/aux"]
-    desktop_input_names: list[str] = ["desktop audio", "desktop", "game audio"]
-    start_replay_buffer: bool = True   # start OBS's Replay Buffer when the stream starts (only if it is configured)
-
-
 class LiveChatConfig(_Section):
-    twitch_channel: str = ""           # read Twitch chat anonymously ('' = off)
-    youtube_live: bool = False         # read YouTube live chat with the API (costs quota; off by default)
-    youtube_poll_min_sec: int = Field(15, ge=5, le=300)   # never poll faster than this (or YouTube's pollingIntervalMillis)
+    twitch: bool = True                # read Twitch chat (anonymous, free)
+    kick: bool = False                 # read Kick chat (public Pusher websocket; Kick changes its key — see below)
+    kick_pusher_key: str = "32cbd69e4b950bf97679"   # Kick's public chat app key (update it when Kick changes it)
+    kick_pusher_cluster: str = "us2"
+    youtube: bool = True               # read YouTube live chat with the API (costs quota, budgeted below)
+    youtube_poll_min_sec: int = Field(20, ge=5, le=300)   # never poll faster than this (or YouTube's pollingIntervalMillis)
     youtube_units_per_poll: int = Field(5, ge=1, le=100)  # quota units budgeted per liveChatMessages.list call
-    youtube_max_units: int = Field(1500, ge=0)             # stop reading YouTube chat after this many units per stream
+    youtube_max_units: int = Field(1500, ge=0)             # per stream
+    youtube_keep_units: int = Field(4000, ge=0)            # stop reading chat when the day's quota left drops below this (uploads first)
     hype_words: list[str] = ["w", "op", "🔥", "lol", "lmao", "gg", "clip it", "clip", "insane", "omg", "pog", "poggers",
-                             "kya baat", "bhai", "op bolte", "😂", "💀", "🤯", "goat"]
+                             "kya baat", "bhai", "op bolte", "😂", "💀", "🤯", "goat", "kekw", "lul"]
 
 
 class LiveConfig(_Section):
-    """Live gaming mode (2026-11-15): highlight clips while you stream, without touching the game or the stream."""
+    """Live clipping (2026-11-15): paste a live stream link (YouTube / Twitch / Kick / anything yt-dlp reads) and
+    ClipForge watches it and drafts highlight clips while it's live."""
 
-    enabled: bool = False              # watch OBS / the stream links and clip automatically
-    source: Literal["obs", "hls"] = "obs"   # obs = Replay Buffer on this PC (no extra encode) | hls = pull the live stream
-    stream_urls: list[str] = []        # your channels, e.g. https://www.youtube.com/@you, https://www.twitch.tv/you
-    allow_external_streams: bool = False   # clip other people's streams (needs their permission)
-    replay_buffer_seconds: int = Field(120, ge=30, le=600)  # what you set in OBS (Settings → Output → Replay Buffer)
-    game_pack: str = "auto"            # auto | bgmi_pubg | valorant | cs2 | free_fire | gta5 | gta6 | minecraft | generic
-    max_cores: int = Field(2, ge=1, le=16)       # CPU cores ClipForge may use while you're live
-    cpu_ceiling: int = Field(75, ge=30, le=100)  # total CPU % above this for 5 s → pause all live work
-    cooldown_sec: int = Field(90, ge=0, le=3600)  # min gap between automatic clips
-    max_clips_per_hour: int = Field(6, ge=1, le=60)
+    enabled: bool = True               # run the live agent with the app (idle until a stream link is added)
+    max_streams: int = Field(3, ge=1, le=10)     # streams watched at the same time
+    watch_channels: list[str] = []     # auto-start when one of these channels goes live (checked every poll_live_min)
+    game_pack: str = "auto"            # auto (from the stream title/category) | bgmi_pubg | valorant | cs2 | free_fire | gta5 | gta6 | minecraft | generic
+    max_cores: int = Field(4, ge=1, le=16)       # CPU cores the live agent may use
+    cpu_ceiling: int = Field(85, ge=30, le=100)  # total CPU % above this for 5 s → detectors + renders wait
+    cooldown_sec: int = Field(90, ge=0, le=3600)  # min gap between automatic clips (per stream)
+    max_clips_per_hour: int = Field(6, ge=1, le=60)   # per stream
     pre_roll: float = Field(20, ge=3, le=90)     # seconds before the trigger
     post_roll: float = Field(10, ge=2, le=60)    # seconds after the trigger (the payoff)
     max_clip_sec: float = Field(60, ge=10, le=180)
     window_sec: float = Field(20, ge=5, le=120)  # signals inside this window add up
     threshold_pct: float = Field(92, ge=50, le=99.9)  # adaptive: a moment must beat this percentile of the stream so far
-    min_score: float = Field(4.0, ge=0, le=10)   # ...and at least this score (0-10)
-    weights: dict[str, float] = {"manual": 10, "game_event": 5, "audio_mic": 3.5, "audio_desktop": 2,
-                                 "chat": 3, "speech": 1.5}
-    hud_every_sec: float = Field(1.5, ge=0.5, le=10)  # HUD screenshot interval
-    captions: bool = True              # mic transcription + captions (skipped when the CPU budget is used up)
-    whisper_model: str = "small"       # small | base (int8, 1-2 threads, idle priority)
-    encoder: Literal["auto", "amf", "x264"] = "auto"  # auto = AMD AMF (iGPU) when it works, else x264 ultrafast
-    auto_post: bool = False            # post high-confidence clips without asking
+    min_score: float = Field(3.5, ge=0, le=10)   # ...and at least this score (0-10; 3.5 = one very strong signal)
+    weights: dict[str, float] = {"manual": 10, "game_event": 5, "audio": 3.5, "chat": 3.5}
+    frame_every_sec: float = Field(2.0, ge=0.5, le=10)  # game-HUD check: keyframes of each stream segment
+    captions: bool = True              # transcribe + burn captions (skipped when the CPU is busy)
+    whisper_model: str = "small"       # small | base (int8, 2 threads, idle priority)
+    encoder: Literal["auto", "amf", "x264"] = "auto"  # auto = AMD AMF on the iGPU when it works, else x264 ultrafast
+    auto_post: bool = False            # post high-confidence clips without asking (off: clips are drafts on Telegram)
     auto_post_min_score: float = Field(8, ge=0, le=10)
-    min_post_gap_min: int = Field(25, ge=0, le=720)  # per platform, while live
-    allow_llm: bool = False            # never run Ollama while live unless this is on
-    hotkey: str = "ctrl+alt+c"         # global "clip that" hotkey ('' = off)
-    allowed_clip_commanders: list[str] = []  # chat names allowed to use !clip (the broadcaster and mods always can)
-    hls_buffer_min: int = Field(5, ge=2, le=30)   # hls source: minutes of stream kept on disk
-    poll_live_min: int = Field(2, ge=1, le=60)    # without OBS: check stream_urls for "live" this often
-    obs: LiveObsConfig = LiveObsConfig()
+    min_post_gap_min: int = Field(25, ge=0, le=720)  # per platform, while a stream is live
+    stream_height: int = Field(720, ge=360, le=1080)  # quality pulled from the stream (lower = less CPU/data)
+    hls_buffer_min: int = Field(5, ge=2, le=30)   # minutes of each stream kept on disk
+    poll_live_min: int = Field(2, ge=1, le=60)    # how often "is it still live / did it go live" is checked
     chat: LiveChatConfig = LiveChatConfig()
 
 

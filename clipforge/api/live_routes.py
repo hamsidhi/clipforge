@@ -1,5 +1,6 @@
-"""Live gaming page (2026-11-15): status/meters, CLIP NOW, pause/resume/auto, settings, clips of each stream,
-post/queue/discard, best-of, and marking accounts as gaming (live clips never go to podcast accounts)."""
+"""Live page (2026-11-15): paste a live stream link (YouTube / Twitch / Kick) → watched streams with meters,
+CLIP NOW / pause / auto-post / stop per stream, settings, each stream's clips (post / queue / discard), best-of, and
+which accounts get live clips (never the podcast accounts unless switched on)."""
 
 from __future__ import annotations
 
@@ -14,14 +15,15 @@ from clipforge.live import store
 
 router = APIRouter(prefix="/api/live", tags=["live"])
 
-SETTINGS_KEYS = {"enabled", "source", "stream_urls", "game_pack", "max_cores", "cpu_ceiling", "cooldown_sec",
+SETTINGS_KEYS = {"enabled", "max_streams", "watch_channels", "game_pack", "max_cores", "cpu_ceiling", "cooldown_sec",
                  "max_clips_per_hour", "pre_roll", "post_roll", "min_score", "threshold_pct", "captions", "auto_post",
-                 "auto_post_min_score", "min_post_gap_min", "hotkey", "allowed_clip_commanders", "encoder"}
+                 "auto_post_min_score", "min_post_gap_min", "encoder", "stream_height"}
+CHAT_KEYS = {"chat_twitch": "twitch", "chat_kick": "kick", "chat_youtube": "youtube"}
 
 
 def _session_out(cfg: Config, s: dict) -> dict:
     return {k: s.get(k) for k in ("id", "started_at", "ended_at", "stream_url", "live", "simulated", "game",
-                                  "game_label", "source", "best_of")} | {
+                                  "game_label", "source", "best_of", "streamer", "platform", "title")} | {
         "clips": [{k: c.get(k) for k in ("rank", "trigger", "score", "reason", "title", "duration", "status",
                                          "captions", "render", "posted", "hashtags", "created_at", "manual")}
                   for c in s.get("clips", [])]}
@@ -35,38 +37,66 @@ def live_status() -> dict:
     cfg = load_config()
     lc = cfg.live
     return {"enabled": lc.enabled, "status": store.read_status(cfg),
-            "settings": {k: getattr(lc, k) for k in sorted(SETTINGS_KEYS)} | {"twitch_channel": lc.chat.twitch_channel,
-                                                                             "youtube_chat": lc.chat.youtube_live},
+            "settings": {k: getattr(lc, k) for k in sorted(SETTINGS_KEYS)}
+            | {k: getattr(lc.chat, v) for k, v in CHAT_KEYS.items()},
             "amf": amf_available(),
             "gaming_accounts": [{"id": c.id, "title": c.title, "platform": c.platform or "youtube"} for c in gaming_accounts()],
             "sessions": [_session_out(cfg, s) for s in store.sessions(cfg, 8)]}
 
 
+class StreamIn(BaseModel):
+    url: str
+
+
+@router.post("/streams", summary="Start watching a live stream link (YouTube / Twitch / Kick …)")
+def start_stream(body: StreamIn) -> dict:
+    cfg = load_config()
+    url = body.url.strip()
+    if not url.lower().startswith(("http://", "https://")) or len(url) > 500:
+        raise HTTPException(400, "Paste the stream's link, e.g. https://www.twitch.tv/name")
+    if not cfg.live.enabled:
+        raise HTTPException(409, "Live clipping is off — switch it on in the settings below.")
+    st = store.read_status(cfg)
+    if not st.get("engine_running"):
+        raise HTTPException(409, "The live agent isn't running yet — try again in a few seconds.")
+    store.send_command(cfg, "start", url=url)
+    return {"ok": True, "message": "Opening the stream — it shows up here in about 20 s."}
+
+
+@router.delete("/streams/{sid}", summary="Stop watching a stream (clips in progress finish)")
+def stop_stream(sid: str) -> dict:
+    store.send_command(load_config(), "stop", sid=sid)
+    return {"ok": True}
+
+
 class ClipIn(BaseModel):
     note: str = ""
+    sid: str = ""
 
 
-@router.post("/clip", summary="CLIP NOW (same as /clip on Telegram or the hotkey)")
+@router.post("/clip", summary="CLIP NOW on a watched stream (same as /clip on Telegram)")
 def clip_now(body: ClipIn) -> dict:
     cfg = load_config()
     st = store.read_status(cfg)
-    if not st.get("engine_running") or not (st.get("live") or {}).get("session"):
-        raise HTTPException(409, "You're not live right now (or the live agent isn't running).")
-    store.send_command(cfg, "clip", note=body.note[:80], source="app")
+    live = [s["session"] for s in st.get("streams", [])] if st.get("engine_running") else []
+    if not live:
+        raise HTTPException(409, "No live stream is being watched right now.")
+    store.send_command(cfg, "clip", note=body.note[:80], source="app", sid=body.sid or live[0])
     return {"ok": True}
 
 
 class ControlIn(BaseModel):
     action: Literal["pause", "resume", "auto_on", "auto_off"]
+    sid: str = ""
 
 
-@router.post("/control", summary="Pause / resume clipping, auto-post on / off (this stream)")
+@router.post("/control", summary="Pause / resume clipping, auto-post on / off (one stream or all)")
 def control(body: ControlIn) -> dict:
     cfg = load_config()
     if body.action.startswith("auto"):
-        store.send_command(cfg, "auto", on=body.action == "auto_on")
+        store.send_command(cfg, "auto", on=body.action == "auto_on", sid=body.sid)
     else:
-        store.send_command(cfg, body.action)
+        store.send_command(cfg, body.action, sid=body.sid)
     return {"ok": True}
 
 
@@ -79,10 +109,8 @@ def save_settings(body: SettingsIn) -> dict:
     cfg = load_config()
     data = cfg.model_dump()
     for k, v in body.values.items():
-        if k == "twitch_channel":
-            data["live"]["chat"]["twitch_channel"] = str(v).strip()
-        elif k == "youtube_chat":
-            data["live"]["chat"]["youtube_live"] = bool(v)
+        if k in CHAT_KEYS:
+            data["live"]["chat"][CHAT_KEYS[k]] = bool(v)
         elif k in SETTINGS_KEYS:
             data["live"][k] = v
         else:
@@ -171,7 +199,7 @@ class GamingIn(BaseModel):
     gaming: bool
 
 
-@router.put("/accounts/{channel_id}", summary="Mark an account as a gaming account (gets live clips)")
+@router.put("/accounts/{channel_id}", summary="Switch an account on/off for live clips")
 def set_gaming(channel_id: str, body: GamingIn) -> dict:
     from clipforge.publish import channels as chs
 
@@ -186,7 +214,7 @@ def set_gaming(channel_id: str, body: GamingIn) -> dict:
     return {"ok": True, "content": settings["content"]}
 
 
-@router.get("/accounts", summary="All accounts with their content type (gaming / podcast)")
+@router.get("/accounts", summary="All accounts and whether they get live clips")
 def accounts() -> list[dict]:
     from clipforge.publish import channels as chs
 

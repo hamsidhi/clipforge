@@ -236,16 +236,19 @@ uploaded = private/unlisted by the user's choice (never goes public by itself)
 - Tests: `tests/test_server.py` (two "machines" in one process); real two processes: `scripts/deploy_e2e.py`.
 - Spec: docs/WORKER_PROTOCOL.md; setup: deploy/README.md; guide: AUTOMATION_GUIDE Part I.
 
-### Live gaming (2026-11-15, `clipforge/live/`, config `live:`, page `/live`, HANDOFF_LIVE.md)
-- `clipforge live run` = the live agent, its own BELOW_NORMAL process on `live.max_cores` cores; `live.agent.LiveManager`
-  (started in the app lifespan, not in server mode, not with CLIPFORGE_NO_TICKER/CLIPFORGE_NO_LIVE) keeps it alive while
-  `live.enabled`. IPC: `workspace/live/status.json` + `commands.jsonl` (`live/store.py`).
-- Footage: OBS Replay Buffer via WebSocket v5 (`live/obs.py`, request WHITELIST — never Start/StopStream, Set*), or HLS
-  `-c copy` segments (`live/sources.py`). Signals → `live/scorer.py` (pure, clock-driven) → `live/session.py` LiveEngine.
-- `live/governor.py`: CPU ceiling → manual-only; OBS skipped frames → stop everything. Never run Ollama while live.
-- Render: `live/render.py` AMF + d3d11va decode, fallback CPU decode → x264 ultrafast; layout facecam 35 % / gameplay 65 %.
-- Posting: `live/publish.py` — ONLY accounts with settings `content: gaming`; LIVE caption line → VOD line at stream end;
-  `min_post_gap_min` per platform. Each stream is a pipeline workspace `live_<YYYYmmdd_HHMM>` (+ `live.json`).
-- Telegram `notify/tg_live.py` (/live, /livestats, live buttons; `/clip` without a clip id = live mark).
-- Tests: `tests/test_live.py` (fake OBS WebSocket, fake YouTube chat). Try it: `clipforge live sample` +
-  `clipforge live simulate <file> --facecam sample`; `clipforge live bench` = AMF vs x264 under CPU load.
+### Live clipping (2026-11-15, `clipforge/live/`, config `live:`, page `/live`, HANDOFF_LIVE.md)
+- Paste OTHER streamers' live links (Twitch / Kick / YouTube live). `clipforge live run` = the live agent, its own
+  BELOW_NORMAL process on `live.max_cores` cores, watching ≤ `live.max_streams`; `live.agent.LiveManager` (app lifespan,
+  not in server mode, not with CLIPFORGE_NO_TICKER / CLIPFORGE_NO_LIVE) keeps it alive while `live.enabled`.
+  IPC: `workspace/live/{status.json, commands.jsonl, streams.json}` (`live/store.py`); streams resume after restarts.
+- `live/sources.py`: yt-dlp media URL → ffmpeg `-c copy` 10-s segments; `SegmentReader` = audio levels + keyframes of
+  closed segments. Signals wait `lag` (25 s) and reach `live/scorer.py` in time order (`live/session.py` LiveEngine).
+- `live/facecam.py` (stable-face clustering), `live/hud.py` + `live/games.py` (game packs, third-person titles),
+  `live/chat.py` (Twitch IRC, YouTube API budgeted, Kick Pusher — off, key changed), `live/governor.py` (CPU ceiling).
+- Render: `live/render.py` AMF + d3d11va decode → CPU decode → x264; facecam 35 % / gameplay 65 %.
+- Posting: `live/publish.py` — ONLY accounts with settings `content: gaming` ("Accounts for live clips"); captions credit
+  + link the streamer; LIVE line → VOD line at stream end; `min_post_gap_min` per platform; drafts by default.
+- Telegram `notify/tg_live.py`: pasted Twitch/Kick link → "Clip this live stream" offer (YouTube: offered when live);
+  /live, /live <link>, /live stop, /livestats; `/clip` without a clip id = mark a watched stream.
+- Tests: `tests/test_live.py`. Try: `clipforge live watch <link>`, `clipforge live status`, `clipforge live sample` +
+  `clipforge live simulate <file>`; `clipforge live bench` = AMF vs x264 under CPU load.

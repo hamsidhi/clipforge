@@ -1,11 +1,5 @@
-"""CPU / OBS governor: the game and the stream always win.
-
-States (worst wins):
-  ok        — everything runs (detectors + rendering + captions)
-  busy      — total CPU above `cpu_ceiling` for 5 s → detectors drop to manual-only, rendering waits
-  obs_lag   — OBS reports skipped/lagged frames rising → ALL ClipForge live work stops until it is clean for 60 s
-Our own process and every ffmpeg/whisper child run at low priority (BELOW_NORMAL / IDLE) pinned to the last
-`max_cores` logical CPUs, so Windows schedules the game and OBS first.
+"""CPU governor for live clipping: the live agent and every ffmpeg/whisper child run at low priority
+(BELOW_NORMAL / IDLE) pinned to the last `max_cores` logical CPUs; when the whole laptop is busy, live work waits.
 """
 
 from __future__ import annotations
@@ -54,19 +48,18 @@ def popen_kwargs() -> dict:
 
 @dataclass
 class Governor:
-    cpu_ceiling: float = 75
+    """Total CPU above `cpu_ceiling` for `sustain_sec` → "busy": chat/audio/HUD detectors and renders wait (the laptop's
+    other work — the app, uploads, Ollama jobs — comes first)."""
+
+    cpu_ceiling: float = 85
     sustain_sec: float = 5
-    obs_clean_sec: float = 60
     cpu_fn: Callable[[], float] | None = None       # tests inject; default psutil.cpu_percent()
     clock: Callable[[], float] = time.monotonic
     state: str = "ok"
     cpu: float = 0.0
     reason: str = ""
     _over_since: float | None = None
-    _obs_last: tuple[int, int] | None = None
-    _obs_bad_at: float | None = None
     history: deque = field(default_factory=lambda: deque(maxlen=120))
-    on_change: Callable[[str, str], None] | None = None
 
     def sample(self) -> str:
         """Call about once a second."""
@@ -83,38 +76,14 @@ class Governor:
             self._over_since = self._over_since if self._over_since is not None else now
         else:
             self._over_since = None
-        self._update(now)
-        return self.state
-
-    def obs_stats(self, stats: dict) -> None:
-        """Feed OBS GetStats (renderSkippedFrames, outputSkippedFrames). Rising skipped frames = OBS is struggling."""
-        now = self.clock()
-        cur = (int(stats.get("renderSkippedFrames", 0)), int(stats.get("outputSkippedFrames", 0)))
-        if self._obs_last is not None and (cur[0] - self._obs_last[0] > 3 or cur[1] - self._obs_last[1] > 3):
-            if self._obs_bad_at is None:
-                log.warning(f"[live] OBS is skipping frames ({cur}) — stopping all ClipForge live work")
-            self._obs_bad_at = now
-        self._obs_last = cur
-        self._update(now)
-
-    def _update(self, now: float) -> None:
-        old = self.state
-        if self._obs_bad_at is not None and now - self._obs_bad_at < self.obs_clean_sec:
-            self.state, self.reason = "obs_lag", "OBS is dropping frames — ClipForge stopped until it's clean for a minute"
-        elif self._over_since is not None and now - self._over_since >= self.sustain_sec:
-            self.state, self.reason = "busy", f"CPU {self.cpu:.0f}% > {self.cpu_ceiling:.0f}% — clipping paused (manual marks still saved)"
+        if self._over_since is not None and now - self._over_since >= self.sustain_sec:
+            self.state, self.reason = "busy", f"CPU {self.cpu:.0f}% > {self.cpu_ceiling:.0f}% — live clipping waits"
         else:
             self.state, self.reason = "ok", ""
-            if self._obs_bad_at is not None and now - self._obs_bad_at >= self.obs_clean_sec:
-                self._obs_bad_at = None
-        if old != self.state and self.on_change:
-            self.on_change(old, self.state)
+        return self.state
 
     def allow_detectors(self) -> bool:
         return self.state == "ok"
 
     def allow_render(self) -> bool:
         return self.state == "ok"
-
-    def allow_manual(self) -> bool:
-        return self.state != "obs_lag"

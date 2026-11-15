@@ -88,8 +88,9 @@ def hud_frames(path: Path, every: float, width: int = 640):
 
 
 def simulate(cfg: Config, path: Path, *, speed: float = 0, game: str = "auto", facecam: tuple | None = None,
-             marks: list[float] | None = None, notify: bool = False) -> dict:
-    """speed 0 = as fast as possible, 1 = real time, 4 = 4×. Renders really happen (that's what we measure)."""
+             marks: list[float] | None = None, notify: bool = False, streamer: str = "") -> dict:
+    """speed 0 = as fast as possible, 1 = real time, 4 = 4×. Renders really happen (that's what we measure).
+    facecam None = find it automatically (like a live stream)."""
     import psutil
 
     info = probe_video(path)
@@ -101,10 +102,10 @@ def simulate(cfg: Config, path: Path, *, speed: float = 0, game: str = "auto", f
     # as-fast-as-possible replays burn CPU themselves (decoding): the governor would pause on its own simulation
     gov = Governor(cpu_ceiling=cfg.live.cpu_ceiling if speed > 0 else 100)
     eng = LiveEngine(cfg, source=FileSource(path), pack=pack, clock=lambda: sim_t[0], layout=lay, notify=notify,
-                     governor=gov, title=f"Simulation · {path.name}", simulate=True,
-                     sid=f"live_sim_{time.strftime('%Y%m%d_%H%M%S')}")
+                     governor=gov, title=f"Simulation · {path.name}", simulate=True, streamer=streamer,
+                     detect_cam=facecam is None, sid=f"live_sim_{time.strftime('%Y%m%d_%H%M%S')}")
     levels = audio_levels(path)
-    frames = hud_frames(path, cfg.live.hud_every_sec)
+    frames = hud_frames(path, cfg.live.frame_every_sec)
     next_frame = next(frames, None)
     marks = sorted(marks or [])
     step = 0.2
@@ -116,9 +117,9 @@ def simulate(cfg: Config, path: Path, *, speed: float = 0, game: str = "auto", f
         t = sim_t[0]
         i = int(t / step)
         if i < len(levels):
-            eng.audio_levels(float(levels[i]), None)
+            eng.audio_level(t, float(levels[i]))
         while next_frame is not None and next_frame[0] <= t:
-            eng.hud_frame(next_frame[1])
+            eng.frame(next_frame[0], next_frame[1])
             next_frame = next(frames, None)
         while marks and marks[0] <= t:
             eng.signal(Signal(t, "manual", 1.0, "marked (simulation)"))

@@ -103,6 +103,12 @@ def session_id(now: dt.datetime | None = None) -> str:
     return "live_" + now.strftime("%Y%m%d_%H%M")
 
 
+def slug(text: str, n: int = 20) -> str:
+    import re
+
+    return (re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-") or "stream")[:n]
+
+
 def session_file(cfg: Config, sid: str) -> Path:
     return cfg.workspace / sid / "live.json"
 
@@ -137,8 +143,9 @@ def get_clip(cfg: Config, sid: str, rank: int) -> dict:
 def sessions(cfg: Config, n: int = 10) -> list[dict]:
     out = []
     if cfg.workspace.exists():
-        for d in sorted(cfg.workspace.glob("live_*"), reverse=True)[:n]:
+        for d in cfg.workspace.glob("live_*"):
             s = _read(d / "live.json", {})
             if s:
                 out.append(s)
-    return out
+    out.sort(key=lambda s: str(s.get("started_at", "")), reverse=True)  # newest first (simulations included)
+    return out[:n]

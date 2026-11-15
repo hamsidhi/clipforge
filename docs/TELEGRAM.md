@@ -193,7 +193,9 @@ To go back: delete `api_base_url`, call `close` on the local server, wait 10 min
 | `GET /api/publishing/reach` | Dashboard → Reach | weekly Telegram summary | |
 | `GET /api/publishing/history` | History | `/history` | |
 | `GET /api/live/status` | Live page | `/live` | |
-| `POST /api/live/clip` | Live → CLIP NOW | `/clip [note]` (while live), 🎬 Clip now button, `!clip` in chat, hotkey | |
+| `POST /api/live/streams` | Live → paste a stream link | paste a Twitch/Kick/YouTube-live link, or `/live <link>` | |
+| `DELETE /api/live/streams/{sid}` | Live → Stop | `/live stop`, ⏹ Stop button in `/live` | |
+| `POST /api/live/clip` | Live → CLIP NOW | `/clip [note]` (while a stream is watched), 🎬 Clip now button | |
 | `POST /api/live/control` | Live → Pause / Auto-post | `/live pause`, `/live resume`, `/live auto on\|off` | |
 | `PUT /api/live/settings` | Live → Settings | — | **Laptop**/web: thresholds, sources and OBS settings are easier on a big screen |
 | `GET /api/live/sessions/{sid}/clips/{rank}/video` | Live → clip | the clip preview message | |
@@ -202,8 +204,8 @@ To go back: delete `api_base_url`, call `close` on the local server, wait 10 min
 | `POST /api/live/sessions/{sid}/clips/{rank}/discard` | Live → Discard | ❌ Discard button | |
 | `POST /api/live/sessions/{sid}/bestof` | Live → Make highlight video | 🎞 button in the stream recap | |
 | `GET /api/live/sessions/{sid}/bestof/video` | Live → highlight video | — | a 5–10 min file: too big for Telegram, open it in the app |
-| `PUT /api/live/accounts/{channel_id}` | Live → Gaming accounts | — | **Laptop**/web: which account gets gaming clips is a one-time setup |
-| `GET /api/live/accounts` | Live → Gaming accounts | — | setup list (web) |
+| `PUT /api/live/accounts/{channel_id}` | Live → Accounts for live clips | — | web: which account gets live clips is a one-time setup |
+| `GET /api/live/accounts` | Live → Accounts for live clips | — | setup list (web) |
 | `GET /api/publishing/overview` | Accounts | `/dashboard`, `/stats` | |
 | `POST /api/publishing/run` | Health → Run now | — | runs every minute anyway |
 | `POST /api/publishing/audit` | Settings → audit checklist | Laptop | |
@@ -350,16 +352,20 @@ Questions without a matching command get a short answer. "Where are the clips / 
 The last 6 exchanges are remembered per chat (tgkv), so follow-ups like "approve those" work.
 
 
-## Live gaming (2026-11-15)
+## Live clipping (2026-11-15)
 
-While you stream, each live clip arrives as a preview with **why** it was clipped (e.g. "kill feed: 3 kills in 6 s +
-chat spike") and **✅ Post now · 🕒 Queue · ✏️ Title · ❌ Discard**. Live clips only go to accounts marked *Gaming*
-(Live page → Gaming accounts). When the stream ends you get a recap with **🎞 Make long highlight video**.
+Paste a live stream link (Twitch or Kick channel, or a YouTube live link) and tap **🔴 Clip this live stream** — or
+`/live <link>`. ClipForge watches it (up to 3 at once) and each clip arrives as a draft with **why** it was clipped
+(e.g. "kill feed: 3 kills in 6 s + chat spike (40 msgs/10 s)") and **✅ Post now · 🕒 Queue · ✏️ Title · ❌ Discard**.
+Clips only go to accounts switched on for live clips (Live page → Accounts). Every caption credits and links the
+streamer. When a stream ends you get a recap with **🎞 Make long highlight video**.
 
 | Command | What it does |
 |---|---|
-| `/live` | status: OBS, replay buffer, game, facecam, CPU/governor, meters, clips (🎬 Clip now button) |
-| `/clip [note]` | while live: clip the last moment (otherwise `/clip 12-3` shows a clip card as before) |
+| `/live` | watched streams: game, camera, chat rate, clips (🎬 Clip now · ⏹ Stop buttons) |
+| `/live <link>` | start watching a live stream |
+| `/live stop` | stop watching (asks which when several run) |
+| `/clip [note]` | while a stream is watched: clip the last moment (otherwise `/clip 12-3` shows a clip card) |
 | `/live pause` · `/live resume` | stop / restart automatic clipping (manual `/clip` keeps working) |
-| `/live auto on` · `/live auto off` | auto-post high-confidence clips for this stream |
-| `/livestats` | clips made, posted and views per stream |
+| `/live auto on` · `/live auto off` | auto-post high-confidence clips |
+| `/livestats` | clips made, posted and views per watched stream |

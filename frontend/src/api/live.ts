@@ -8,12 +8,13 @@ export interface LiveClip {
 }
 export interface LiveSession {
   id: string; started_at: string; ended_at?: string; stream_url: string; live: boolean; simulated: boolean
-  game: string; game_label: string; source: string; best_of?: string; clips: LiveClip[]
+  game: string; game_label: string; source: string; best_of?: string; streamer?: string; platform?: string; title?: string
+  clips: LiveClip[]
 }
-export interface LiveEngineStatus {
-  session: string; game: string; game_label: string; facecam: boolean; paused: boolean; auto_post: boolean; clock: number
-  meters: { mic: number; desktop: number; chat_rate: number; score: number; threshold: number }
-  governor: { state: string; cpu: number; reason: string }
+export interface LiveStream {
+  session: string; streamer: string; platform: string; url: string; title: string; camera: string
+  game: string; game_label: string; facecam: boolean; paused: boolean; auto_post: boolean; clock: number; ending: boolean
+  meters: { audio: number; chat_rate: number; score: number; threshold: number }
   hud_events: { t: number; event: string; note: string }[]
   moments: LiveMoment[]; rendering: number; queued: number; clips_made: number
 }
@@ -21,10 +22,9 @@ export interface LiveStatus {
   enabled: boolean
   amf: boolean
   status: {
-    engine_running: boolean; note?: string; source?: string
-    obs?: { connected: boolean; streaming: boolean; replay: boolean }
+    engine_running: boolean; note?: string
     governor?: { state: string; cpu: number; reason: string }
-    live?: LiveEngineStatus | null
+    streams?: LiveStream[]; starting?: string[]; errors?: string[]
   }
   settings: Record<string, unknown>
   gaming_accounts: { id: string; title: string; platform: string }[]
@@ -36,8 +36,11 @@ const j = (body: unknown) => ({ method: 'POST', body: JSON.stringify(body) })
 
 export const live = {
   status: () => request<LiveStatus>('/api/live/status'),
-  clip: (note = '') => request<{ ok: boolean }>('/api/live/clip', j({ note })),
-  control: (action: 'pause' | 'resume' | 'auto_on' | 'auto_off') => request<{ ok: boolean }>('/api/live/control', j({ action })),
+  start: (url: string) => request<{ message: string }>('/api/live/streams', j({ url })),
+  stop: (sid: string) => request<{ ok: boolean }>(`/api/live/streams/${encodeURIComponent(sid)}`, { method: 'DELETE' }),
+  clip: (sid: string, note = '') => request<{ ok: boolean }>('/api/live/clip', j({ sid, note })),
+  control: (sid: string, action: 'pause' | 'resume' | 'auto_on' | 'auto_off') =>
+    request<{ ok: boolean }>('/api/live/control', j({ sid, action })),
   saveSettings: (values: Record<string, unknown>) =>
     request<{ ok: boolean }>('/api/live/settings', { method: 'PUT', body: JSON.stringify({ values }) }),
   post: (sid: string, rank: number, mode: 'now' | 'queue') =>

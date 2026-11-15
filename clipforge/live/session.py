@@ -1,8 +1,9 @@
-"""One live stream = one LiveEngine: signals → scorer → save footage (at once) → render queue (when the governor allows)
-→ clip in workspace/live_<…>/ → Telegram preview with buttons → optional auto-post (gaming accounts only).
+"""One watched live stream = one LiveEngine: signals → (re-ordered by time) → scorer → save footage → render queue
+(when the governor allows) → clip in workspace/live_<…>/ → Telegram draft with buttons → optional auto-post.
 
-The engine is clock-driven (`clock()` = seconds since the stream started) so `simulate.py` can replay a file faster than
-real time with exactly the same code.
+The engine is clock-driven (`clock()` = seconds since we started watching) so `simulate.py` can replay a file faster
+than real time with the same code. Signals arrive late and out of order (chat is instant, audio/video come from closed
+10-s segments): they wait `lag` seconds in a buffer and reach the scorer in time order.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from clipforge.config import FONTS_DIR, Config
 from clipforge.live import store
 from clipforge.live.audio import HypeDetector
 from clipforge.live.chat import ChatMsg, ChatSpike
+from clipforge.live.facecam import FaceCam
 from clipforge.live.games import GamePack, hashtags_for, title_for
 from clipforge.live.governor import Governor
 from clipforge.live.hud import HudWatcher, Ocr
@@ -32,7 +34,8 @@ from clipforge.workspace import Workspace
 class LiveEngine:
     def __init__(self, cfg: Config, *, source, pack: GamePack, clock: Callable[[], float], layout: Layout,
                  stream_url: str = "", sid: str | None = None, governor: Governor | None = None,
-                 notify: bool = True, title: str = "", simulate: bool = False) -> None:
+                 notify: bool = True, title: str = "", simulate: bool = False, streamer: str = "",
+                 platform: str = "", lag: float = 0.0, detect_cam: bool = False) -> None:
         self.cfg, self.source, self.pack, self.clock, self.layout = cfg, source, pack, clock, layout
         self.sid = sid or store.session_id()
         self.notify = notify
@@ -40,10 +43,14 @@ class LiveEngine:
         self.ws = Workspace(cfg.workspace, self.sid)
         self.gov = governor or Governor(cpu_ceiling=cfg.live.cpu_ceiling)
         self.scorer = MomentScorer(ScorerConfig.from_live(cfg.live, pack))
-        self.mic = HypeDetector("audio_mic")
-        self.desktop = HypeDetector("audio_desktop", z_on=3.0, refractory=6.0)
-        self.chat = ChatSpike(cfg.live.chat.hype_words, cfg.live.allowed_clip_commanders)
+        self.audio = HypeDetector("audio", note="loud moment")
+        self.chat = ChatSpike(cfg.live.chat.hype_words, [])
         self.hud = HudWatcher(pack, Ocr())
+        self.cam = FaceCam() if detect_cam else None
+        self.streamer, self.platform, self.stream_url, self.title = streamer, platform, stream_url, title
+        self.lag = lag
+        self.pending: list[Signal] = []
+        self._plock = threading.Lock()
         self.paused = False
         self.auto_post = cfg.live.auto_post
         self.stop_ev = threading.Event()
@@ -54,14 +61,15 @@ class LiveEngine:
         self.started_wall = time.time()
         self.stats: list[dict] = []
         info = VideoInfo(id=self.sid, title=title or f"Live {dt.datetime.now():%d %b %H:%M} · {pack.label}",
-                         channel="live", url=stream_url, source_path="")
+                         channel=streamer or "live", url=stream_url, source_path="")
         self.ws.write_model(self.ws.info, info)
         if not self.ws.candidates.exists():
             pipeline.save_candidates(self.ws, [])
         sess = store.load_session(cfg, self.sid) or {
             "id": self.sid, "started_at": dt.datetime.now().isoformat(timespec="seconds"), "stream_url": stream_url,
             "vod_url": "", "live": not simulate, "simulated": simulate, "game": pack.name, "game_label": pack.label,
-            "source": getattr(source, "kind", "?"), "clips": [], "last_post": {}}
+            "source": getattr(source, "kind", "?"), "clips": [], "last_post": {}, "streamer": streamer,
+            "platform": platform, "title": title}
         store.save_session(cfg, self.sid, sess)
         self.worker = threading.Thread(target=self._worker, daemon=True, name="live-render")
         self.worker.start()
@@ -70,9 +78,13 @@ class LiveEngine:
     def signal(self, sig: Signal) -> Moment | None:
         if sig.kind != "manual" and (self.paused or not self.gov.allow_detectors()):
             return None
-        if sig.kind == "manual" and not self.gov.allow_manual():
-            log.warning("[live] manual clip skipped: OBS is dropping frames (the stream comes first)")
+        if self.lag > 0:
+            with self._plock:
+                self.pending.append(sig)
             return None
+        return self._score(sig)
+
+    def _score(self, sig: Signal) -> Moment | None:
         m = self.scorer.add(sig)
         if m:
             log.info(f"[live] moment #{m.id} at {m.trigger:.0f}s score {m.score} — {m.reason_text()}")
@@ -82,23 +94,35 @@ class LiveEngine:
         self.signal(Signal(self.clock(), "manual", 1.0, f"marked ({source})" + (f": {note[:60]}" if note else ""),
                            {"note": note}))
 
-    def audio_levels(self, mic_db: float | None, desktop_db: float | None) -> None:
-        t = self.clock()
-        for det, db in ((self.mic, mic_db), (self.desktop, desktop_db)):
-            if db is not None:
-                s = det.feed(t, db)
-                if s:
-                    self.signal(s)
+    def audio_level(self, t: float, db: float) -> None:
+        s = self.audio.feed(t, db)
+        if s:
+            self.signal(s)
 
     def chat_msg(self, msg: ChatMsg) -> None:
         for s in self.chat.feed(msg):
             self.signal(s)
 
-    def hud_frame(self, frame) -> None:
+    def frame(self, t: float, frame) -> None:
+        if self.cam is not None:
+            dec = self.cam.feed(t, frame)
+            if dec is not None:
+                self.apply_cam(dec)
         if self.paused or not self.gov.allow_detectors():
             return
-        for s in self.hud.feed(self.clock(), frame):
+        for s in self.hud.feed(t, frame):
             self.signal(s)
+
+    def apply_cam(self, dec) -> None:
+        lay = self.layout
+        if dec.kind == "facecam" and dec.rect:
+            x, y, w, h = dec.rect
+            lay.facecam = (int(x * lay.src_w), int(y * lay.src_h), int(w * lay.src_w), int(h * lay.src_h))
+        else:
+            lay.facecam = None
+            lay.gameplay_only = "crop" if dec.kind == "irl" else self.pack.gameplay_only
+            lay.focus_x = dec.focus_x if dec.kind == "irl" else 0.5
+        log.info(f"[live] {self.streamer or self.sid}: camera → {dec.kind} {lay.facecam or ''}")
 
     def command(self, c: dict) -> None:
         cmd = c.get("cmd")
@@ -115,8 +139,16 @@ class LiveEngine:
 
     # ------------------------------------------------------------------ time
     def tick(self) -> None:
-        """Call often (≥ 4×/s live). Saves the footage of moments whose post-roll just passed."""
-        for m in self.scorer.due(self.clock()):
+        """Call often (≥ 2×/s live). Feeds signals older than `lag` in time order, then saves the footage of moments
+        whose post-roll has passed (on the lagged clock)."""
+        now = self.clock() - self.lag
+        if self.lag > 0:
+            with self._plock:
+                ready = sorted((s for s in self.pending if s.t <= now), key=lambda s: s.t)
+                self.pending = [s for s in self.pending if s.t > now]
+            for s in ready:
+                self._score(s)
+        for m in self.scorer.due(now):
             self._save(m)
 
     def _save(self, m: Moment) -> None:
@@ -162,8 +194,9 @@ class LiveEngine:
         self.rank += 1
         rank = self.rank
         n_kills = max((s for s in [0] + [int(r.split(" ")[2]) for r in m.reasons if r.startswith("kill feed:")]), default=0)
-        title = title_for(self.pack, m.event or ("manual" if m.manual else ""), m.kinds, f"{self.sid}:{rank}", n_kills)
-        tags = hashtags_for(self.pack)
+        title = title_for(self.pack, m.event or ("manual" if m.manual else ""), m.kinds, f"{self.sid}:{rank}", n_kills,
+                          streamer=self.streamer)
+        tags = hashtags_for(self.pack, [self.streamer] if self.streamer else None)
         work = self.ws.work_dir(rank)
         out = self.ws.clip_path(rank, title)
         ass = None
@@ -222,10 +255,12 @@ class LiveEngine:
 
     # ------------------------------------------------------------------ status / end
     def status(self) -> dict:
-        return {"session": self.sid, "game": self.pack.name, "game_label": self.pack.label,
+        cam = self.cam.decision.kind if self.cam and self.cam.decision else ("facecam" if self.layout.facecam else "checking")
+        return {"session": self.sid, "game": self.pack.name, "game_label": self.pack.label, "streamer": self.streamer,
+                "platform": self.platform, "url": self.stream_url, "title": self.title, "camera": cam,
                 "facecam": bool(self.layout.facecam), "paused": self.paused, "auto_post": self.auto_post,
                 "clock": round(self.clock(), 1),
-                "meters": {"mic": round(self.mic.level, 1), "desktop": round(self.desktop.level, 1),
+                "meters": {"audio": round(self.audio.level, 1),
                            "chat_rate": self.chat.rate, "score": round(self.scorer.last_score, 2),
                            "threshold": round(self.scorer.threshold(), 2)},
                 "governor": {"state": self.gov.state, "cpu": round(self.gov.cpu, 1), "reason": self.gov.reason},
@@ -235,6 +270,11 @@ class LiveEngine:
     def finish(self, wait: float = 900) -> dict:
         """Stream over: save the open moment, finish rendering, swap LIVE → VOD lines, return the recap."""
         self._finishing = True
+        if self.lag > 0:
+            with self._plock:
+                ready, self.pending = sorted(self.pending, key=lambda s: s.t), []
+            for s in ready:
+                self._score(s)
         for m in self.scorer.flush():
             self._save(m)
         deadline = time.monotonic() + wait
@@ -247,7 +287,7 @@ class LiveEngine:
         changed = 0
         if not self.simulate:
             try:
-                changed = lp.stream_ended(self.cfg, self.sid, lp.vod_url_for(sess.get("stream_url", "")))
+                changed = lp.stream_ended(self.cfg, self.sid, lp.vod_url_for(sess.get("stream_url", ""), sess.get("video_id", "")))
             except Exception as exc:
                 log.warning(f"[live] VOD caption swap failed: {exc}")
         sess = store.load_session(self.cfg, self.sid)

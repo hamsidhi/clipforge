@@ -44,9 +44,9 @@ class GamePack:
 
 
 GENERIC_TITLES = {
-    "": ("This moment went crazy 😱", "I did NOT expect that 💀", "Chat went wild for this 🔥", "Wait for it… 😳"),
-    "manual": ("Had to clip this 🔥", "This was too good not to clip 😂", "Clip of the stream 🎮"),
-    "audio_mic": ("My reaction says it all 😂", "I lost it here 💀", "Couldn't stop screaming 😱"),
+    "": ("{streamer} did NOT expect that 💀", "This moment went crazy 😱", "Wait for it… 😳 {streamer}"),
+    "manual": ("{streamer}'s best moment of the stream 🔥", "This {streamer} moment is too good 😂", "Clip of the stream 🎮 {streamer}"),
+    "audio": ("{streamer}'s reaction says it all 😂", "{streamer} lost it here 💀", "{streamer} couldn't stop screaming 😱"),
     "chat": ("Chat went crazy for this 🔥", "Chat spammed W for this 😂"),
 }
 
@@ -59,8 +59,8 @@ PACKS: dict[str, GamePack] = {p.name: p for p in [
               HudRule("win", (0.15, 0.12, 0.70, 0.25), "color", ("winner", "chicken dinner"), (18, 120, 170), (35, 255, 255),
                       0.06, 1.0, 30, "Winner Winner Chicken Dinner")),
              pre_roll=22, post_roll=10, gameplay_only="crop", hashtags=("#bgmi", "#pubgmobile", "#gaming", "#shorts"),
-             titles={"kill": ("{n} kills in seconds 😱 BGMI", "This BGMI spray was INSANE 🔥", "Clean wipe in BGMI 💀"),
-                     "win": ("WINNER WINNER CHICKEN DINNER 🐔🔥", "We got the Chicken Dinner 😭🔥", "Final circle clutch for the win 🏆")}),
+             titles={"kill": ("{n} kills in seconds 😱 BGMI", "{streamer}'s BGMI spray was INSANE 🔥", "{streamer} wiped the whole squad 💀"),
+                     "win": ("WINNER WINNER CHICKEN DINNER 🐔🔥 {streamer}", "{streamer} got the Chicken Dinner 😭🔥", "{streamer}'s final circle clutch 🏆")}),
     GamePack("valorant", "Valorant", ("valorant",),
              (HudRule("kill", (0.40, 0.70, 0.20, 0.14), "activity", (), min_ratio=0.03, value=0.55, debounce=1.0, note="kill"),
               HudRule("ace", (0.30, 0.18, 0.40, 0.14), "color", ("ace",), (0, 140, 170), (12, 255, 255), 0.05, 1.0, 20, "ACE"),
@@ -68,14 +68,14 @@ PACKS: dict[str, GamePack] = {p.name: p for p in [
               HudRule("round_win", (0.30, 0.08, 0.40, 0.12), "color", ("round win", "won"), (80, 90, 150), (100, 255, 255), 0.06, 0.6, 30, "round won")),
              pre_roll=25, post_roll=8, gameplay_only="crop", hashtags=("#valorant", "#valorantclips", "#gaming", "#shorts"),
              titles={"kill": ("{n}K in Valorant 😱", "This Valorant spray was nasty 🔥"),
-                     "ace": ("ACE 🔥 Valorant", "I ACED this round 😱"), "clutch": ("1v{n} CLUTCH in Valorant 😱", "Clutch or kick? 🔥"),
+                     "ace": ("{streamer} ACED this round 😱", "ACE 🔥 {streamer}"), "clutch": ("{streamer} 1v{n} CLUTCH 😱", "Clutch or kick? 🔥 {streamer}"),
                      "round_win": ("Round won like this 😂 Valorant",)}),
     GamePack("cs2", "CS2", ("cs2", "counter-strike"),
              (HudRule("kill", (0.72, 0.06, 0.27, 0.20), "activity", (), min_ratio=0.02, value=0.55, debounce=1.0, note="kill"),
               HudRule("round_win", (0.25, 0.10, 0.50, 0.12), "color", ("terrorists win", "counter-terrorists win", "win"),
                       (0, 0, 200), (179, 60, 255), 0.10, 0.6, 30, "round won")),
              pre_roll=25, post_roll=8, gameplay_only="crop", hashtags=("#cs2", "#counterstrike", "#gaming", "#shorts"),
-             titles={"kill": ("{n} kills in CS2 😱", "CS2 spray transfer 🔥"), "round_win": ("We took this round 😂 CS2",)}),
+             titles={"kill": ("{n} kills in CS2 😱", "CS2 spray transfer 🔥"), "round_win": ("{streamer} took this round 😂 CS2",)}),
     GamePack("free_fire", "Free Fire", ("free fire", "freefire", "ff max"),
              (KILL_FEED,
               HudRule("win", (0.20, 0.12, 0.60, 0.25), "color", ("booyah",), (15, 120, 170), (35, 255, 255), 0.06, 1.0, 30, "BOOYAH")),
@@ -87,7 +87,7 @@ PACKS: dict[str, GamePack] = {p.name: p for p in [
                       0.05, 0.8, 30, "Mission passed"),
               HudRule("busted", (0.20, 0.35, 0.60, 0.20), "color", ("busted",), (100, 120, 120), (130, 255, 255), 0.06, 0.8, 20, "BUSTED")),
              pre_roll=25, post_roll=8, gameplay_only="fit_blur", hashtags=("#gta5", "#gtav", "#gaming", "#shorts"),
-             titles={"death": ("This GTA chase went WRONG 💀", "WASTED 💀 GTA", "How did I die like this 😂 GTA"),
+             titles={"death": ("This GTA chase went WRONG 💀", "WASTED 💀 GTA", "How did {streamer} die like this 😂 GTA"),
                      "mission": ("Mission passed… barely 😅 GTA",), "busted": ("BUSTED 🚓😂 GTA",)}),
     GamePack("gta6", "GTA VI (placeholder)", ("gta6", "gta vi", "grand theft auto vi"),
              (HudRule("death", (0.0, 0.0, 1.0, 1.0), "desat", ("wasted",), min_ratio=0.0, value=0.9, debounce=20, note="death screen"),),
@@ -96,7 +96,7 @@ PACKS: dict[str, GamePack] = {p.name: p for p in [
     GamePack("minecraft", "Minecraft", ("minecraft", "javaw"),
              (HudRule("death", (0.25, 0.25, 0.50, 0.20), "color", ("you died",), (0, 120, 120), (10, 255, 255), 0.05, 0.8, 20, "You died"),),
              pre_roll=20, post_roll=8, gameplay_only="fit_blur", hashtags=("#minecraft", "#gaming", "#shorts"),
-             titles={"death": ("Minecraft betrayed me 💀",)}),
+             titles={"death": ("Minecraft betrayed {streamer} 💀",)}),
     GamePack("generic", "Other game", (), (), gameplay_only="fit_blur"),
 ]}
 
@@ -122,7 +122,8 @@ def _pick(options: tuple[str, ...], seed: str) -> str:
 def title_for(pack: GamePack, event: str, kinds: list[str], seed: str, n: int = 0, streamer: str = "") -> str:
     """Deterministic title: the pack's template for the event, else a generic one for the strongest signal."""
     opts = pack.titles.get(event) or GENERIC_TITLES.get(kinds[0] if kinds else "", ()) or GENERIC_TITLES[""]
-    title = _pick(opts, seed).replace("{n}", str(max(2, n)) if n else "2").replace("{streamer}", streamer)
+    title = _pick(opts, seed).replace("{n}", str(max(2, n)) if n else "2").replace("{streamer}", streamer or "This streamer")
+    title = " ".join(title.replace("This streamer's", "This").split())
     if pack.name != "generic" and pack.label.split(" ")[0].lower() not in title.lower() and len(title) < 70:
         title = f"{title} | {pack.label.split(' /')[0]}"
     return title[:95]

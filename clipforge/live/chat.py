@@ -157,23 +157,25 @@ class TwitchChat(threading.Thread):
 class YouTubeChat(threading.Thread):
     def __init__(self, service, on_msg: Callable[[ChatMsg], None], clock: Callable[[], float], *, min_sec: int,
                  units_per_poll: int, max_units: int, charge: Callable[[int], None] | None = None,
-                 owner_channel: str = "") -> None:
+                 video_id: str = "", quota_ok: Callable[[], bool] | None = None) -> None:
         super().__init__(daemon=True, name="live-youtube-chat")
         self.service, self.on_msg, self.clock = service, on_msg, clock
         self.min_sec, self.units_per_poll, self.max_units = min_sec, units_per_poll, max_units
         self.charge = charge or (lambda n: None)
-        self.owner_channel = owner_channel
+        self.video_id = video_id
+        self.quota_ok = quota_ok or (lambda: True)
         self.stop_ev = threading.Event()
         self.units = 0
         self.connected = False
         self.chat_id = ""
 
     def find_chat(self) -> str:
-        res = self.service.liveBroadcasts().list(part="snippet", broadcastStatus="active", broadcastType="all").execute()
+        """The live chat of ANY public live video (videos.list liveStreamingDetails, 1 unit)."""
+        res = self.service.videos().list(part="liveStreamingDetails", id=self.video_id).execute()
         self.units += 1
         self.charge(1)
-        for b in res.get("items", []):
-            cid = b.get("snippet", {}).get("liveChatId")
+        for v in res.get("items", []):
+            cid = v.get("liveStreamingDetails", {}).get("activeLiveChatId")
             if cid:
                 return cid
         return ""
@@ -191,6 +193,9 @@ class YouTubeChat(threading.Thread):
         self.connected = True
         first = True
         while not self.stop_ev.is_set():
+            if not self.quota_ok():
+                log.warning("[live] YouTube chat paused: keeping today's API quota for uploads")
+                break
             if self.units + self.units_per_poll > self.max_units:
                 log.warning("[live] YouTube chat: per-stream quota budget used up — chat reading stopped")
                 break
@@ -215,6 +220,93 @@ class YouTubeChat(threading.Thread):
                     break
                 wait = max(wait, 60)
             self.stop_ev.wait(wait)
+        self.connected = False
+
+    def stop(self) -> None:
+        self.stop_ev.set()
+
+
+# ----------------------------------------------------------------------------- Kick (public Pusher websocket)
+def kick_pusher_url(key: str, cluster: str = "us2") -> str:
+    return f"wss://ws-{cluster}.pusher.com/app/{key}?protocol=7&client=js&version=8.4.0&flash=false"
+UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36",
+      "Accept": "application/json"}
+
+
+def kick_chatroom_id(slug: str) -> int | None:
+    import httpx
+
+    try:
+        r = httpx.get(f"https://kick.com/api/v2/channels/{slug}", headers=UA, timeout=20, follow_redirects=True)
+        return int(r.json()["chatroom"]["id"]) if r.status_code == 200 else None
+    except Exception as exc:
+        log.warning(f"[live] Kick chat: channel lookup failed: {exc}")
+        return None
+
+
+def parse_kick(raw: str, now: float) -> ChatMsg | None:
+    import json as _json
+
+    try:
+        msg = _json.loads(raw)
+        if msg.get("event") != r"App\Events\ChatMessageEvent":
+            return None
+        d = _json.loads(msg["data"]) if isinstance(msg.get("data"), str) else msg.get("data", {})
+        sender = d.get("sender", {})
+        badges = {b.get("type") for b in sender.get("identity", {}).get("badges", [])}
+        return ChatMsg(now, sender.get("username", ""), d.get("content", ""), is_mod="moderator" in badges,
+                       is_owner="broadcaster" in badges, platform="kick")
+    except Exception:
+        return None
+
+
+class KickChat(threading.Thread):
+    def __init__(self, slug: str, on_msg: Callable[[ChatMsg], None], clock: Callable[[], float], connect=None,
+                 room_id: int | None = None, key: str = "", cluster: str = "us2") -> None:
+        super().__init__(daemon=True, name="live-kick-chat")
+        self.slug, self.on_msg, self.clock, self._connect, self.room_id = slug, on_msg, clock, connect, room_id
+        self.url = kick_pusher_url(key, cluster)
+        self.stop_ev = threading.Event()
+        self.connected = False
+
+    def run(self) -> None:
+        import json as _json
+
+        room = self.room_id or kick_chatroom_id(self.slug)
+        if not room:
+            log.warning(f"[live] Kick chat for {self.slug}: not available (chat signals off for this stream)")
+            return
+        backoff = 2
+        while not self.stop_ev.is_set():
+            try:
+                connect = self._connect
+                if connect is None:
+                    from websockets.sync.client import connect
+                with connect(self.url, open_timeout=10) as ws:
+                    ws.send(_json.dumps({"event": "pusher:subscribe", "data": {"auth": "", "channel": f"chatrooms.{room}.v2"}}))
+                    self.connected, backoff = True, 2
+                    while not self.stop_ev.is_set():
+                        try:
+                            raw = ws.recv(timeout=1)
+                        except TimeoutError:
+                            continue
+                        if '"pusher:ping"' in str(raw):
+                            ws.send(_json.dumps({"event": "pusher:pong", "data": {}}))
+                            continue
+                        m = parse_kick(str(raw), self.clock())
+                        if m:
+                            self.on_msg(m)
+            except Exception as exc:
+                self.connected = False
+                if self.stop_ev.is_set():
+                    break
+                if "4001" in str(exc) or "not in this cluster" in str(exc):  # Kick changed its chat key: no retry loop
+                    log.warning("[live] Kick chat: the chat key is outdated (live.chat.kick_pusher_key) — chat signals "
+                                "off for this stream; audio, game events and /clip still work")
+                    break
+                log.warning(f"[live] Kick chat: {exc}; retrying in {backoff} s")
+                self.stop_ev.wait(backoff)
+                backoff = min(60, backoff * 2)
         self.connected = False
 
     def stop(self) -> None:

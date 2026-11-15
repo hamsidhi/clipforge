@@ -54,11 +54,7 @@ FINISHED **without publishing** (publishing only with `instagram.test_publish_ok
 - [ ] Decide on volume: the channel posts 5+ Shorts/day and the feed barely tests them. Not changed automatically
       (not enough data yet); the weekly reach report on Telegram will show the trend.
 
-## Live gaming setup (2026-11-15) — once, ~15 min (details: HANDOFF_LIVE.md)
-1. Install OBS Studio 30+ (obsproject.com). OBS → Tools → **WebSocket Server Settings** → Enable, port 4455, set a
-   password → put it in `D:\clipforge\.env` as `OBS_WEBSOCKET_PASSWORD=...`.
-2. OBS → Settings → Output → **Replay Buffer**: enable, Maximum Replay Time **120 s**, encoder **"(Use stream encoder)"**.
-3. Name your webcam source with "facecam" or "webcam" in it.
-4. Create the gaming YouTube channel + Instagram account → Accounts → connect → Live page → **Gaming accounts** → switch on.
-5. Live page → Settings: Live mode ON, your YouTube/Twitch links, Twitch chat channel → Save.
-6. Test: `clipforge live simulate workspace\samples\bgmi_sample.mp4 --facecam sample`, then a 15-min private test stream.
+## Live clipping (2026-11-15) — from the phone, 1 min (details: HANDOFF_LIVE.md)
+1. App → Live → **Accounts for live clips**: switch on the account(s) these clips may post to (until then: drafts only).
+2. Paste a live link (Twitch / Kick / YouTube live) on Telegram or in the app → the first clips arrive as drafts.
+3. Optional: App → Live → Settings → "Auto-start when these channels go live".

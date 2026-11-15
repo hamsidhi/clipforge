@@ -1,8 +1,10 @@
-"""Posting live clips — ONLY to gaming accounts (Accounts → settings `content: gaming`), never the podcast ones.
+"""Posting live clips — ONLY to accounts switched on for live clips (Live page → Accounts; settings `content:
+gaming`), never the podcast accounts.
 
-Uses the regular queue (dedup pub_key, YouTube limits/ledger, Instagram resumable upload, the state machine). While the
-stream is live the caption carries "🔴 LIVE now on … → link"; after it ends, not-yet-uploaded clips get
-"Full stream: …" instead. At most one post per platform per `live.min_post_gap_min` while live; the rest queue.
+Uses the regular queue (dedup pub_key, YouTube limits/ledger, Instagram resumable upload, the state machine). Every
+caption credits the streamer; while the stream is live it says "🔴 <streamer> is LIVE on <platform> → link", after it
+ends not-yet-uploaded clips get "Full stream: …" instead. At most one post per platform per `live.min_post_gap_min`
+while live; the rest queue.
 """
 
 from __future__ import annotations
@@ -29,21 +31,24 @@ def gaming_accounts(platform: str = "both") -> list:
 
 
 def platform_name(url: str) -> str:
-    return "Twitch" if "twitch.tv" in url else "YouTube"
+    u = url.lower()
+    return "Twitch" if "twitch.tv" in u else "Kick" if "kick.com" in u else "YouTube" if "youtu" in u else "stream"
 
 
 def link_line(sess: dict) -> str:
     url = sess.get("stream_url", "")
     if not url:
         return ""
+    who = sess.get("streamer") or ""
     if sess.get("live", False):
-        return f"{LIVE_PREFIX} on {platform_name(url)} → {url}"
+        return f"{LIVE_PREFIX}: {who} on {platform_name(url)} → {url}" if who else f"{LIVE_PREFIX} on {platform_name(url)} → {url}"
     return f"{VOD_PREFIX} {sess.get('vod_url') or url}"
 
 
 def caption(title: str, tags: list[str], sess: dict) -> str:
     line = link_line(sess)
-    return "\n\n".join(x for x in (title, line, " ".join(tags)) if x)
+    credit = f"🎥 Credit: {sess['streamer']}" if sess.get("streamer") else ""
+    return "\n\n".join(x for x in (title, "\n".join(y for y in (line, credit) if y), " ".join(tags)) if x)
 
 
 def swap_line(text: str, sess: dict) -> str:
@@ -79,8 +84,8 @@ def post_clip(cfg: Config, sid: str, rank: int, mode: str = "now", title: str | 
         raise ValueError(f"Clip #{rank} isn't ready ({clip.get('status')}).")
     accounts = gaming_accounts()
     if not accounts:
-        raise ValueError("No gaming account is connected yet. Connect your gaming YouTube/Instagram on the Accounts "
-                         "page and set it to 'Gaming' — podcast accounts never get live clips.")
+        raise ValueError("No account is switched on for live clips. Live page → Accounts: switch on the YouTube/"
+                         "Instagram account(s) for these clips (podcast accounts never get them unless you do).")
     title = (title or clip.get("title") or "Live highlight")[:95]
     tags = clip.get("hashtags") or ["#gaming", "#shorts"]
     lines: list[str] = []
@@ -164,9 +169,15 @@ def stream_ended(cfg: Config, sid: str, vod_url: str = "") -> int:
     return n
 
 
-def vod_url_for(stream_url: str) -> str:
-    """Where the full stream lives afterwards: YouTube keeps the same watch URL; Twitch → the channel's videos."""
-    if "twitch.tv" in stream_url:
-        ch = stream_url.rstrip("/").rsplit("/", 1)[-1]
-        return f"https://www.twitch.tv/{ch}/videos"
+def vod_url_for(stream_url: str, video_id: str = "") -> str:
+    """Where the full stream lives afterwards: YouTube → the broadcast's watch URL; Twitch/Kick → the channel's videos."""
+    u = stream_url.rstrip("/")
+    if u.endswith("/live"):
+        u = u[: -len("/live")]
+    if "twitch.tv" in u:
+        return f"https://www.twitch.tv/{u.rsplit('/', 1)[-1]}/videos"
+    if "kick.com" in u:
+        return f"https://kick.com/{u.rsplit('/', 1)[-1]}/videos"
+    if video_id and ("youtube" in u or "youtu.be" in u):
+        return f"https://www.youtube.com/watch?v={video_id}"
     return stream_url
