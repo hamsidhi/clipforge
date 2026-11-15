@@ -36,6 +36,7 @@ async function connect() {
 function PasteLoginDialog({ url, onClose, onPick }: { url: string; onClose: () => void; onPick: (pid: string) => void }) {
   const qc = useQueryClient()
   const [addr, setAddr] = useState('')
+  const blocked = addr.includes('accounts.google.com') || addr.includes('authError') || addr.includes('error=access_denied')
   const m = useMutation({
     mutationFn: () => pub.oauthFinish(addr),
     onSuccess: (r) => {
@@ -48,7 +49,7 @@ function PasteLoginDialog({ url, onClose, onPick }: { url: string; onClose: () =
   })
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent>
+      <DialogContent className="overflow-hidden sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Add a YouTube channel</DialogTitle>
           <DialogDescription>Two steps. Works from your phone or any other device.</DialogDescription>
@@ -61,10 +62,18 @@ function PasteLoginDialog({ url, onClose, onPick }: { url: string; onClose: () =
           <li>
             A page that <b>doesn't load</b> opens ("This site can't be reached"). That's expected. Copy its <b>whole
             address</b> from the address bar and paste it here:
-            <Textarea className="mt-2 font-mono text-xs" rows={3} value={addr} onChange={(e) => setAddr(e.target.value)}
+            <Textarea className="mt-2 max-h-28 w-full min-w-0 break-all font-mono text-xs field-sizing-fixed" rows={3} value={addr} onChange={(e) => setAddr(e.target.value)}
               placeholder="http://localhost:8000/api/oauth/callback?state=…&code=…" />
           </li>
         </ol>
+        {blocked && (
+          <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm">
+            <b>Google blocked this login</b> ("Access blocked"). Your Google app is still in <b>Testing</b>, so only
+            listed test users can log in. Fix (2 min, on Google Cloud → <b>Google Auth Platform → Audience</b>): press
+            <b> Publish app</b> → Confirm. Or, under <b>Test users</b>, press <b>Add users</b> and add this Google account's
+            email. Then press Add YouTube channel again.
+          </div>
+        )}
         <DialogFooter>
           <Button onClick={() => m.mutate()} disabled={!addr.includes('code=') || m.isPending}>
             {m.isPending ? <Loader2 className="animate-spin" /> : <Plus />} Connect channel
