@@ -395,7 +395,10 @@ def oauth_url(redirect_uri: str) -> str:
             _flows.pop(k, None)
         _flows[state] = (redirect_uri, now)
     q: dict[str, str] = {"client_id": sec.meta_app_id or "", "redirect_uri": redirect_uri, "state": state,
-                         "response_type": "code"}
+                         "response_type": "code",
+                         # Re-show the permission + Page/Instagram pickers: without this Meta reuses the first account's
+                         # grant (only that Page), so a 2nd account comes back with 0 Pages / "Permissions error".
+                         "auth_type": "rerequest"}
     config_id = sec.meta_login_config_id  # Facebook Login for Business configuration (optional)
     if config_id:
         q["config_id"] = config_id
