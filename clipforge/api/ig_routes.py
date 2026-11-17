@@ -302,7 +302,8 @@ def overview() -> dict:
             perf = s.exec(select(db.VideoPerf).where(db.VideoPerf.channel_id == ch.id)).all()
             views = sum(p.views for p in perf)
             recent = [p for p in perf if p.published_at and p.published_at.replace(tzinfo=dt.timezone.utc) >= week_ago]
-            published = len(q.items(ch.id, ("published",)))
+            # posts on the platform: our published queue items, or more when the stats sync saw Studio uploads too
+            published = max(len(q.items(ch.id, ("published",))), len(perf))
             planned = [it for it in q.items(ch.id, ("queued", "uploading", "ready", "scheduled", "processing",
                                                      "waiting_capacity"))
                        if it.slot_utc and it.slot_utc.replace(tzinfo=dt.timezone.utc) >= now]
