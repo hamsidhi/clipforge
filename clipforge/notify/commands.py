@@ -52,8 +52,10 @@ def queue_next(n: int = 5) -> str:
     up = [it for it in q.items(statuses=("queued", "uploading", "ready", "scheduled")) if it.slot_utc and as_utc(it.slot_utc) >= now_utc()]
     if not up:
         return "Nothing scheduled."
-    rows = [f"{utc_to_local(it.slot_utc, zone):%a %d %b %H:%M} · {'IG' if it.platform == 'instagram' else 'YT'} · {it.title[:50]}"
-            for it in up[:n]]
+    up.sort(key=lambda it: it.slot_utc)
+    names = _names()
+    rows = [f"{utc_to_local(it.slot_utc, zone):%a %d %b %H:%M} · {'IG' if it.platform == 'instagram' else 'YT'} "
+            f"{names.get(it.channel_id, '')} · {it.title[:45]}" for it in up[:n]]
     return "Next posts (IST):\n" + "\n".join(rows)
 
 
@@ -90,29 +92,80 @@ def set_paused(name: str, paused: bool) -> str:
     return f"{'⏸ Paused' if paused else '▶ Resumed'} {ch.title}."
 
 
-def dashboard() -> str:
+def _acct_label(a: dict) -> str:
+    plat = "YouTube" if a["platform"] == "youtube" else "Instagram"
+    tag = " · gaming" if a.get("content") == "gaming" else ""
+    return f"{'▶️' if a['platform'] == 'youtube' else '📸'} {a['title'] or a['handle'] or a['id']} ({plat}{tag})"
+
+
+def _delta(n: int | None) -> str:
+    return f" ({'+' if n > 0 else ''}{n:,} this week)" if n else ""
+
+
+def account_lines(a: dict, posted_today: int | None = None, ypp: dict | None = None) -> list[str]:
+    """One account's block. Built from overview()['accounts'], so a newly added account shows up by itself."""
+    unit = "subs" if a["platform"] == "youtube" else "followers"
+    lines = [_acct_label(a)]
+    if not a.get("ok"):
+        why = "paused" if a.get("paused") else "login needed" if a.get("auth_status") != "ok" else "not confirmed yet"
+        lines.append(f"   ⚠️ {why}: nothing will post until it's fixed")
+    first = f"   {a['followers']:,} {unit}{_delta(a.get('followers_7d'))}"
+    if posted_today is not None:
+        first += f" · posted today: {posted_today}"
+    lines.append(first)
+    lines.append(f"   {a['posts']} posts · {a['views']:,} views · {a['avg_views']:,} avg/post · last 7 days: "
+                 f"{a['posts_7d']} posts, {a['views_7d']:,} views")
+    if ypp:
+        lines.append(f"   YPP: {ypp['subscribers']:,}/{ypp['targets']['ads']['subs']:,} subs · "
+                     f"{ypp['shorts_views_90d']:,}/{ypp['targets']['ads']['shorts_views_90d']:,} Shorts views (90 d)")
+    if a.get("next_slot"):
+        nxt = dt.datetime.fromisoformat(a["next_slot"])
+        lines.append(f"   Next: {nxt:%a %d %b %H:%M} · {a['planned']} planned")
+    else:
+        lines.append("   Next: nothing planned")
+    if a.get("attention"):
+        lines.append(f"   🔔 {a['attention']} post(s) need you (Schedule → Needs you)")
+    return lines
+
+
+def dashboard(posted_by_account: dict[str, int] | None = None) -> str:
+    """Totals + one block per connected account (YouTube and Instagram, any number of them)."""
     from clipforge.api.ig_routes import overview
     from clipforge.publish import analytics
 
     ov = overview()
-    lines = [f"YouTube: {ov['youtube']['followers']:,} subs · {ov['youtube']['posts']} posts · {ov['youtube']['views']:,} views",
-             f"Instagram: {ov['instagram']['followers']:,} followers · {ov['instagram']['posts']} posts · {ov['instagram']['views']:,} views"]
     cfg = load_config()
-    for ch in chs.all_channels():
-        if (ch.platform or "youtube") == "youtube":
-            y = analytics.ypp_progress(ch.id, cfg.ypp, dt.date.today())
-            lines.append(f"YPP {ch.title}: {y['subscribers']:,}/{y['targets']['ads']['subs']:,} subs · "
-                         f"{y['shorts_views_90d']:,}/{y['targets']['ads']['shorts_views_90d']:,} Shorts views (90 d)")
+    yt, ig = ov["youtube"], ov["instagram"]
+    lines = [f"Total: {yt['accounts']} YouTube + {ig['accounts']} Instagram accounts · "
+             f"{yt['followers'] + ig['followers']:,} followers · {yt['posts'] + ig['posts']} posts · "
+             f"{yt['views'] + ig['views']:,} views"]
+    for a in sorted(ov["accounts"], key=lambda a: (a["platform"] != "youtube", (a["title"] or "").lower())):
+        ypp = None
+        if a["platform"] == "youtube":
+            try:
+                ypp = analytics.ypp_progress(a["id"], cfg.ypp, dt.date.today())
+            except Exception:
+                ypp = None
+        lines.append("")
+        lines.extend(account_lines(a, None if posted_by_account is None else posted_by_account.get(a["id"], 0), ypp))
     return "\n".join(lines)
+
+
+def _names() -> dict[str, str]:
+    return {c.id: (c.title or c.handle or c.id) for c in chs.all_channels()}
 
 
 def daily_summary(day: dt.date) -> str:
     zone = load_config().publishing.timezone
     posted = [it for it in q.items(statuses=("published",)) if it.published_at and utc_to_local(it.published_at, zone).date() == day]
+    by_acct: dict[str, int] = {}
+    for it in posted:
+        by_acct[it.channel_id] = by_acct.get(it.channel_id, 0) + 1
     head = f"🌙 ClipForge — {day:%a %d %b}\nPosted today: {len(posted)} " \
            f"({sum(1 for i in posted if i.platform == 'youtube')} YouTube, {sum(1 for i in posted if i.platform == 'instagram')} Instagram)"
     earn = _earnings()
-    return "\n".join([head, dashboard(), queue_next(3), f"Campaign earnings (est.): ₹{earn:,.0f}", bot_activity(day)])
+    return "\n".join([head, "", dashboard(by_acct), "", queue_next(5), "",
+                      f"Campaign earnings (est.): ₹{earn:,.0f}", bot_activity(day)])
 
 
 def bot_activity(day: dt.date) -> str:
