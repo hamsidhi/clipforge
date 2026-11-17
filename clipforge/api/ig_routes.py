@@ -278,26 +278,57 @@ def _reminders(channel_id: str) -> list[dict]:
     return reminders(channel_id)
 
 
-@router.get("/publishing/overview", summary="Combined YouTube + Instagram numbers")
+@router.get("/publishing/overview", summary="Combined YouTube + Instagram numbers, plus one row per account")
 def overview() -> dict:
+    from clipforge.publish import states
+
     out = {"youtube": {"accounts": 0, "followers": 0, "posts": 0, "views": 0},
            "instagram": {"accounts": 0, "followers": 0, "posts": 0, "views": 0}}
+    rows = []
+    now = now_utc()
+    zone = load_config().publishing.timezone
+    week_ago = now - dt.timedelta(days=7)
     with db.session() as s:
         for ch in chs.all_channels():
-            plat = out.get(ch.platform or "youtube")
+            platform = ch.platform or "youtube"
+            plat = out.get(platform)
             if plat is None:
                 continue
+            days = s.exec(select(db.ChannelDaily).where(db.ChannelDaily.channel_id == ch.id)
+                          .order_by(db.ChannelDaily.day.desc())).all()  # type: ignore[attr-defined]
+            last = days[0] if days else None
+            followers = last.subscribers if last else int(ch.extra.get("followers", 0) or 0)
+            old = next((d for d in days if d.day <= (now - dt.timedelta(days=7)).date()), None)
+            perf = s.exec(select(db.VideoPerf).where(db.VideoPerf.channel_id == ch.id)).all()
+            views = sum(p.views for p in perf)
+            recent = [p for p in perf if p.published_at and p.published_at.replace(tzinfo=dt.timezone.utc) >= week_ago]
+            published = len(q.items(ch.id, ("published",)))
+            planned = [it for it in q.items(ch.id, ("queued", "uploading", "ready", "scheduled", "processing",
+                                                     "waiting_capacity"))
+                       if it.slot_utc and it.slot_utc.replace(tzinfo=dt.timezone.utc) >= now]
+            planned.sort(key=lambda it: it.slot_utc)
+            attention = len(q.items(ch.id, states.ATTENTION))
             plat["accounts"] += 1
-            last = s.exec(select(db.ChannelDaily).where(db.ChannelDaily.channel_id == ch.id)
-                          .order_by(db.ChannelDaily.day.desc())).first()  # type: ignore[attr-defined]
-            plat["followers"] += last.subscribers if last else int(ch.extra.get("followers", 0) or 0)
-            plat["posts"] += len(q.items(ch.id, ("published",)))
-            plat["views"] += sum(p.views for p in s.exec(select(db.VideoPerf).where(db.VideoPerf.channel_id == ch.id)).all())
-    zone = load_config().publishing.timezone
+            plat["followers"] += followers
+            plat["posts"] += published
+            plat["views"] += views
+            rows.append({
+                "id": ch.id, "platform": platform, "title": ch.title, "handle": ch.handle,
+                "thumbnail": ch.thumbnail, "content": str((ch.settings or {}).get("content", "") or ""),
+                "followers": followers, "followers_7d": (followers - old.subscribers) if old else None,
+                "posts": published, "views": views, "posts_7d": len(recent), "views_7d": sum(p.views for p in recent),
+                "avg_views": round(views / len(perf)) if perf else 0,
+                "planned": len(planned), "attention": attention,
+                "next_slot": utc_to_local(planned[0].slot_utc, zone).strftime("%Y-%m-%dT%H:%M") if planned else None,
+                "ok": ch.auth_status == "ok" and bool(ch.confirmed) and not ch.paused,
+                "paused": bool(ch.paused), "auth_status": ch.auth_status,
+            })
+    out["accounts"] = rows  # type: ignore[assignment]
     upcoming = []
     for it in q.items(statuses=("queued", "uploading", "ready", "scheduled")):
-        if it.slot_utc and it.slot_utc.replace(tzinfo=dt.timezone.utc) >= now_utc():
-            upcoming.append({"id": it.id, "platform": it.platform, "title": it.title,
+        if it.slot_utc and it.slot_utc.replace(tzinfo=dt.timezone.utc) >= now:
+            upcoming.append({"id": it.id, "platform": it.platform, "title": it.title, "channel_id": it.channel_id,
                              "slot_local": utc_to_local(it.slot_utc, zone).strftime("%Y-%m-%dT%H:%M")})
+    upcoming.sort(key=lambda u: u["slot_local"])
     out["upcoming"] = upcoming[:8]  # type: ignore[assignment]
     return out

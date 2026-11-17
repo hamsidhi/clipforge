@@ -182,6 +182,55 @@ class JobCreate(BaseModel):
     upload_id: Optional[str] = None
     settings: JobSettings = JobSettings()
     transcript: Optional[str] = None  # pasted transcript with timestamps (YouTube copy, SRT, VTT, [hh:mm:ss] text)
+    folder: Optional[str] = None      # existing or new folder name ("" / None = no folder)
+
+
+def clean_folder(name: str | None) -> str:
+    """Folder names: trimmed, single spaces, ≤ 60 chars. Matching an existing folder ignores case."""
+    name = re.sub(r"\s+", " ", (name or "").strip())[:60]
+    if not name:
+        return ""
+    for f in folders():
+        if f["name"].lower() == name.lower():
+            return f["name"]
+    return name
+
+
+def folders() -> list[dict]:
+    """[{name, jobs}] of every folder in use, A→Z."""
+    counts: dict[str, int] = {}
+    for j in db.list_jobs():
+        if j.folder:
+            counts[j.folder] = counts.get(j.folder, 0) + 1
+    return [{"name": k, "jobs": v} for k, v in sorted(counts.items(), key=lambda kv: kv[0].lower())]
+
+
+def set_folder(job_id: int, folder: str | None) -> dict:
+    name = clean_folder(folder)
+    with db.session() as s:
+        job = s.get(db.Job, job_id)
+        if not job:
+            raise NotFound(f"Job {job_id} not found")
+        job.folder = name
+        s.add(job)
+        s.commit()
+        s.refresh(job)
+    return job_out(job)
+
+
+def rename_folder(old: str, new: str) -> dict:
+    """Rename (or merge into another folder); new = "" takes the jobs out of the folder."""
+    new = clean_folder(new)
+    n = 0
+    with db.session() as s:
+        for job in s.exec(db.select(db.Job).where(db.Job.folder == old)).all():
+            job.folder = new
+            s.add(job)
+            n += 1
+        s.commit()
+    if not n:
+        raise NotFound(f"No folder called {old!r}")
+    return {"moved": n, "folder": new}
 
 
 def create_job(body: JobCreate, remote: bool = False) -> dict:
@@ -221,7 +270,7 @@ def create_job(body: JobCreate, remote: bool = False) -> dict:
         except ti.TranscriptParseError as exc:
             raise BadRequest(str(exc))
     with db.session() as s:
-        job = db.Job(source=source, title=title, settings_json=json.dumps(settings),
+        job = db.Job(source=source, title=title, settings_json=json.dumps(settings), folder=clean_folder(body.folder),
                      video_id=video_id_for(source, section))  # type: ignore[arg-type]
         s.add(job)
         s.commit()

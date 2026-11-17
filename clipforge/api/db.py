@@ -35,6 +35,7 @@ class Job(SQLModel, table=True):
     error: str = ""
     settings_json: str = "{}"
     n_clips: int = 0
+    folder: str = ""                # user's folder ("Raj Shamani", "Gaming tips"); "" = no folder
     created_at: dt.datetime = Field(default_factory=now)
     updated_at: dt.datetime = Field(default_factory=now)
     finished_at: Optional[dt.datetime] = None
@@ -391,7 +392,7 @@ def _migrate(conn) -> None:
 
 
 _engine = None
-SCHEMA_VERSION = 17  # bump when tables/columns change: an older database is copied to clipforge.db.bak-v<old> first
+SCHEMA_VERSION = 18  # bump when tables/columns change: an older database is copied to clipforge.db.bak-v<old> first
 
 
 def _backup_before_migration(path) -> None:

@@ -331,6 +331,9 @@ def test_api_e2e_both_platforms(env):
         assert st == {("youtube", "published"), ("instagram", "published")}, st
         ov = c.get("/api/publishing/overview").json()
         assert ov["instagram"]["posts"] == 4 and ov["youtube"]["posts"] == 4
+        rows = {r["platform"]: r for r in ov["accounts"]}
+        assert rows["instagram"]["posts"] == 4 and rows["youtube"]["posts"] == 4 and rows["instagram"]["id"] == ch.id
+        assert {"followers", "views_7d", "planned", "attention", "next_slot", "ok"} <= set(rows["youtube"])
         d = c.get(f"/api/accounts/{ch.id}/ig-dashboard").json()
         assert d["reels"] == 4
         rem = c.get("/api/posts/reminders").json()

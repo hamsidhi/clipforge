@@ -52,6 +52,30 @@ def create_job(body: JobCreate, request: Request = None) -> dict:  # type: ignor
     return job_svc.create_job(body, remote=remote)
 
 
+class FolderIn(BaseModel):
+    folder: str = ""
+
+
+class FolderRename(BaseModel):
+    old: str
+    new: str = ""
+
+
+@router.get("/jobs/folders", summary="Folders in use, with job counts")
+def job_folders() -> list[dict]:
+    return job_svc.folders()
+
+
+@router.post("/jobs/folders/rename", summary="Rename a folder (or merge it into another; new='' = no folder)")
+def rename_job_folder(body: FolderRename) -> dict:
+    return job_svc.rename_folder(body.old, body.new)
+
+
+@router.put("/jobs/{job_id}/folder", summary="Move a job into a folder ('' = no folder)")
+def move_job(job_id: int, body: FolderIn) -> dict:
+    return job_svc.set_folder(job_id, body.folder)
+
+
 @router.get("/jobs")
 def list_jobs() -> list[dict]:
     return [_job_out(j) for j in db.list_jobs()]

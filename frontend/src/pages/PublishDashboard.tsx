@@ -1,17 +1,20 @@
-import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { BarChart3, Download, Loader2, RefreshCw, Target, TrendingUp } from 'lucide-react'
+import { AlertTriangle, BarChart3, CalendarClock, ChevronRight, Download, LayoutGrid, Loader2, RefreshCw, Target, TrendingUp, Tv } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/api/client'
 import { pub, useChannels, WEEKDAYS } from '@/api/publish'
-import type { Dashboard, Group, IgDashboard, YppTier } from '@/api/publishTypes'
+import type { AccountSummary, Dashboard, Group, IgDashboard, YppTier } from '@/api/publishTypes'
 import PlatformIcon from '@/components/PlatformIcon'
 import ChannelPicker from '@/components/ChannelPicker'
 import HealthPanel from '@/components/HealthPanel'
 import { EmptyState, ErrorBox, PageHeader } from '@/components/common'
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { ChannelAvatar } from '@/components/ChannelPicker'
+import { cn } from '@/lib/utils'
 import { Progress } from '@/components/ui/progress'
 import { Skeleton } from '@/components/ui/skeleton'
 
@@ -102,21 +105,96 @@ function Heatmap({ d }: { d: Dashboard['heatmap'] }) {
   )
 }
 
-function Overview() {
-  const { data } = useQuery({ queryKey: ['overview'], queryFn: pub.overview, refetchInterval: 60000 })
-  if (!data || !data.instagram.accounts) return null
+const when = (local: string) =>
+  new Date(local).toLocaleString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })
+
+function AccountRow({ a, onOpen }: { a: AccountSummary; onOpen: () => void }) {
+  const label = a.platform === 'youtube' ? 'subscribers' : 'followers'
   return (
-    <div className="mb-6 grid gap-4 md:grid-cols-2">
-      {(['youtube', 'instagram'] as const).map((p) => (
-        <Card key={p} className="py-4">
-          <CardContent className="flex flex-wrap items-center gap-x-6 gap-y-2 px-5 text-sm">
-            <span className="flex items-center gap-2 font-medium"><PlatformIcon platform={p} className="size-4" /> {p === 'youtube' ? 'YouTube' : 'Instagram'}</span>
-            <span><b className="tabular-nums">{fmt(data[p].followers)}</b> {p === 'youtube' ? 'subscribers' : 'followers'}</span>
-            <span><b className="tabular-nums">{fmt(data[p].posts)}</b> posts</span>
-            <span><b className="tabular-nums">{fmt(data[p].views)}</b> views</span>
+    <button type="button" onClick={onOpen}
+      className="flex w-full items-center gap-3 rounded-xl border bg-card p-3 text-left transition-colors hover:border-primary/40 sm:p-4">
+      <ChannelAvatar ch={{ thumbnail: a.thumbnail, title: a.title }} className="size-9" />
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <PlatformIcon platform={a.platform} className="size-3.5 shrink-0" />
+          <span className="truncate font-medium">{a.title || a.handle || a.id}</span>
+          {a.content === 'gaming' && <Badge variant="secondary">gaming</Badge>}
+          {!a.ok && <Badge variant="destructive">{a.paused ? 'paused' : a.auth_status !== 'ok' ? 'login needed' : 'not confirmed'}</Badge>}
+          {a.attention > 0 && <Badge variant="outline" className="border-amber-500/50 text-amber-300"><AlertTriangle className="size-3" /> {a.attention} need you</Badge>}
+        </div>
+        <div className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-muted-foreground sm:grid-cols-4">
+          <span><b className="text-foreground tabular-nums">{fmt(a.followers)}</b> {label}
+            {a.followers_7d != null && a.followers_7d !== 0 && (
+              <span className={a.followers_7d > 0 ? 'text-emerald-400' : 'text-destructive'}> {a.followers_7d > 0 ? '+' : ''}{fmt(a.followers_7d)}/wk</span>
+            )}
+          </span>
+          <span><b className="text-foreground tabular-nums">{fmt(a.views)}</b> views · {fmt(a.avg_views)} avg</span>
+          <span><b className="text-foreground tabular-nums">{a.posts}</b> posted · {a.posts_7d} this week</span>
+          <span>{a.next_slot ? <>Next: <b className="text-foreground">{when(a.next_slot)}</b> ({a.planned})</> : 'Nothing planned'}</span>
+        </div>
+      </div>
+      <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
+    </button>
+  )
+}
+
+function Summary({ onOpen, earnings }: { onOpen: (id: string) => void; earnings: { total: number; approved: number; paid: number } }) {
+  const { data, error } = useQuery({ queryKey: ['overview'], queryFn: pub.overview, refetchInterval: 60000 })
+  if (error) return <ErrorBox error={error} />
+  if (!data) return <Skeleton className="h-96 rounded-xl" />
+  if (!data.accounts.length) {
+    return <EmptyState icon={BarChart3} title="No accounts yet" action={<Button asChild><Link to="/channels">Connect an account</Link></Button>} />
+  }
+  const views7 = data.accounts.reduce((n, a) => n + a.views_7d, 0)
+  const posts7 = data.accounts.reduce((n, a) => n + a.posts_7d, 0)
+  const attention = data.accounts.reduce((n, a) => n + a.attention, 0)
+  const names = Object.fromEntries(data.accounts.map((a) => [a.id, a.title || a.handle]))
+  const groups = (['youtube', 'instagram'] as const).map((p) => [p, data.accounts.filter((a) => a.platform === p)] as const)
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <Stat label="Followers (all accounts)" value={fmt(data.youtube.followers + data.instagram.followers)}
+          sub={`${fmt(data.youtube.followers)} YouTube · ${fmt(data.instagram.followers)} Instagram`} />
+        <Stat label="Views (all posts)" value={fmt(data.youtube.views + data.instagram.views)} sub={`${fmt(views7)} from posts of the last 7 days`} />
+        <Stat label="Posts published" value={fmt(data.youtube.posts + data.instagram.posts)} sub={`${posts7} in the last 7 days`} />
+        <Stat label="Est. campaign earnings" value={money(earnings.total)} sub={`${money(earnings.approved)} approved · ${money(earnings.paid)} paid`} />
+      </div>
+      {attention > 0 && (
+        <Link to="/schedule" className="flex items-center gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm hover:border-amber-500/60">
+          <AlertTriangle className="size-4 shrink-0 text-amber-300" />
+          <span className="flex-1"><b>{attention}</b> post{attention === 1 ? '' : 's'} need you (failed, missed or waiting for a manual upload).</span>
+          <ChevronRight className="size-4" />
+        </Link>
+      )}
+      <HealthPanel />
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
+        <div className="space-y-6">
+          {groups.map(([p, rows]) => rows.length > 0 && (
+            <div key={p} className="space-y-2">
+              <h3 className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                <PlatformIcon platform={p} className="size-4" /> {p === 'youtube' ? 'YouTube channels' : 'Instagram accounts'}
+                <span className="text-xs">· tap one for its full report</span>
+              </h3>
+              {rows.map((a) => <AccountRow key={a.id} a={a} onOpen={() => onOpen(a.id)} />)}
+            </div>
+          ))}
+        </div>
+        <Card className="self-start">
+          <CardHeader><CardTitle className="flex items-center gap-2"><CalendarClock className="size-4" /> Coming up</CardTitle></CardHeader>
+          <CardContent className="space-y-3 text-sm">
+            {!data.upcoming.length ? <p className="text-muted-foreground">Nothing scheduled.</p> : data.upcoming.map((u) => (
+              <div key={u.id} className="flex items-start gap-2">
+                <PlatformIcon platform={u.platform} className="mt-0.5 size-3.5 shrink-0" />
+                <div className="min-w-0">
+                  <div className="truncate">{u.title || 'Untitled'}</div>
+                  <div className="text-xs text-muted-foreground">{when(u.slot_local)} · {names[u.channel_id] ?? ''}</div>
+                </div>
+              </div>
+            ))}
+            <Button variant="outline" size="sm" className="w-full" asChild><Link to="/schedule">Open schedule</Link></Button>
           </CardContent>
         </Card>
-      ))}
+      </div>
     </div>
   )
 }
@@ -194,11 +272,15 @@ function IgView({ d, onApply, applying }: { d: IgDashboard; onApply: (s: string[
 
 export default function PublishDashboard() {
   const qc = useQueryClient()
-  const [channelId, setChannelId] = useState<string>()
+  const [params, setParams] = useSearchParams()
+  const view = params.get('view') === 'channel' ? 'channel' : 'summary'
+  const channelId = params.get('ch') ?? undefined
+  const setChannelId = (id: string) => setParams({ view: 'channel', ch: id }, { replace: true })
+  const setView = (v: string) => setParams(v === 'channel' ? { view: v, ...(channelId ? { ch: channelId } : {}) } : {}, { replace: true })
   const { data: channels = [] } = useChannels()
   const isIg = channels.find((c) => c.id === channelId)?.platform === 'instagram'
-  const { data, isLoading, error } = useQuery({ queryKey: ['dash', channelId], queryFn: () => pub.dashboard(channelId!), enabled: !!channelId && !isIg })
-  const igd = useQuery({ queryKey: ['ig-dash', channelId], queryFn: () => pub.igDashboard(channelId!), enabled: !!channelId && isIg })
+  const { data, isLoading, error } = useQuery({ queryKey: ['dash', channelId], queryFn: () => pub.dashboard(channelId!), enabled: view === 'channel' && !!channelId && !isIg })
+  const igd = useQuery({ queryKey: ['ig-dash', channelId], queryFn: () => pub.igDashboard(channelId!), enabled: view === 'channel' && !!channelId && isIg })
   const posts = useQuery({ queryKey: ['posts'], queryFn: api.posts })
   const sync = useMutation({
     mutationFn: async () => {
@@ -233,19 +315,25 @@ export default function PublishDashboard() {
     <>
       <PageHeader
         title="Dashboard"
-        description={data?.last_sync_at ? `Last synced ${new Date(data.last_sync_at + (data.last_sync_at.endsWith('Z') ? '' : 'Z')).toLocaleString('en-IN')}` : 'Performance, YPP progress and earnings'}
-        actions={
-          <>
-            <ChannelPicker value={channelId} onChange={setChannelId} />
-            <Button variant="outline" onClick={() => sync.mutate()} disabled={!channelId || sync.isPending}>
-              {sync.isPending ? <Loader2 className="animate-spin" /> : <RefreshCw />} Sync stats
-            </Button>
-            {channelId && <Button variant="ghost" asChild><a href={`/api/channels/${channelId}/stats.csv`}><Download /> CSV</a></Button>}
-          </>
-        }
+        description={view === 'summary' ? 'All your accounts at a glance. Tap an account for its full report.'
+          : data?.last_sync_at ? `Last synced ${new Date(data.last_sync_at + (data.last_sync_at.endsWith('Z') ? '' : 'Z')).toLocaleString('en-IN')}` : 'One account: performance, best times, what works'}
       />
-      <HealthPanel />
-      <Overview />
+      <Tabs value={view} onValueChange={setView}>
+        <TabsList className="mb-5">
+          <TabsTrigger value="summary"><LayoutGrid /> Summary</TabsTrigger>
+          <TabsTrigger value="channel"><Tv /> Channel report</TabsTrigger>
+        </TabsList>
+        <TabsContent value="summary">
+          <Summary onOpen={setChannelId} earnings={earn} />
+        </TabsContent>
+        <TabsContent value="channel">
+      <div className={cn('mb-5 flex flex-wrap items-center gap-2')}>
+        <ChannelPicker value={channelId} onChange={setChannelId} />
+        <Button variant="outline" onClick={() => sync.mutate()} disabled={!channelId || sync.isPending}>
+          {sync.isPending ? <Loader2 className="animate-spin" /> : <RefreshCw />} Sync stats
+        </Button>
+        {channelId && <Button variant="ghost" asChild><a href={`/api/channels/${channelId}/stats.csv`}><Download /> CSV</a></Button>}
+      </div>
       {isIg ? (igd.error ? <ErrorBox error={igd.error} /> : !igd.data ? <Skeleton className="h-96 rounded-xl" />
         : <IgView d={igd.data} onApply={(s) => apply.mutate(s)} applying={apply.isPending} />)
       : !channelId && !isLoading ? (
@@ -329,6 +417,8 @@ export default function PublishDashboard() {
           )}
         </div>
       )}
+        </TabsContent>
+      </Tabs>
     </>
   )
 }

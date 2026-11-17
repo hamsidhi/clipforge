@@ -7,6 +7,7 @@ import { api, uploadFile } from '@/api/client'
 import { formatDuration } from '@/api/hooks'
 import type { JobSettings, Layout, Provider } from '@/api/types'
 import CaptionStylePicker from '@/components/CaptionStylePicker'
+import FolderPicker from '@/components/FolderPicker'
 import { PageHeader } from '@/components/common'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -54,6 +55,7 @@ export default function NewJob() {
   const [secStart, setSecStart] = useState('')
   const [secEnd, setSecEnd] = useState('')
   const [transcript, setTranscript] = useState('')
+  const [folder, setFolder] = useState(() => shared.get('folder') ?? '')
   const txRef = useRef<HTMLInputElement>(null)
 
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings })
@@ -120,12 +122,12 @@ export default function NewJob() {
       if (file) {
         setUploadPct(0)
         const upload_id = await uploadFile(file, setUploadPct)
-        return api.createJob({ upload_id, settings: s, transcript: transcript || undefined })
+        return api.createJob({ upload_id, settings: s, transcript: transcript || undefined, folder })
       }
-      return api.createJob({ url: url.trim(), settings: s, transcript: transcript || undefined })
+      return api.createJob({ url: url.trim(), settings: s, transcript: transcript || undefined, folder })
     },
     onSuccess: (job) => {
-      toast.success('Job started')
+      toast.success(folder ? `Job started in ${folder}` : 'Job started')
       nav(`/jobs/${job.id}`)
     },
     onError: (e) => {
@@ -409,6 +411,10 @@ export default function NewJob() {
               ) : (
                 <p className="text-muted-foreground">Add a video to see how long it will take.</p>
               )}
+              <div className="space-y-2 border-t pt-4">
+                <Label>Save in folder</Label>
+                <FolderPicker value={folder} onChange={setFolder} />
+              </div>
               <Button className="w-full" size="lg" disabled={!canSubmit} onClick={() => create.mutate()}>
                 {create.isPending ? <Loader2 className="animate-spin" /> : <Sparkles />}
                 {uploadPct != null && create.isPending ? `Uploading ${Math.round(uploadPct * 100)}%` : 'Create clips'}

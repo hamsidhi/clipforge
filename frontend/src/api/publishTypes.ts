@@ -293,8 +293,31 @@ export interface IgDashboard {
   reminders: Reminder[]
 }
 
+export interface AccountSummary {
+  id: string
+  platform: Platform
+  title: string
+  handle: string
+  thumbnail: string
+  content: string
+  followers: number
+  followers_7d: number | null
+  posts: number
+  views: number
+  posts_7d: number
+  views_7d: number
+  avg_views: number
+  planned: number
+  attention: number
+  next_slot: string | null
+  ok: boolean
+  paused: boolean
+  auth_status: string
+}
+
 export interface Overview {
   youtube: { accounts: number; followers: number; posts: number; views: number }
   instagram: { accounts: number; followers: number; posts: number; views: number }
-  upcoming: { id: number; platform: Platform; title: string; slot_local: string }[]
+  accounts: AccountSummary[]
+  upcoming: { id: number; platform: Platform; title: string; slot_local: string; channel_id: string }[]
 }

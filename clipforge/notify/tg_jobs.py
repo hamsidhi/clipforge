@@ -94,8 +94,14 @@ def _wizard_buttons(ctx: Ctx, wid: str, w: dict) -> list[list[dict]]:
             [ctx.btn(mark(cur("provider") == p, p), "wiz.set", w=wid, k="provider", v=p) for p in _providers()],
             [ctx.btn(mark(cur("layout") == x, x), "wiz.set", w=wid, k="layout", v=x) for x in ("auto", "track", "split", "blur")],
             [ctx.btn(mark(cur("script") == "roman", "Roman"), "wiz.set", w=wid, k="script", v="roman"),
-             ctx.btn(mark(cur("script") == "devanagari", "देवनागरी"), "wiz.set", w=wid, k="script", v="devanagari")],
-            [ctx.btn("✖ Cancel", "wiz.cancel", w=wid)]]
+             ctx.btn(mark(cur("script") == "devanagari", "देवनागरी"), "wiz.set", w=wid, k="script", v="devanagari")]]
+    names = w.get("folders") or []
+    for i in range(0, len(names), 3):
+        rows.append([ctx.btn(mark(w.get("folder") == n, "📁 " + n[:24]), "wiz.folder", w=wid, i=i + k)
+                     for k, n in enumerate(names[i:i + 3])])
+    rows.append([ctx.btn("➕ New folder…", "wiz.newfolder", w=wid)]
+                + ([ctx.btn("No folder", "wiz.folder", w=wid, i=-1)] if w.get("folder") else []))
+    rows.append([ctx.btn("✖ Cancel", "wiz.cancel", w=wid)])
     return rows
 
 
@@ -110,7 +116,8 @@ def start_wizard(ctx: Ctx, url: str | None = None, upload_id: str | None = None,
                        ctx.btn("🔁 Process again", "wiz.again", url=url)]])
             return
     wid = secrets.token_hex(4)
-    w = {"url": url, "upload_id": upload_id, "title": title, "chat": ctx.chat_id}
+    w = {"url": url, "upload_id": upload_id, "title": title, "chat": ctx.chat_id,
+         "folders": [f["name"] for f in job_svc.folders()][:9]}
     st.kv_set(f"wiz:{wid}", w, dt.timedelta(days=1))
     mid = ctx.send(_wizard_text(w), _wizard_buttons(ctx, wid, w))
     w["msg"] = mid
@@ -272,6 +279,38 @@ def _wiz_range_step(ctx: Ctx, text: str, p: dict) -> None:
     ctx.send(f"✂ Part set to {fmt_dur(a)}–{fmt_dur(b)}. Tap Start above.")
 
 
+@callback("wiz.folder")
+def _wiz_folder(ctx: Ctx, p: dict) -> None:
+    wid, w = _wiz(p)
+    i = int(p.get("i", -1))
+    names = w.get("folders") or []
+    w["folder"] = names[i] if 0 <= i < len(names) else ""
+    st.kv_set(f"wiz:{wid}", w, dt.timedelta(days=1))
+    ctx.edit(_wizard_text(w), _wizard_buttons(ctx, wid, w))
+
+
+@callback("wiz.newfolder")
+def _wiz_newfolder(ctx: Ctx, p: dict) -> None:
+    wid, _ = _wiz(p)
+    ctx.ask("📁 Name of the new folder? (e.g. <code>Raj Shamani</code> or <code>Gaming tips</code>)",
+            "wiz_folder", {"w": wid}, placeholder="Raj Shamani")
+
+
+@step("wiz_folder")
+def _wiz_folder_step(ctx: Ctx, text: str, p: dict) -> None:
+    wid, w = _wiz(p)
+    name = job_svc.clean_folder(text)
+    if not name:
+        ctx.ask("Send a name for the folder:", "wiz_folder", {"w": wid}, placeholder="Raj Shamani")
+        return
+    w["folder"] = name
+    if name not in (w.get("folders") or []):
+        w["folders"] = (w.get("folders") or []) + [name]
+    st.kv_set(f"wiz:{wid}", w, dt.timedelta(days=1))
+    ctx.edit(_wizard_text(w), _wizard_buttons(ctx, wid, w), message_id=w.get("msg"))
+    ctx.send(f"📁 Folder: {esc(name)}. Tap Start above.")
+
+
 @callback("wiz.cancel")
 def _wiz_cancel(ctx: Ctx, p: dict) -> None:
     st.kv_del(f"wiz:{p.get('w', '')}")
@@ -298,7 +337,7 @@ def _wiz_start(ctx: Ctx, p: dict) -> None:
     if conv and conv[0] == "wiz_transcript":
         st.clear_conversation(ctx.chat_id)
     body = job_svc.JobCreate(url=w.get("url"), upload_id=w.get("upload_id"), settings=job_svc.JobSettings(**settings),
-                             transcript=w.get("transcript"))
+                             transcript=w.get("transcript"), folder=w.get("folder") or None)
     job = job_svc.create_job(body, remote=True)
     set_current_job(ctx.chat_id, job["id"])
     track(job["id"], ctx.chat_id, ctx.message_id or w.get("msg"))
@@ -454,7 +493,8 @@ def _new(ctx: Ctx, args: str) -> None:
 def job_line(j: db.Job) -> str:
     icon = {"done": "✅", "failed": "❌", "running": "▶", "queued": "⏳", "cancelled": "⏹"}.get(j.status, "•")
     extra = f" · {j.n_clips} clips" if j.n_clips else f" · {j.stage} {round((j.progress or 0) * 100)}%" if j.status == "running" else ""
-    return f"{icon} <b>#{j.id}</b> {esc((j.title or j.source)[:50])}{extra}"
+    folder = f"📁 {esc(j.folder)} · " if j.folder else ""
+    return f"{icon} <b>#{j.id}</b> {folder}{esc((j.title or j.source)[:50])}{extra}"
 
 
 def jobs_page(ctx: Ctx, page: int) -> tuple[str, list[list[dict]]]:

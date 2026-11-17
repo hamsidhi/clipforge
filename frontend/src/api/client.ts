@@ -71,8 +71,12 @@ const json = (body: unknown) => JSON.stringify(body)
 export const api = {
   jobs: () => request<Job[]>('/api/jobs'),
   job: (id: number) => request<Job>(`/api/jobs/${id}`),
-  createJob: (body: { url?: string; upload_id?: string; settings: JobSettings; transcript?: string }) =>
+  createJob: (body: { url?: string; upload_id?: string; settings: JobSettings; transcript?: string; folder?: string }) =>
     request<Job>('/api/jobs', { method: 'POST', body: json(body) }),
+  jobFolders: () => request<{ name: string; jobs: number }[]>('/api/jobs/folders'),
+  moveJob: (id: number, folder: string) => request<Job>(`/api/jobs/${id}/folder`, { method: 'PUT', body: json({ folder }) }),
+  renameFolder: (old: string, next: string) =>
+    request<{ moved: number; folder: string }>('/api/jobs/folders/rename', { method: 'POST', body: json({ old, new: next }) }),
   deleteJob: (id: number, deleteFiles = false) =>
     request<{ ok: boolean }>(`/api/jobs/${id}?delete_files=${deleteFiles}`, { method: 'DELETE' }),
   cancelJob: (id: number) => request<{ ok: boolean }>(`/api/jobs/${id}/cancel`, { method: 'POST' }),

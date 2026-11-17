@@ -128,3 +128,25 @@ def test_unapprove_and_upload_retry(client):
     assert c.put(f"/api/uploads/{up}?offset=4", content=b"efgh").json()["received"] == 8
     assert c.post(f"/api/uploads/{up}/complete").status_code == 200
     assert c.put("/api/uploads/..%5C..%5Cconfig?offset=0", content=b"x").status_code == 404
+
+
+def test_job_folders(client):
+    c, root = client
+    from clipforge.api import db
+
+    with db.session() as s:
+        for t in ("A", "B", "C"):
+            s.add(db.Job(source=f"{t}.mp4", video_id=f"v{t}", title=t, status="done"))
+        s.commit()
+    jobs = {j["title"]: j["id"] for j in c.get("/api/jobs").json()}
+    assert all(j["folder"] == "" for j in c.get("/api/jobs").json())
+    r = c.put(f"/api/jobs/{jobs['A']}/folder", json={"folder": "  Raj   Shamani "})
+    assert r.status_code == 200 and r.json()["folder"] == "Raj Shamani"
+    c.put(f"/api/jobs/{jobs['B']}/folder", json={"folder": "raj shamani"})  # same folder, any case
+    c.put(f"/api/jobs/{jobs['C']}/folder", json={"folder": "Gaming tips"})
+    assert c.get("/api/jobs/folders").json() == [{"name": "Gaming tips", "jobs": 1}, {"name": "Raj Shamani", "jobs": 2}]
+    assert c.post("/api/jobs/folders/rename", json={"old": "Gaming tips", "new": "Gaming"}).json()["moved"] == 1
+    assert c.post("/api/jobs/folders/rename", json={"old": "nope", "new": "x"}).status_code == 404
+    assert c.put(f"/api/jobs/{jobs['A']}/folder", json={"folder": ""}).json()["folder"] == ""
+    assert [f["name"] for f in c.get("/api/jobs/folders").json()] == ["Gaming", "Raj Shamani"]
+    assert c.put("/api/jobs/99999/folder", json={"folder": "x"}).status_code == 404

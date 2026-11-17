@@ -35,6 +35,7 @@ export interface Job {
   error: string
   settings: JobSettings
   n_clips: number
+  folder: string
   n_rendered: number
   busy: boolean
   thumbnail_url: string | null

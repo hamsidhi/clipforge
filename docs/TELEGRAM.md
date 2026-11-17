@@ -143,6 +143,9 @@ To go back: delete `api_base_url`, call `close` on the local server, wait 10 min
 | `GET /api/auth/audit` | Settings → Security | daily summary line | full log stays in the app |
 | `POST /api/jobs` | New job / `clipforge run` | link / file → wizard, `/new` | |
 | `GET /api/jobs` | Dashboard / `clipforge list` | `/jobs` | |
+| `GET /api/jobs/folders` | New job → Folder, Jobs page folders | wizard folder step | |
+| `POST /api/jobs/folders/rename` | Jobs page → folder ⋮ → Rename | — | Web only (rare) |
+| `PUT /api/jobs/{job_id}/folder` | Job card ⋮ → Move to folder | wizard folder step | |
 | `GET /api/jobs/{job_id}` | Job page | `/job 12` | |
 | `DELETE /api/jobs/{job_id}` | Job page | `/delete 12` (confirm + PIN) | |
 | `POST /api/jobs/{job_id}/cancel` | Job page | `/cancel 12`, ⏹ button | |
