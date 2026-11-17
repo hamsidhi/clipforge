@@ -51,3 +51,37 @@ export function registerServiceWorker() {
     })
   })
 }
+
+/** The phone app stays open for days: when the laptop gets a new build, reload into it (on open/focus + every 5 min). */
+export function watchForUpdates() {
+  const current = (document.querySelector('script[type="module"][src*="/assets/index-"]') as HTMLScriptElement | null)?.src
+  if (!current) return  // dev server
+  const mine = new URL(current).pathname
+  let busy = false
+  const check = async () => {
+    if (busy || document.visibilityState !== 'visible') return
+    busy = true
+    try {
+      const html = await (await fetch('/', { cache: 'no-store', credentials: 'same-origin' })).text()
+      const latest = html.match(/\/assets\/index-[\w-]+\.js/)?.[0]
+      if (latest && latest !== mine) {
+        try {
+          if (sessionStorage.getItem('cf-reloaded-for') === latest) return  // already tried once: no reload loop
+          sessionStorage.setItem('cf-reloaded-for', latest)
+        } catch { /* private mode */ }
+        const reg = await navigator.serviceWorker?.getRegistration?.()
+        await reg?.update().catch(() => {})
+        location.reload()
+      }
+    } catch {
+      /* laptop unreachable: try later */
+    } finally {
+      busy = false
+    }
+  }
+  document.addEventListener('visibilitychange', check)
+  window.addEventListener('focus', check)
+  window.addEventListener('pageshow', check)
+  setInterval(check, 5 * 60_000)
+  setTimeout(check, 3000)
+}

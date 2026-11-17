@@ -1,6 +1,6 @@
 // ClipForge service worker: caches the app shell only, so the installed app opens instantly and shows a friendly
 // page when the laptop can't be reached. The API (/api/*) is NEVER cached: data, videos and logins always come live.
-const CACHE = 'clipforge-shell-v1'
+const CACHE = 'clipforge-shell-v2'
 const SHELL = ['/', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png', '/favicon.svg']
 
 self.addEventListener('install', (event) => {
