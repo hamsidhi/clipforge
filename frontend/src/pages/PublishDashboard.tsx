@@ -166,7 +166,6 @@ function Summary({ onOpen, earnings }: { onOpen: (id: string) => void; earnings:
           <ChevronRight className="size-4" />
         </Link>
       )}
-      <HealthPanel />
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
         <div className="space-y-6">
           {groups.map(([p, rows]) => rows.length > 0 && (
@@ -195,6 +194,7 @@ function Summary({ onOpen, earnings }: { onOpen: (id: string) => void; earnings:
           </CardContent>
         </Card>
       </div>
+      <HealthPanel />
     </div>
   )
 }
