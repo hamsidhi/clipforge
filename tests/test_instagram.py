@@ -189,6 +189,29 @@ def test_auth_failure_marks_reauth_and_never_crashes(env):
     assert q.get(it.id).reason == "login_expired"
 
 
+def test_refused_login_recovers_by_itself(env):
+    """Meta blocks, then unblocks: the saved login is re-tested every 20 min and posting resumes without a new login."""
+    from clipforge.publish import channels as chs, ig_runner, queue as q
+
+    fake, _ = env
+    ig_runner._last_probe.clear()
+    ch = _connect()
+    it = _schedule_ig(ch.id, 1)[0]
+    slot = it.slot_utc.replace(tzinfo=UTC)
+    fake.auth_broken = True
+    _run(slot - dt.timedelta(minutes=20))
+    _run(slot - dt.timedelta(minutes=19))
+    assert chs.get(ch.id).auth_status == "needs_reauth" and q.get(it.id).reason == "login_expired"
+    fake.auth_broken = False
+    _run(slot - dt.timedelta(minutes=18))  # probed 1 min ago: not yet
+    assert chs.get(ch.id).auth_status == "needs_reauth"
+    ig_runner._last_probe[ch.id] -= dt.timedelta(minutes=20)  # 20 min later
+    _run(slot - dt.timedelta(minutes=17))
+    assert chs.get(ch.id).auth_status == "ok"
+    assert q.get(it.id).reason != "login_expired"
+    ig_runner._last_probe.clear()
+
+
 def test_insights_sync(env):
     from clipforge.api import db
 

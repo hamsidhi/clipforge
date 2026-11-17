@@ -25,6 +25,37 @@ from clipforge.utils.log import log
 MAX_ATTEMPTS = 4
 UPLOAD_RETRIES = 3
 INSIGHTS_EVERY = dt.timedelta(hours=12)
+RECOVER_EVERY = dt.timedelta(minutes=20)
+_last_probe: dict[str, dt.datetime] = {}
+
+
+def _recovered(ch: db.Channel, cfg: Config, now: dt.datetime) -> bool:
+    """A saved login Meta refused may start working again by itself (e.g. Meta lifts an app/account block). Every
+    20 min, read the account with the saved Page token (one cheap call); if it answers, the account is OK again,
+    its waiting posts are re-queued and Telegram says so. No new Meta login needed."""
+    if ig.is_manual(ch):
+        return False
+    last = _last_probe.get(ch.id)
+    if last is not None and now - last < RECOVER_EVERY:
+        return False
+    _last_probe[ch.id] = now
+    try:
+        ig.client(cfg).account(ig.ig_id_of(ch), ig.page_token(ch, cfg))
+    except Exception:
+        return False
+    chs.update(ch.id, auth_status="ok", auth_error="")
+    for it in q.items(ch.id, ("queued", "uploading", "processing", "ready", "failed")):
+        if it.reason in ("login_expired", "auto_unavailable") and not it.ig_media_id:
+            _mark(it, "queued" if it.status == "failed" else it.status, "", "")
+    log.info(f"[instagram] {ch.title or ch.id}: the saved login works again, posting resumes")
+    try:
+        from clipforge.notify import telegram as tg
+
+        tg.bot().notify("published", f"✅ Instagram {ch.title or ch.handle} is connected again — posting resumes "
+                        "(missed slots: Schedule → Needs you → Reschedule).", key=f"ig-back:{ch.id}:{now:%Y%m%d%H}")
+    except Exception as exc:
+        log.warning(f"[instagram] reconnect message not sent: {exc}")
+    return True
 
 
 def _assisted(ch: db.Channel, cfg: Config) -> bool:
@@ -73,6 +104,8 @@ def process_account(ch: db.Channel, cfg: Config, now: dt.datetime, rep) -> None:
                       "Instagram kit, then paste the Reel's link here to track it.")
                 rep.missed.append(it.id)
         return
+    if ch.auth_status == "needs_reauth" and _recovered(ch, cfg, now):
+        ch = chs.get(ch.id) or ch
     if ch.auth_status == "needs_reauth":
         rep.skipped_channels[ch.id] = "needs re-login"
         for it in items:
