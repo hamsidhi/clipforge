@@ -112,6 +112,9 @@ def process_account(ch: db.Channel, cfg: Config, now: dt.datetime, rep) -> None:
             if it.reason != "login_expired" and as_utc(it.slot_utc) < now + dt.timedelta(days=2):  # type: ignore[arg-type]
                 _mark(it, it.status, "login_expired", "The Instagram login expired — Reconnect on the Accounts page.")
         return
+    for it in items:  # login works again (Reconnect / Test login / recovery): drop the stale "login expired" note
+        if it.reason == "login_expired":
+            _mark(it, it.status, "", "")
     client = ig.client(cfg)
     try:
         ig.refresh_if_needed(ch, cfg, now, client)

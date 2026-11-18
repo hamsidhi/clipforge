@@ -187,6 +187,10 @@ def test_auth_failure_marks_reauth_and_never_crashes(env):
     assert chs.get(ch.id).auth_status == "needs_reauth" and rep.skipped_channels[ch.id] == "needs re-login"
     _run(it.slot_utc.replace(tzinfo=UTC) - dt.timedelta(minutes=19))
     assert q.get(it.id).reason == "login_expired"
+    fake.auth_broken = False
+    chs.update(ch.id, auth_status="ok", auth_error="")  # user pressed Reconnect
+    _run(it.slot_utc.replace(tzinfo=UTC) - dt.timedelta(minutes=18))
+    assert q.get(it.id).reason != "login_expired"
 
 
 def test_refused_login_recovers_by_itself(env):
