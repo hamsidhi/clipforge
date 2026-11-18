@@ -139,11 +139,16 @@ class HlsSource:
         self.stop_ev = threading.Event()
         self.restarts = 0
 
-    def media_url(self) -> str:
-        r = _ytdlp(["-g", "-f", f"best[height<={self.height}]/best", self.url], timeout=90)
+    def media_urls(self) -> list[str]:
+        """1 URL (video+audio) or 2 (YouTube sometimes only offers separate video and audio streams)."""
+        h = self.height
+        r = _ytdlp(["-g", "-f", f"best[height<={h}]/bv*[height<={h}]+ba/best/bv*+ba", self.url], timeout=90)
         if r.returncode != 0 or not r.stdout.strip():
             raise SourceError(f"Couldn't open the live stream: {(r.stderr or 'not live?').strip()[-300:]}")
-        return r.stdout.strip().splitlines()[0]
+        return r.stdout.strip().splitlines()[:2]
+
+    def media_url(self) -> str:
+        return self.media_urls()[0]
 
     def start(self, t0_wall: float) -> None:
         self.t0_wall = t0_wall
@@ -152,9 +157,12 @@ class HlsSource:
         threading.Thread(target=self._keep_loop, daemon=True, name="live-hls-keep").start()
 
     def _spawn(self) -> None:
-        url = self.media_url()
-        cmd = [ffmpeg_bin(), "-hide_banner", "-nostdin", "-loglevel", "error", "-reconnect", "1",
-               "-reconnect_streamed", "1", "-reconnect_delay_max", "10", "-i", url, "-map", "0:v:0?", "-map", "0:a:0?",
+        urls = self.media_urls()
+        inputs: list[str] = []
+        for u in urls:
+            inputs += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10", "-i", u]
+        audio = f"{len(urls) - 1}:a:0?"
+        cmd = [ffmpeg_bin(), "-hide_banner", "-nostdin", "-loglevel", "error", *inputs, "-map", "0:v:0?", "-map", audio,
                "-c", "copy", "-f", "segment", "-segment_time", str(SEG_SEC), "-reset_timestamps", "1", "-strftime", "1",
                str(self.dir / "%Y%m%d_%H%M%S.ts")]
         self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **popen_kwargs())

@@ -239,9 +239,17 @@ class Agent:
     # ------------------------------------------------------------------ main loop
     def run(self) -> None:
         make_low_priority(None, self.cfg.live.max_cores, idle=False)
-        self._resume()
+        owner = store.live_dir(self.cfg) / "agent.pid"
+        owner.write_text(str(os.getpid()), encoding="utf-8")  # newest agent wins: older copies (left behind when
+        self._resume()                                           # the app was killed) see this and exit
         last = 0.0
         while not self.quit.is_set():
+            try:
+                if owner.read_text(encoding="utf-8").strip() != str(os.getpid()):
+                    log.info("[live] a newer live agent took over; this one exits")
+                    break
+            except OSError:
+                pass
             self.handle_commands()
             for w in list(self.watches.values()):
                 w.eng.tick()
