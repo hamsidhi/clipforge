@@ -421,6 +421,11 @@ def test_single_poller_lease_409_and_durable_offset(tg):
     assert st.acquire_poller(120, owner="laptop") is True
     assert st.acquire_poller(120, owner="server") is False  # a second poller backs off
     assert b.poll_once(timeout=0) == -1 and fake.of("getUpdates") == []
+    import socket
+    st.kv_del("poller")
+    dead = f"{socket.gethostname()}:999999:abc"  # a restart killed the old process: its lease is free at once
+    assert st.acquire_poller(300, owner=dead) is True
+    assert st.acquire_poller(120, owner="server") is True
     st.kv_del("poller")
     ups = [fake.msg("/help"), fake.msg("/jobs")]
     fake.updates = list(ups)

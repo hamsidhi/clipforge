@@ -282,6 +282,21 @@ def forget_file_id(key: str) -> None:
 
 
 # ============================================================================ single poller lease
+def _owner_alive(owner: str) -> bool:
+    """A lease held by a process on THIS machine that no longer exists (killed by a restart) is free at once,
+    instead of keeping the bot silent until the lease runs out. Other machines' leases are always respected."""
+    host, _, rest = owner.partition(":")
+    pid = rest.split(":")[0]
+    if host != socket.gethostname() or not pid.isdigit():
+        return True
+    try:
+        import psutil
+
+        return psutil.pid_exists(int(pid))
+    except Exception:
+        return True
+
+
 def acquire_poller(lease_seconds: int = 120, owner: str = NODE_ID) -> bool:
     """Only one process may call getUpdates for a bot token (a second gets HTTP 409). The lease is a DB row with an
     expiry; the holder renews it every poll. Atomic: BEGIN IMMEDIATE takes SQLite's write lock first."""
@@ -292,7 +307,7 @@ def acquire_poller(lease_seconds: int = 120, owner: str = NODE_ID) -> bool:
         conn.exec_driver_sql("BEGIN IMMEDIATE")
         row = conn.execute(text("SELECT value FROM tgkv WHERE key='poller'")).fetchone()
         cur = json.loads(row[0]) if row else None
-        if cur and cur["owner"] != owner and dt.datetime.fromisoformat(cur["until"]) > t:
+        if cur and cur["owner"] != owner and dt.datetime.fromisoformat(cur["until"]) > t and _owner_alive(cur["owner"]):
             conn.exec_driver_sql("ROLLBACK")
             return False
         val = json.dumps({"owner": owner, "until": (t + dt.timedelta(seconds=lease_seconds)).isoformat()})
