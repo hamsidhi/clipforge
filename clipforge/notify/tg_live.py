@@ -47,15 +47,57 @@ def _mark_cb(ctx: Ctx, p: dict) -> None:
     mark(ctx, p.get("n", ""), p["s"])
 
 
-def start(ctx: Ctx, url: str) -> None:
+def start(ctx: Ctx, url: str, folder: str | None = None) -> None:
+    """folder None = ask first (the stream and its clips are filed in that folder, like a clip job)."""
     ctx.require_owner()
     cfg = load_config()
     if not cfg.live.enabled:
         ctx.send("Live clipping is switched off (app → Live → Settings).")
         return
-    store.send_command(cfg, "start", url=url.strip())
-    ctx.send("👀 Opening the stream… you'll get a message when I'm watching it (≈ 20 s).\n"
+    if folder is None:
+        ask_folder(ctx, url)
+        return
+    from clipforge.services import jobs as job_svc
+
+    folder = job_svc.clean_folder(folder) or store.LIVE_FOLDER
+    store.send_command(cfg, "start", url=url.strip(), folder=folder)
+    ctx.send(f"👀 Opening the stream… you'll get a message when I'm watching it (≈ 20 s).\n"
+             f"📁 Saved in <b>{esc(folder)}</b> (app → Jobs and app → Live).\n"
              "<i>Clips of other creators can get copyright claims — every caption credits and links them.</i>")
+
+
+def ask_folder(ctx: Ctx, url: str) -> None:
+    from clipforge.services import jobs as job_svc
+
+    names = [f["name"] for f in sorted(job_svc.folders(), key=lambda f: (-f.get("live", 0), f["name"].lower()))]
+    if store.LIVE_FOLDER not in names:
+        names.insert(0, store.LIVE_FOLDER)
+    rows = [[ctx.btn("📁 " + n[:24], "live.folder", u=url[:500], f=n) for n in names[i:i + 2]]
+            for i in range(0, min(len(names), 8), 2)]
+    rows.append([ctx.btn("➕ New folder…", "live.newfolder", u=url[:500])])
+    ctx.send(f"🔴 <b>Live stream</b>\n{esc(url[:200])}\n\n📁 Save it in which folder?", rows)
+
+
+@callback("live.folder")
+def _folder_cb(ctx: Ctx, p: dict) -> None:
+    start(ctx, p["u"], p.get("f") or store.LIVE_FOLDER)
+
+
+@callback("live.newfolder")
+def _newfolder_cb(ctx: Ctx, p: dict) -> None:
+    ctx.ask("📁 Name of the new folder? (e.g. <code>CarryMinati lives</code>)", "live_folder", {"u": p["u"]},
+            placeholder="CarryMinati lives")
+
+
+@step("live_folder")
+def _folder_step(ctx: Ctx, text: str, p: dict) -> None:
+    from clipforge.services import jobs as job_svc
+
+    name = job_svc.clean_folder(text)
+    if not name:
+        ctx.ask("Send a name for the folder:", "live_folder", p, placeholder="CarryMinati lives")
+        return
+    start(ctx, p["u"], name)
 
 
 def offer(ctx: Ctx, url: str) -> None:

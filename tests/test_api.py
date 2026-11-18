@@ -144,7 +144,7 @@ def test_job_folders(client):
     assert r.status_code == 200 and r.json()["folder"] == "Raj Shamani"
     c.put(f"/api/jobs/{jobs['B']}/folder", json={"folder": "raj shamani"})  # same folder, any case
     c.put(f"/api/jobs/{jobs['C']}/folder", json={"folder": "Gaming tips"})
-    assert c.get("/api/jobs/folders").json() == [{"name": "Gaming tips", "jobs": 1}, {"name": "Raj Shamani", "jobs": 2}]
+    assert c.get("/api/jobs/folders").json() == [{"name": "Gaming tips", "jobs": 1, "live": 0}, {"name": "Raj Shamani", "jobs": 2, "live": 0}]
     assert c.post("/api/jobs/folders/rename", json={"old": "Gaming tips", "new": "Gaming"}).json()["moved"] == 1
     assert c.post("/api/jobs/folders/rename", json={"old": "nope", "new": "x"}).status_code == 404
     assert c.put(f"/api/jobs/{jobs['A']}/folder", json={"folder": ""}).json()["folder"] == ""

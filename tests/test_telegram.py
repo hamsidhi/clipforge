@@ -674,3 +674,19 @@ def test_transcript_warning_offers_whisper(tg, monkeypatch):
     from clipforge.notify import tg_jobs
 
     assert "Transcript: pasted · ~50 min saved · ⚠️" in tg_jobs.transcript_line(db.get_job(job.id))
+
+
+def test_live_link_asks_for_a_folder_then_starts_in_it(tg):
+    from clipforge.config import load_config
+    from clipforge.live import store
+
+    b, fake, _ = tg
+    tail = store.CommandTail(load_config())
+    send(b, fake, "/live https://www.youtube.com/live/abc")
+    assert "which folder" in fake.last_text() and tail.read() == []  # nothing starts before a folder is picked
+    press(b, fake, "📁 Live streams")
+    assert [(c["cmd"], c["folder"]) for c in tail.read()] == [("start", "Live streams")]
+    send(b, fake, "/live https://www.youtube.com/live/def")
+    press(b, fake, "➕ New folder…")
+    send(b, fake, "CarryMinati lives")
+    assert [(c["url"], c["folder"]) for c in tail.read()] == [("https://www.youtube.com/live/def", "CarryMinati lives")]

@@ -35,6 +35,7 @@ class Watch:
     started: float = field(default_factory=time.time)
     last_check: float = field(default_factory=time.monotonic)
     ending: bool = False
+    folder: str = ""
 
 
 class Agent:
@@ -54,7 +55,7 @@ class Agent:
         return store.live_dir(self.cfg) / "streams.json"
 
     def _persist(self) -> None:
-        data = [{"url": w.url, "sid": sid} for sid, w in self.watches.items() if not w.ending]
+        data = [{"url": w.url, "sid": sid, "folder": w.folder} for sid, w in self.watches.items() if not w.ending]
         store._atomic_write(self._streams_file(), data)
 
     def _resume(self) -> None:
@@ -63,7 +64,8 @@ class Agent:
         except Exception:
             return
         for d in data:
-            threading.Thread(target=self.start_stream, args=(d["url"], d.get("sid")), daemon=True).start()
+            threading.Thread(target=self.start_stream, args=(d["url"], d.get("sid"), d.get("folder", "")),
+                             daemon=True).start()
 
     # ------------------------------------------------------------------ status / commands
     def write_status(self) -> None:
@@ -88,7 +90,8 @@ class Agent:
             if cmd == "quit":
                 self.quit.set()
             elif cmd == "start" and c.get("url"):
-                threading.Thread(target=self.start_stream, args=(c["url"],), daemon=True).start()
+                threading.Thread(target=self.start_stream, args=(c["url"], None, c.get("folder", "")),
+                                 daemon=True).start()
             elif cmd == "stop":
                 for w in self._target(c):
                     self.end_stream(w, "stopped")
@@ -100,7 +103,7 @@ class Agent:
                     w.eng.command(c)
 
     # ------------------------------------------------------------------ one stream
-    def start_stream(self, url: str, sid: str | None = None) -> None:
+    def start_stream(self, url: str, sid: str | None = None, folder: str = "") -> None:
         from clipforge.live.session import LiveEngine
 
         url = live_url(url)
@@ -117,7 +120,7 @@ class Agent:
                 return
             lc = self.cfg.live
             pack = detect_pack([info.title, info.categories], lc.game_pack)
-            sid = sid or store.session_id() + "_" + store.slug(channel_of(url) or info.streamer or info.video_id or "stream")
+            sid = sid or store.session_id() + "_" + store.slug(info.streamer or channel_of(url) or info.video_id or "stream")
             src = HlsSource(url, self.cfg.workspace / "live" / "buffers" / sid, lc.hls_buffer_min, lc.max_cores,
                             lc.stream_height)
             t0w, t0 = time.time(), time.monotonic()
@@ -135,10 +138,12 @@ class Agent:
                 eng.frame(t, frame)
             sess = store.load_session(self.cfg, sid)
             sess["video_id"] = info.video_id
+            sess["folder"] = folder or sess.get("folder") or store.LIVE_FOLDER
             store.save_session(self.cfg, sid, sess)
             reader = SegmentReader(src, eng.audio_level, on_frame, self.gov.allow_detectors)
             reader.start()
             w = Watch(url, info, src, eng, reader)
+            w.folder = sess["folder"]
             w.chats = self._start_chat(w)
             self.watches[sid] = w
             self._persist()

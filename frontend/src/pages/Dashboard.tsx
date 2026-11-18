@@ -1,11 +1,13 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { Film, Folder, FolderInput, FolderOpen, MoreVertical, Pencil, Plus, RotateCcw, Search, Trash2 } from 'lucide-react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { Film, Folder, FolderInput, FolderOpen, MoreVertical, Pencil, Plus, Radio, RotateCcw, Search, Trash2 } from 'lucide-react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { api } from '@/api/client'
 import { formatDuration, STAGE_LABELS, useJobs } from '@/api/hooks'
 import type { Job } from '@/api/types'
+import { live, type LiveSessionRow } from '@/api/live'
+import PlatformIcon from '@/components/PlatformIcon'
 import { EmptyState, ErrorBox, PageHeader, StatusBadge } from '@/components/common'
 import FolderPicker from '@/components/FolderPicker'
 import { Button } from '@/components/ui/button'
@@ -178,6 +180,87 @@ function JobCard({ job, showFolder }: { job: Job; showFolder: boolean }) {
   )
 }
 
+function LiveMoveDialog({ row, onClose }: { row: LiveSessionRow; onClose: () => void }) {
+  const refresh = useFolderRefresh()
+  const qc = useQueryClient()
+  const [folder, setFolder] = useState(row.folder)
+  const m = useMutation({
+    mutationFn: () => live.moveSession(row.id, folder),
+    onSuccess: (r) => {
+      toast.success(`Moved to ${r.folder}`)
+      refresh()
+      qc.invalidateQueries({ queryKey: ['live-sessions'] })
+      onClose()
+    },
+    onError: (e) => toast.error(e.message),
+  })
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Move live stream to folder</DialogTitle>
+          <DialogDescription className="line-clamp-2">{row.title || row.streamer}</DialogDescription>
+        </DialogHeader>
+        <FolderPicker value={folder} onChange={setFolder} />
+        <DialogFooter>
+          <Button onClick={() => m.mutate()} disabled={m.isPending || !folder || folder === row.folder}><FolderInput /> Move</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** A live stream that was clipped (Telegram /live or the Live page): its clips live on the Live page. */
+function LiveCard({ row, showFolder }: { row: LiveSessionRow; showFolder: boolean }) {
+  const [moving, setMoving] = useState(false)
+  const started = row.started_at ? new Date(row.started_at) : null
+  const thumb = row.platform === 'youtube' && /[?&/]v[=/]|\/live\//.test(row.stream_url)
+    ? (row.stream_url.match(/(?:v=|\/live\/)([\w-]{11})/)?.[1] ?? '') : ''
+  return (
+    <Card className="group gap-0 overflow-hidden p-0 transition-colors hover:border-primary/40">
+      <Link to={`/live#${row.id}`} className="relative block aspect-video bg-muted">
+        {thumb ? (
+          <img src={`https://i.ytimg.com/vi/${thumb}/hqdefault.jpg`} alt="" className="size-full object-cover"
+            onError={(e) => (e.currentTarget.style.display = 'none')} />
+        ) : (
+          <div className="grid size-full place-items-center"><Radio className="size-8 text-muted-foreground/50" /></div>
+        )}
+        <span className={cn('absolute top-2 left-2 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium',
+          row.live && !row.ended_at ? 'bg-red-600 text-white' : 'bg-black/70')}>
+          <Radio className="size-3" /> {row.live && !row.ended_at ? 'LIVE' : 'Live stream'}
+        </span>
+        {showFolder && (
+          <span className="absolute top-2 right-2 inline-flex max-w-[60%] items-center gap-1 rounded bg-black/70 px-1.5 py-0.5 text-[11px]">
+            <Folder className="size-3 shrink-0" /><span className="truncate">{row.folder}</span>
+          </span>
+        )}
+      </Link>
+      <div className="flex items-start gap-2 p-4">
+        <Link to={`/live#${row.id}`} className="min-w-0 flex-1">
+          <div className="line-clamp-2 font-medium leading-snug">{row.title || row.streamer || row.stream_url}</div>
+          <div className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
+            {row.platform && <PlatformIcon platform={row.platform as never} className="size-3" />}
+            {row.streamer && <>{row.streamer} · </>}
+            {started && <>{started.toLocaleDateString()} · </>}
+            {row.n_clips} clips
+          </div>
+        </Link>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon" className="-mr-2 size-8 shrink-0" aria-label="Live stream actions">
+              <MoreVertical />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => setMoving(true)}><FolderInput /> Move to folder…</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+      {moving && <LiveMoveDialog row={row} onClose={() => setMoving(false)} />}
+    </Card>
+  )
+}
+
 const ALL = '__all__'
 const NONE = '__none__'
 
@@ -189,22 +272,29 @@ export default function Dashboard() {
   const [q, setQ] = useState('')
   const [renaming, setRenaming] = useState(false)
   const jobs = useMemo(() => data ?? [], [data])
+  const { data: liveData } = useQuery({ queryKey: ['live-sessions'], queryFn: live.sessions, refetchInterval: 15000 })
+  const lives = useMemo(() => liveData ?? [], [liveData])
   const folders = useMemo(() => {
     const m = new Map<string, { n: number; busy: number }>()
-    for (const j of jobs) {
-      if (!j.folder) continue
-      const e = m.get(j.folder) ?? { n: 0, busy: 0 }
+    const add = (f: string, busy: boolean) => {
+      const key = [...m.keys()].find((k) => k.toLowerCase() === f.toLowerCase()) ?? f
+      const e = m.get(key) ?? { n: 0, busy: 0 }
       e.n += 1
-      if (j.busy) e.busy += 1
-      m.set(j.folder, e)
+      if (busy) e.busy += 1
+      m.set(key, e)
     }
+    for (const j of jobs) if (j.folder) add(j.folder, j.busy)
+    for (const l of lives) add(l.folder, l.live && !l.ended_at)
     return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0], undefined, { sensitivity: 'base' }))
-  }, [jobs])
+  }, [jobs, lives])
   const unfiled = jobs.filter((j) => !j.folder).length
   const needle = q.trim().toLowerCase()
   const shown = jobs.filter((j) =>
     (sel === ALL || (sel === NONE ? !j.folder : j.folder === sel)) &&
     (!needle || `${j.title} ${j.source} ${j.channel} ${j.folder}`.toLowerCase().includes(needle)))
+  const shownLive = lives.filter((l) =>
+    (sel === ALL || (sel !== NONE && l.folder.toLowerCase() === sel.toLowerCase())) &&
+    (!needle || `${l.title} ${l.streamer} ${l.folder}`.toLowerCase().includes(needle)))
   const isFolder = sel !== ALL && sel !== NONE
   const tab = (key: string, label: string, n: number, icon: ReactNode, busy = 0) => (
     <button key={key} type="button" onClick={() => setSel(key)}
@@ -242,7 +332,7 @@ export default function Dashboard() {
             </div>
           ))}
         </div>
-      ) : !jobs.length ? (
+      ) : !jobs.length && !lives.length ? (
         <EmptyState
           icon={Film}
           title="No jobs yet"
@@ -259,7 +349,8 @@ export default function Dashboard() {
       ) : (
         <>
           <div className="mb-4 flex gap-2 overflow-x-auto pb-1">
-            {tab(ALL, 'All jobs', jobs.length, <Film className="size-4" />, jobs.filter((j) => j.busy).length)}
+            {tab(ALL, 'All jobs', jobs.length + lives.length, <Film className="size-4" />,
+              jobs.filter((j) => j.busy).length + lives.filter((l) => l.live && !l.ended_at).length)}
             {folders.map(([name, e]) =>
               tab(name, name, e.n, sel === name ? <FolderOpen className="size-4" /> : <Folder className="size-4" />, e.busy))}
             {unfiled > 0 && folders.length > 0 && tab(NONE, 'No folder', unfiled, <Folder className="size-4 opacity-50" />)}
@@ -276,12 +367,13 @@ export default function Dashboard() {
               <span className="text-xs text-muted-foreground">Tip: ⋮ on a job → Move to folder, or pick a folder when you start a job.</span>
             )}
           </div>
-          {!shown.length ? (
+          {!shown.length && !shownLive.length ? (
             <EmptyState icon={FolderOpen} title={needle ? 'Nothing matches' : 'This folder is empty'}>
               {needle ? 'Try another word.' : 'Start a job and pick this folder.'}
             </EmptyState>
           ) : (
             <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+              {shownLive.map((l) => <LiveCard key={l.id} row={l} showFolder={sel === ALL} />)}
               {shown.map((j) => (
                 <JobCard key={j.id} job={j} showFolder={sel === ALL} />
               ))}

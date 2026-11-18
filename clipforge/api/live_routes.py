@@ -24,6 +24,7 @@ CHAT_KEYS = {"chat_twitch": "twitch", "chat_kick": "kick", "chat_youtube": "yout
 def _session_out(cfg: Config, s: dict) -> dict:
     return {k: s.get(k) for k in ("id", "started_at", "ended_at", "stream_url", "live", "simulated", "game",
                                   "game_label", "source", "best_of", "streamer", "platform", "title")} | {
+        "folder": store.folder_of(s)} | {
         "clips": [{k: c.get(k) for k in ("rank", "trigger", "score", "reason", "title", "duration", "status",
                                          "captions", "render", "posted", "hashtags", "created_at", "manual")}
                   for c in s.get("clips", [])]}
@@ -46,6 +47,7 @@ def live_status() -> dict:
 
 class StreamIn(BaseModel):
     url: str
+    folder: str = ""
 
 
 @router.post("/streams", summary="Start watching a live stream link (YouTube / Twitch / Kick …)")
@@ -59,8 +61,34 @@ def start_stream(body: StreamIn) -> dict:
     st = store.read_status(cfg)
     if not st.get("engine_running"):
         raise HTTPException(409, "The live agent isn't running yet — try again in a few seconds.")
-    store.send_command(cfg, "start", url=url)
-    return {"ok": True, "message": "Opening the stream — it shows up here in about 20 s."}
+    from clipforge.services import jobs as job_svc
+
+    folder = job_svc.clean_folder(body.folder) or store.LIVE_FOLDER
+    store.send_command(cfg, "start", url=url, folder=folder)
+    return {"ok": True, "folder": folder, "message": f"Opening the stream — it shows up here in about 20 s (folder: {folder})."}
+
+
+@router.get("/sessions", summary="Every live stream clipped so far (newest first), with its folder")
+def list_sessions() -> list[dict]:
+    cfg = load_config()
+    return [{k: v for k, v in _session_out(cfg, s).items() if k != "clips"} | {"n_clips": len(s.get("clips", []))}
+            for s in store.sessions(cfg, 1000) if not s.get("simulated")]
+
+
+class FolderIn(BaseModel):
+    folder: str = ""
+
+
+@router.put("/sessions/{sid}/folder", summary="Move a live stream to another folder")
+def move_session(sid: str, body: FolderIn) -> dict:
+    from clipforge.services import jobs as job_svc
+
+    cfg = load_config()
+    try:
+        s = store.set_folder(cfg, sid, job_svc.clean_folder(body.folder))
+    except KeyError:
+        raise HTTPException(404, "That live stream doesn't exist.")
+    return {"ok": True, "folder": s["folder"]}
 
 
 @router.delete("/streams/{sid}", summary="Stop watching a stream (clips in progress finish)")

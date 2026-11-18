@@ -196,13 +196,31 @@ def clean_folder(name: str | None) -> str:
     return name
 
 
+def _live_sessions() -> list[dict]:
+    from clipforge.config import load_config
+    from clipforge.live import store as live_store
+
+    try:
+        return live_store.sessions(load_config(), 1000)
+    except Exception:
+        return []
+
+
 def folders() -> list[dict]:
-    """[{name, jobs}] of every folder in use, A→Z."""
-    counts: dict[str, int] = {}
+    """[{name, jobs, live}] of every folder in use (clip jobs and live streams), A→Z."""
+    from clipforge.live import store as live_store
+
+    counts: dict[str, list[int]] = {}
     for j in db.list_jobs():
         if j.folder:
-            counts[j.folder] = counts.get(j.folder, 0) + 1
-    return [{"name": k, "jobs": v} for k, v in sorted(counts.items(), key=lambda kv: kv[0].lower())]
+            counts.setdefault(j.folder, [0, 0])[0] += 1
+    for s in _live_sessions():
+        if s.get("simulated"):
+            continue
+        name = live_store.folder_of(s)
+        key = next((k for k in counts if k.lower() == name.lower()), name)
+        counts.setdefault(key, [0, 0])[1] += 1
+    return [{"name": k, "jobs": v[0], "live": v[1]} for k, v in sorted(counts.items(), key=lambda kv: kv[0].lower())]
 
 
 def set_folder(job_id: int, folder: str | None) -> dict:
@@ -228,6 +246,13 @@ def rename_folder(old: str, new: str) -> dict:
             s.add(job)
             n += 1
         s.commit()
+    from clipforge.config import load_config
+    from clipforge.live import store as live_store
+
+    for sess in _live_sessions():
+        if live_store.folder_of(sess) == old and sess.get("id"):
+            live_store.set_folder(load_config(), sess["id"], new)
+            n += 1
     if not n:
         raise NotFound(f"No folder called {old!r}")
     return {"moved": n, "folder": new}

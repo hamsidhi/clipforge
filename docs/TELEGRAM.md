@@ -197,6 +197,8 @@ To go back: delete `api_base_url`, call `close` on the local server, wait 10 min
 | `GET /api/publishing/history` | History | `/history` | |
 | `GET /api/live/status` | Live page | `/live` | |
 | `POST /api/live/streams` | Live → paste a stream link | paste a Twitch/Kick/YouTube-live link, or `/live <link>` | |
+| `GET /api/live/sessions` | Jobs page folders (live streams) | — | Web only (list view) |
+| `PUT /api/live/sessions/{sid}/folder` | Jobs page → live stream ⋮ → Move to folder | folder picker when starting `/live <link>` | |
 | `DELETE /api/live/streams/{sid}` | Live → Stop | `/live stop`, ⏹ Stop button in `/live` | |
 | `POST /api/live/clip` | Live → CLIP NOW | `/clip [note]` (while a stream is watched), 🎬 Clip now button | |
 | `POST /api/live/control` | Live → Pause / Auto-post | `/live pause`, `/live resume`, `/live auto on\|off` | |

@@ -73,7 +73,7 @@ export const api = {
   job: (id: number) => request<Job>(`/api/jobs/${id}`),
   createJob: (body: { url?: string; upload_id?: string; settings: JobSettings; transcript?: string; folder?: string }) =>
     request<Job>('/api/jobs', { method: 'POST', body: json(body) }),
-  jobFolders: () => request<{ name: string; jobs: number }[]>('/api/jobs/folders'),
+  jobFolders: () => request<{ name: string; jobs: number; live: number }[]>('/api/jobs/folders'),
   moveJob: (id: number, folder: string) => request<Job>(`/api/jobs/${id}/folder`, { method: 'PUT', body: json({ folder }) }),
   renameFolder: (old: string, next: string) =>
     request<{ moved: number; folder: string }>('/api/jobs/folders/rename', { method: 'POST', body: json({ old, new: next }) }),

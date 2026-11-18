@@ -140,6 +140,23 @@ def get_clip(cfg: Config, sid: str, rank: int) -> dict:
     raise KeyError(f"live clip {sid}#{rank} not found")
 
 
+LIVE_FOLDER = "Live streams"  # default folder of a live stream
+
+
+def folder_of(s: dict) -> str:
+    return s.get("folder") or LIVE_FOLDER
+
+
+def set_folder(cfg: Config, sid: str, folder: str) -> dict:
+    with _lock:
+        data = _read(session_file(cfg, sid), {})
+        if not data:
+            raise KeyError(f"live stream {sid} not found")
+        data["folder"] = folder or LIVE_FOLDER
+        _atomic_write(session_file(cfg, sid), data)
+        return data
+
+
 def sessions(cfg: Config, n: int = 10) -> list[dict]:
     out = []
     if cfg.workspace.exists():

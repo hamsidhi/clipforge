@@ -9,6 +9,7 @@ export interface LiveClip {
 export interface LiveSession {
   id: string; started_at: string; ended_at?: string; stream_url: string; live: boolean; simulated: boolean
   game: string; game_label: string; source: string; best_of?: string; streamer?: string; platform?: string; title?: string
+  folder: string
   clips: LiveClip[]
 }
 export interface LiveStream {
@@ -30,13 +31,17 @@ export interface LiveStatus {
   gaming_accounts: { id: string; title: string; platform: string }[]
   sessions: LiveSession[]
 }
+export interface LiveSessionRow extends Omit<LiveSession, 'clips'> { n_clips: number }
 export interface LiveAccount { id: string; title: string; platform: string; gaming: boolean; ok: boolean }
 
 const j = (body: unknown) => ({ method: 'POST', body: JSON.stringify(body) })
 
 export const live = {
   status: () => request<LiveStatus>('/api/live/status'),
-  start: (url: string) => request<{ message: string }>('/api/live/streams', j({ url })),
+  start: (url: string, folder = '') => request<{ message: string; folder: string }>('/api/live/streams', j({ url, folder })),
+  sessions: () => request<LiveSessionRow[]>('/api/live/sessions'),
+  moveSession: (sid: string, folder: string) =>
+    request<{ ok: boolean; folder: string }>(`/api/live/sessions/${encodeURIComponent(sid)}/folder`, { method: 'PUT', body: JSON.stringify({ folder }) }),
   stop: (sid: string) => request<{ ok: boolean }>(`/api/live/streams/${encodeURIComponent(sid)}`, { method: 'DELETE' }),
   clip: (sid: string, note = '') => request<{ ok: boolean }>('/api/live/clip', j({ sid, note })),
   control: (sid: string, action: 'pause' | 'resume' | 'auto_on' | 'auto_off') =>

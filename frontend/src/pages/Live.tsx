@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Clapperboard, Clock, Cpu, Gamepad2, Pause, Play, Radio, Scissors, Square, Trash2, Upload } from 'lucide-react'
+import { Clapperboard, Clock, Cpu, Folder, Gamepad2, Pause, Play, Radio, Scissors, Square, Trash2, Upload } from 'lucide-react'
 import { toast } from 'sonner'
 import { live, type LiveClip, type LiveSession, type LiveStatus, type LiveStream } from '@/api/live'
 import { ErrorBox, PageHeader } from '@/components/common'
+import FolderPicker from '@/components/FolderPicker'
 import PlatformIcon from '@/components/PlatformIcon'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -209,10 +210,15 @@ function Accounts() {
 export default function Live() {
   const qc = useQueryClient()
   const [url, setUrl] = useState('')
+  const [folder, setFolder] = useState('Live streams')
   const { data, isLoading, error } = useQuery({ queryKey: ['live', 'status'], queryFn: live.status, refetchInterval: 2000 })
   const start = useMutation({
-    mutationFn: () => live.start(url),
-    onSuccess: (r) => { toast.success(r.message); setUrl(''); qc.invalidateQueries({ queryKey: ['live'] }) },
+    mutationFn: () => live.start(url, folder),
+    onSuccess: (r) => {
+      toast.success(r.message); setUrl('')
+      qc.invalidateQueries({ queryKey: ['live'] }); qc.invalidateQueries({ queryKey: ['job-folders'] })
+      qc.invalidateQueries({ queryKey: ['live-sessions'] })
+    },
     onError: (e) => toast.error((e as Error).message),
   })
   const best = useMutation({ mutationFn: live.bestof, onSuccess: (r) => toast.success(r.message), onError: (e) => toast.error((e as Error).message) })
@@ -227,10 +233,16 @@ export default function Live() {
         description={!data.enabled ? 'Live clipping is off (settings below)' : !st.engine_running ? 'Starting the live agent…'
           : streams.length ? `Watching ${streams.length} stream${streams.length > 1 ? 's' : ''}` : 'Paste a live stream link to start'} />
       <div className="space-y-4">
-        <form className="flex flex-col gap-2 rounded-xl border p-4 sm:flex-row" onSubmit={(e) => { e.preventDefault(); if (url.trim()) start.mutate() }}>
-          <Input placeholder="Live stream link — twitch.tv/…, kick.com/…, youtube.com/…/live" value={url} onChange={(e) => setUrl(e.target.value)}
-            aria-label="Live stream link" />
-          <Button type="submit" disabled={!url.trim() || start.isPending}><Radio className="size-4" /> Start clipping</Button>
+        <form className="space-y-3 rounded-xl border p-4" onSubmit={(e) => { e.preventDefault(); if (url.trim()) start.mutate() }}>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Input placeholder="Live stream link — twitch.tv/…, kick.com/…, youtube.com/…/live" value={url} onChange={(e) => setUrl(e.target.value)}
+              aria-label="Live stream link" />
+            <Button type="submit" disabled={!url.trim() || start.isPending}><Radio className="size-4" /> Start clipping</Button>
+          </div>
+          <div className="space-y-1.5">
+            <Label className="text-xs text-muted-foreground">Save in folder (shows on the Jobs page too)</Label>
+            <FolderPicker value={folder} onChange={setFolder} />
+          </div>
         </form>
         <p className="-mt-2 px-1 text-xs text-muted-foreground">
           Clips of other creators can get copyright claims — every caption credits and links the streamer. Ask for permission when you can.
@@ -248,12 +260,13 @@ export default function Live() {
         )}
         {streams.map((s) => <StreamCard key={s.session} s={s} />)}
         {data.sessions.map((s) => (
-          <section key={s.id} className="overflow-hidden rounded-xl border">
+          <section key={s.id} id={s.id} className="overflow-hidden rounded-xl border">
             <header className="flex flex-wrap items-center gap-2 bg-muted/40 px-4 py-2">
               <Gamepad2 className="size-4" />
               <span className="font-medium">{s.streamer || s.game_label} · {s.started_at?.replace('T', ' ').slice(0, 16)}</span>
               {s.live && <Badge variant="destructive">LIVE</Badge>}
               {s.simulated && <Badge variant="outline">simulation</Badge>}
+              {!s.simulated && <span className="inline-flex items-center gap-1 text-xs text-muted-foreground"><Folder className="size-3" />{s.folder}</span>}
               <span className="ml-auto text-xs text-muted-foreground">{s.clips.length} clips</span>
               {!s.live && s.clips.length > 0 && (s.best_of
                 ? <a className="text-xs underline" href={`/api/live/sessions/${s.id}/bestof/video`} target="_blank" rel="noreferrer">Highlight video</a>
