@@ -487,6 +487,23 @@ def pin_text(it) -> str:
     return it.pin_comment or metadata_opt.pin_fallback(it.title, it.spoken_lang or "hi")
 
 
+def reauth_text(ch_id: str) -> str:
+    """A YouTube login Google refused. Usual cause on this install (2026-11-20): the Google Cloud OAuth app is in
+    'Testing', so Google ends every login after 7 days — the only lasting fix is publishing the app."""
+    from clipforge.publish import channels as chs
+
+    ch = chs.get(ch_id)
+    name = (ch.title if ch and ch.title else ch_id)
+    plat = (ch.platform if ch and ch.platform else "youtube").title()
+    msg = (f"🔑 {plat} account \"{name}\" is logged out — uploads to it are paused until you reconnect.\n"
+           "Reconnect: app → Accounts → Reconnect (works from the phone).")
+    if plat == "Youtube":
+        msg += ("\nWhy it keeps happening: your Google Cloud app is in 'Testing', so Google logs it out every 7 days. "
+                "Fix once: console.cloud.google.com → Google Auth Platform → Audience → Publish app → Confirm. "
+                "Then Reconnect one last time.")
+    return msg
+
+
 def reach_tips(it) -> str:
     """What to do in the first hour after a post goes live (comments early = more reach)."""
     return (f"📌 Post + pin this as the first comment:\n{pin_text(it)}\n\n"
@@ -537,8 +554,7 @@ def on_run_report(rep) -> None:
                          key=f"fail:{iid}:{it.status}:{it.reason}")
         for ch_id, why in rep.skipped_channels.items():
             if why == "needs re-login":
-                b.notify("reauth", f"🔑 {ch_id} needs a new login — open Accounts on the laptop and click Reconnect.",
-                         key=f"reauth:{ch_id}:{dt.date.today()}")
+                b.notify("reauth", reauth_text(ch_id), key=f"reauth:{ch_id}:{dt.date.today()}")
         for note in getattr(rep, "notices", []):  # moved slots, upload-limit waits (Publishing v2)
             b.notify("publish_failed", f"ℹ️ {scrub(note)[:300]}", key=f"note:{dt.date.today()}:{note[:80]}")
         if rep.quota_exhausted:
