@@ -263,7 +263,7 @@ def test_notifications_toggles_dedupe_and_daily_summary(tg):
         telegram.on_run_report(rep)
         telegram.on_run_report(rep)  # same alerts again: not repeated
         texts = fake.texts()
-        assert sum("is logged out" in t for t in texts) == 1 and sum("quota" in t for t in texts) == 1
+        assert sum("needs a new login" in t for t in texts) == 1 and sum("quota" in t for t in texts) == 1
         now = dt.datetime(2026, 11, 4, 17, 0, tzinfo=dt.timezone.utc)  # 22:30 IST
         assert b.daily_summary_if_due(now) is True
         assert b.daily_summary_if_due(now + dt.timedelta(minutes=5)) is False  # once a day
