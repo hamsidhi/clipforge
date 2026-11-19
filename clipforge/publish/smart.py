@@ -6,8 +6,17 @@ Why this way:
   needs ≥100 followers (checked 2026-11-09). So "when people are active" is learned from WHEN OUR POSTS DID WELL.
 - Start: an assumed India curve (morning 07–10, lunch 12–14, evening 18–23 peak), a starting assumption, not data.
   As posts come in, each quarter-hour's value moves toward the performance of posts published near it.
-- Per post: score = log(1 + views per day over its first 3 days) × engagement × retention, divided by the account's
-  median, so 1.0 = a typical post. Recency: the last 5 posts weigh 1.0, older ones decay (half-life 7 days).
+- Per post: score = log(1 + first-day views) × engagement × retention, divided by the account's median, so 1.0 = a
+  typical post. First-day views = views_24h when stored; otherwise today's views ÷ the platform's growth since day 1
+  (measured on this install 2026-11-19: Instagram Reels get ~all views on day 1, YouTube Shorts ~1.9× by day 3 and
+  ~2.4× by day 10). The old "views ÷ 3 days" made older posts look 3× worse than new ones.
+  Recency: the last 5 posts weigh 1.0, older ones decay (half-life 7 days).
+- Shared learning (2026-11-19): accounts with the same content (podcast | gaming) learn from each other — same
+  platform at 0.5 weight (the other platform diluted the signal in the evaluation, so 0) — a new account starts from its siblings.
+- Start curve depends on the content: podcast = the India curve below, gaming = later evenings/nights (assumption).
+- Honest limit (scripts/eval_timing.py, leave-one-out on 110 real posts): posting time predicted a post's result only
+  0–5% better than "every post is typical"; clip length and posting volume mattered more. The plan still uses the
+  best-known times, keeps exploring, and the evaluation can be re-run as data grows.
 - Curve(t) = (1 − w)·prior(t) + w·perf(t) + κ/√(1 + n(t)), with perf(t) = kernel mean (σ = 60 min) of the
   post scores, n(t) = how much data is near t, and w = n/(n + 3). The κ term is exploration: times with little data
   get a bonus, so the plan keeps testing new hours instead of locking in early.
@@ -41,6 +50,11 @@ EVENING = (18 * 60, 24 * 60 + 30)
 # Assumed India activity by hour (relative). A starting point only — replaced by the account's data over time.
 PRIOR_HOURLY = [0.35, 0.2, 0.1, 0.1, 0.1, 0.15, 0.35, 0.65, 0.85, 0.85, 0.7, 0.6,
                 0.7, 0.75, 0.65, 0.6, 0.6, 0.7, 0.85, 0.95, 1.0, 1.0, 0.95, 0.7]
+# Gaming audiences (students, young viewers): afternoon after school/college, peak late evening/night. Assumption.
+PRIOR_HOURLY_GAMING = [0.6, 0.4, 0.2, 0.1, 0.1, 0.1, 0.15, 0.25, 0.35, 0.4, 0.45, 0.5,
+                       0.6, 0.65, 0.7, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0, 1.0, 0.85]
+SIBLING_SAME_PLATFORM = 0.5   # weight of another account's posts (same content, same platform)
+SIBLING_OTHER_PLATFORM = 0.0  # other platform: diluted the signal in the evaluation (kept as a knob)
 _cache: dict[str, tuple[float, dict]] = {}
 
 
@@ -54,15 +68,28 @@ def _fmt(m: int) -> str:
     return f"{m // 60:02d}:{m % 60:02d}"
 
 
-def prior_bins() -> list[float]:
+def prior_bins(kind: str = "podcast") -> list[float]:
+    hourly = PRIOR_HOURLY_GAMING if kind == "gaming" else PRIOR_HOURLY
     out = []
     for b in range(NBINS):
         t = b * BIN / 60
         h0 = int(t) % 24
         h1 = (h0 + 1) % 24
         f = t - int(t)
-        out.append(PRIOR_HOURLY[h0] * (1 - f) + PRIOR_HOURLY[h1] * f)
+        out.append(hourly[h0] * (1 - f) + hourly[h1] * f)
     return out
+
+
+def content_kind(ch: db.Channel) -> str:
+    """podcast | gaming — the account's content (settings `content`, set in Accounts / Live)."""
+    return "gaming" if str((ch.settings or {}).get("content", "")).lower() == "gaming" else "podcast"
+
+
+def growth(platform: str, age_h: float) -> float:
+    """Views now ÷ views after the first day, by platform (measured on this install, see the module doc)."""
+    if platform == "instagram" or age_h <= 24:
+        return 1.0
+    return 1.0 + 1.4 * (1 - math.exp(-(age_h / 24 - 1) / 2))
 
 
 # ----------------------------------------------------------------------------- per-post scores
@@ -74,11 +101,30 @@ def post_score(p: db.VideoPerf, now: dt.datetime) -> float | None:
     if age_h < 12:
         return None
     views = max(int(p.views or 0), 0)
-    per_day = views / max(min(age_h, 72) / 24, 0.5)
+    if p.views_24h is not None:
+        per_day = max(int(p.views_24h), 0)
+    else:
+        per_day = views / growth(p.platform or "youtube", age_h)
     eng = (int(p.likes or 0) + 2 * int(p.comments or 0) + 3 * int(p.shares or 0) + 3 * int(p.saves or 0)) / max(views, 1)
     eng_f = 1 + min(eng * 10, 1.0)                 # 0 → ×1, ≥10% engagement → ×2
     ret_f = 1.0 if p.avg_view_pct is None else 0.5 + min(float(p.avg_view_pct), 150) / 100
     return math.log1p(per_day) * eng_f * ret_f
+
+
+def sibling_posts(ch: db.Channel, now: dt.datetime, days: int = 45) -> list[dict]:
+    """Other accounts' scored posts with the same content kind, down-weighted (each scored vs ITS own median)."""
+    from clipforge.publish import channels as chs
+
+    kind, plat, out = content_kind(ch), ch.platform or "youtube", []
+    for other in chs.all_channels():
+        if other.id == ch.id or content_kind(other) != kind:
+            continue
+        f = SIBLING_SAME_PLATFORM if (other.platform or "youtube") == plat else SIBLING_OTHER_PLATFORM
+        if f <= 0:
+            continue
+        for x in scored_posts(other.id, now, days):
+            out.append({**x, "weight": x["weight"] * f, "sibling": other.id})
+    return out
 
 
 def scored_posts(channel_id: str, now: dt.datetime, days: int = 45) -> list[dict]:
@@ -102,9 +148,9 @@ def scored_posts(channel_id: str, now: dt.datetime, days: int = 45) -> list[dict
 
 
 # ----------------------------------------------------------------------------- curve
-def curve(pts: list[dict]) -> dict:
+def curve(pts: list[dict], kind: str = "podcast") -> dict:
     """{value: [NBINS], data_weight: [NBINS], perf: [NBINS|None]} — pure."""
-    prior = prior_bins()
+    prior = prior_bins(kind)
     pmean = sum(prior) / len(prior)
     prior = [p / pmean for p in prior]                    # mean 1, same scale as relative post scores
     val, nw, perf = [], [], []
@@ -132,8 +178,13 @@ def account_curve(ch: db.Channel, now: dt.datetime) -> dict:
     if hit and time.time() - hit[0] < 600:
         return hit[1]
     pts = scored_posts(ch.id, now)
-    c = curve(pts)
-    c["posts"] = pts
+    try:
+        sib = sibling_posts(ch, now)
+    except Exception:  # never let shared learning break the plan
+        sib = []
+    c = curve(pts + sib, content_kind(ch))
+    c["posts"] = pts                       # this account's own posts (count rule, explain)
+    c["sibling_posts"] = len(sib)
     _cache[key] = (time.time(), c)
     return c
 
@@ -238,7 +289,8 @@ def explain(ch: db.Channel, cfg: Config, now: dt.datetime) -> dict:
                        "data": round(sum(c["data_weight"][b] for b in bins) / len(bins), 2)})
     plan = day_plan(ch, cfg, now.date(), now)
     top = sorted(hourly, key=lambda x: x["value"], reverse=True)[:5]
-    return {"posts_used": len(c["posts"]), "best_hours_ist": [f"{x['hour']:02d}:00" for x in top],
+    return {"posts_used": len(c["posts"]), "sibling_posts": c.get("sibling_posts", 0), "content": content_kind(ch),
+            "best_hours_ist": [f"{x['hour']:02d}:00" for x in top],
             "count": plan["count"], "why_count": plan["why_count"], "slots_today": plan["slots"],
             "hourly": hourly, "rule": "slots = best quarter-hours of (assumed India curve → your posts' results "
                                       "by hour) + exploration bonus where data is thin"}

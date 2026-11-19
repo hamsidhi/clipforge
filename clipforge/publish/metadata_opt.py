@@ -43,6 +43,29 @@ Write:
 Return JSON only: {{"titles": ["...","...","..."], "summary": "...", "tags": ["..."], "hashtags": ["#..."], "pin_comment": "..."}}"""
 
 
+GAMING_PROMPT = """You write YouTube Shorts / Instagram Reels metadata for a clip cut from {source} by {channel}.
+This is GAMING content — NOT a podcast. Never call it a podcast or an interview.
+
+Video: {episode}
+Game: {game}
+Clip's working title: {title}
+Clip hook: {hook}
+What the player says in the clip (commentary, may be Hinglish):
+\"\"\"{text}\"\"\"
+
+Write:
+- "titles": exactly 3 different titles, each max 70 characters, about what HAPPENS in the game in this clip (the build,
+  the fail, the funny/epic moment). Name the game early when it fits. Curiosity WITHOUT lying, no ALL CAPS words, no
+  emojis, {language_rule}
+- "summary": 1-2 short lines that tease the moment (no hashtags), written for gamers.
+- "tags": 8-12 search tags (lowercase, no #): the game, what is built/done, the creator's name, generic gaming tags.
+- "hashtags": 3 lowercase hashtags (with #) about the game and the moment, e.g. "#citiesskylines2".
+- "pin_comment": one short question (max 90 characters) gamers will want to answer about THIS moment (e.g. "Would
+  you build it the same way?"), never "like and subscribe". Same language rule as the titles.
+
+Return JSON only: {{"titles": ["...","...","..."], "summary": "...", "tags": ["..."], "hashtags": ["#..."], "pin_comment": "..."}}"""
+
+
 class MetaReply(BaseModel):
     titles: list[str]
     summary: str
@@ -56,12 +79,16 @@ PIN_TEMPLATES = {
            "What's your take on this? 👇", "Is he right, or is this overrated? 👇"],
     "hi": ["Aap iss baat se agree karte ho? Yes ya no 👇", "Aap unki jagah hote toh kya karte? 👇",
            "Iss pe aapki kya raay hai? 👇", "Sahi bola ya overrated? 👇"],
+    "gaming_en": ["Would you have done it the same way? 👇", "Rate this out of 10 👇",
+                  "What should be built next? 👇", "Best moment of the stream? 👇"],
+    "gaming_hi": ["Aap hote toh aise hi karte? 👇", "Isko 10 mein se kitne doge? 👇",
+                  "Agla kya banana chahiye? 👇", "Sabse best moment kaunsa tha? 👇"],
 }
 
 
-def pin_fallback(title: str, lang: str) -> str:
+def pin_fallback(title: str, lang: str, gaming: bool = False) -> str:
     """A question to pin when the LLM gave none (stable per title, so it doesn't change between calls)."""
-    opts = PIN_TEMPLATES["en" if lang == "en" else "hi"]
+    opts = PIN_TEMPLATES[("gaming_" if gaming else "") + ("en" if lang == "en" else "hi")]
     return opts[sum(map(ord, title or "")) % len(opts)]
 
 
@@ -148,25 +175,32 @@ def credit_line(template: str, info: VideoInfo) -> str:
     return template.format(episode=info.title, source_channel=info.channel or "", url=info.url or "").strip()
 
 
-def final_hashtags(llm_tags: list[str], niche: str) -> list[str]:
-    """3–5 lowercase hashtags, always #shorts + the channel's niche tag."""
-    return normalize_hashtags(["#shorts", niche, *llm_tags, "#podcast"], 5)
+def final_hashtags(llm_tags: list[str], niche: str, extra: list[str] | None = None) -> list[str]:
+    """3–5 lowercase hashtags, always #shorts + the niche tag (the game's tag for gaming clips, #podcast otherwise)."""
+    return normalize_hashtags(["#shorts", niche, *llm_tags, *(["#podcast"] if extra is None else extra)], 5)
 
 
 def generate(clip: ClipCandidate, info: VideoInfo, words: list[Word], settings: dict[str, Any],
              llm: LLMProvider | None, existing_titles: list[str]) -> dict[str, Any]:
-    """Returns fields for a QueueItem: title, description, tags, variants, ig_caption, category_id."""
+    """Returns fields for a QueueItem: title, description, tags, variants, ig_caption, category_id, content."""
+    from clipforge.publish import content as content_mod
+
     text = " ".join(w.display("roman") for w in words_in_range(words, clip.start, clip.end))
     spoken = spoken_language([w.text for w in words_in_range(words, clip.start, clip.end)])
     language = "english" if spoken == "en" else settings.get("title_language", "hinglish")
+    kind = content_mod.of(info, settings)          # podcast or gaming — decided by the VIDEO first
+    prof = content_mod.profile(kind, settings)
+    if kind.gaming:
+        prompt = GAMING_PROMPT.format(source=prof["source"], channel=info.channel or "the creator", episode=info.title,
+                                      game=kind.game or "unknown — infer it from the video title", title=clip.title,
+                                      hook=clip.hook, text=truncate(text, 1500), language_rule=language_rule(spoken))
+    else:
+        prompt = PROMPT.format(episode=info.title, title=clip.title, hook=clip.hook, topic=clip.topic,
+                               text=truncate(text, 1500), language=language, language_rule=language_rule(spoken))
     reply: MetaReply | None = None
     if llm is not None:
         try:
-            reply = llm.complete_json(
-                PROMPT.format(episode=info.title, title=clip.title, hook=clip.hook, topic=clip.topic,
-                              text=truncate(text, 1500), language=language,
-                              language_rule=language_rule(spoken)),
-                MetaReply, retries=2, task="ytmeta", json_schema=strict_schema(MetaReply))
+            reply = llm.complete_json(prompt, MetaReply, retries=2, task="ytmeta", json_schema=strict_schema(MetaReply))
         except LLMError:
             reply = None
     titles = [t.strip().strip('"') for t in (reply.titles if reply else [])][:3]
@@ -185,22 +219,23 @@ def generate(clip: ClipCandidate, info: VideoInfo, words: list[Word], settings: 
     variants.sort(key=lambda v: v["score"], reverse=True)
     best = next((v["title"] for v in variants if not v["duplicate"] and v["title"]), "")
     summary = (reply.summary if reply else clip.hook or clip.title).strip()
-    hashtags = final_hashtags(reply.hashtags if reply else [], settings.get("niche_tag", "#podcast"))
-    credit = credit_line(settings.get("credit_template", ""), info)
+    hashtags = final_hashtags(reply.hashtags if reply else [], prof["niche_tag"], prof["extra_hashtags"])
+    credit = credit_line(prof["credit_template"], info)
     tags = tags_within_limit([*(reply.tags if reply else []), clip.topic, *[h.lstrip("#") for h in hashtags],
-                              "podcast", "hindi podcast", "shorts"])
+                              *prof["base_tags"]])
     from clipforge.publish import ig_meta
 
     # Instagram: hook + value + CTA + credit + ≤5 lowercase hashtags (#reels instead of #shorts)
     ig_tags = [h for h in hashtags if h.lower() != "#shorts"]
     ig_tags = ["#reels", *ig_tags][: ig_meta.MAX_HASHTAGS]
     hook = clip.hook.strip() if clip.hook and clip.hook.strip().lower() not in summary.lower() else ""
-    ig = ig_meta.build(hook, summary, credit, ig_tags, settings.get("cta") or ig_meta.CTA)
+    ig = ig_meta.build(hook, summary, credit, ig_tags, prof["cta"])
     return {
-        "title": best, "description": build_description(summary, credit, settings.get("description_template", ""), hashtags),
-        "tags": tags, "variants": variants[:5], "ig_caption": ig, "category_id": str(settings.get("category_id", "27")),
-        "used_llm": reply is not None,
-        "pin_comment": truncate((reply.pin_comment if reply else "").strip().strip('"'), 120) or pin_fallback(best, spoken),
+        "title": best, "description": build_description(summary, credit, prof["description_template"], hashtags),
+        "tags": tags, "variants": variants[:5], "ig_caption": ig, "category_id": prof["category_id"],
+        "used_llm": reply is not None, "content": kind.kind, "game": kind.game,
+        "pin_comment": truncate((reply.pin_comment if reply else "").strip().strip('"'), 120)
+        or pin_fallback(best, spoken, kind.gaming),
     }
 
 

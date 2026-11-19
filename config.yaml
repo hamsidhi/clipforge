@@ -56,8 +56,8 @@ arcs:                  # arc selection engine (stages/arcs.py): complete ideas, 
   judge_pool: 40       # how many candidates the judge scores
   context_sec: 30      # context shown to the judge before/after each candidate
   judge_model: ''      # '' = llm.model; a bigger local model (e.g. qwen2.5:14b) judges better, slower
-  ideal_sec: [20, 40]  # reach: clips this long rank higher (short Shorts/Reels hold viewers best)
-  length_weight: 0.5   # rank bonus inside ideal_sec (and the same penalty past 60 s); 0 = off
+  ideal_sec: [20, 35]  # reach: clips this long rank higher (2026-11-19: 20-35 s got ~6x the views of 35-50 s)
+  length_weight: 1.0   # rank bonus inside ideal_sec (and the same penalty past 60 s); 0 = off
   trim_soft_start: true # clips start on the first real word (drops "so / and / yeah / matlab" openers)
 
 scoring_weights:

@@ -98,8 +98,8 @@ class ArcsConfig(_Section):
     judge_pool: int = Field(40, ge=5, le=120)    # candidates the judge looks at
     context_sec: float = Field(30, ge=0, le=90)  # context the judge sees before/after a candidate
     judge_model: str = ""                        # "" = llm.model; e.g. qwen2.5:14b for a stronger judge
-    ideal_sec: list[float] = [20, 40]            # reach: clips this long rank higher (your best posts were 20-30 s)
-    length_weight: float = Field(0.5, ge=0, le=3)  # rank bonus inside ideal_sec; the same as a penalty past 60 s
+    ideal_sec: list[float] = [20, 35]            # reach: clips this long rank higher (2026-11-19 data: 20-35 s = 6x the views of 35-50 s on Reels)
+    length_weight: float = Field(1.0, ge=0, le=3)  # rank bonus inside ideal_sec; the same as a penalty past 60 s
     trim_soft_start: bool = True                 # drop "so / and / yeah / matlab…" before the first real word
 
 

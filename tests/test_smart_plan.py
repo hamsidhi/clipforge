@@ -163,3 +163,42 @@ def test_explore_shift_changes_one_slot_per_day_within_rules():
     for t in (a, b):
         assert sum(1 for x, y in zip(sorted(t), times) if x != y) == 1
         assert all(y - x >= 60 for x, y in zip(sorted(t), sorted(t)[1:]))
+
+
+# ----------------------------------------------------------------------------- 2026-11-19: fair scores, shared learning
+def test_post_score_is_fair_between_old_and_new_posts():
+    from clipforge.api import db
+    from clipforge.publish import smart
+
+    now = NOW
+    old_yt = db.VideoPerf(youtube_video_id="a", channel_id="c", views=240, platform="youtube",
+                          published_at=now - dt.timedelta(days=10))
+    new_yt = db.VideoPerf(youtube_video_id="b", channel_id="c", views=100, platform="youtube",
+                          published_at=now - dt.timedelta(hours=20))
+    # YouTube: 240 views after 10 days ≈ 100 on day 1 (×2.4 growth) — the same as a new post with 100
+    assert smart.post_score(old_yt, now) == pytest.approx(smart.post_score(new_yt, now), rel=0.05)
+    old_ig = db.VideoPerf(youtube_video_id="c", channel_id="c", views=100, platform="instagram",
+                          published_at=now - dt.timedelta(days=10))
+    assert smart.post_score(old_ig, now) == pytest.approx(smart.post_score(new_yt, now), rel=0.01)  # Reels: day 1 = all
+    stored = db.VideoPerf(youtube_video_id="d", channel_id="c", views=999, views_24h=100, platform="youtube",
+                          published_at=now - dt.timedelta(days=30))
+    assert smart.post_score(stored, now) == pytest.approx(smart.post_score(new_yt, now), rel=0.01)  # views_24h wins
+
+
+def test_gaming_prior_and_shared_learning_between_same_content_accounts(env):
+    import json
+
+    from clipforge.publish import channels as chs, smart
+
+    assert smart.prior_bins("gaming")[23 * 4] > smart.prior_bins("podcast")[23 * 4]  # gamers: later nights
+    for cid, content in (("UCgameA", "gaming"), ("UCgameB", "gaming"), ("UCpod", "podcast")):
+        _add_channel(cid)
+        chs.update(cid, settings_json=json.dumps({"content": content}))
+    for i in range(6):
+        _perf("UCgameB", i, NOW - dt.timedelta(days=2 + i), 100)
+        _perf("UCpod", i, NOW - dt.timedelta(days=2 + i), 100)
+    sib = smart.sibling_posts(chs.get("UCgameA"), NOW)
+    assert {x["sibling"] for x in sib} == {"UCgameB"}                       # same content only
+    assert all(x["weight"] <= smart.SIBLING_SAME_PLATFORM for x in sib)
+    assert smart.content_kind(chs.get("UCgameA")) == "gaming" and smart.content_kind(chs.get("UCpod")) == "podcast"
+    assert smart.account_curve(chs.get("UCgameA"), NOW)["sibling_posts"] == 6
