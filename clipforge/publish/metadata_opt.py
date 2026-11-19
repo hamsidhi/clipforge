@@ -169,15 +169,27 @@ def build_description(summary: str, credit: str, template: str, hashtags: list[s
     return "\n\n".join(p for p in parts if p)[:4900]
 
 
+def _no_hashtags(text: str) -> str:
+    """'Cities Skyline 2 #2' / '#shorts' inside a source title would count as hashtags on YouTube and Instagram
+    (taking one of our 5): '#2' → 'Part 2', '#word' → 'word'."""
+    text = re.sub(r"#(\d+)", r"Part \1", text or "")
+    return re.sub(r"#(?=\w)", "", text)
+
+
 def credit_line(template: str, info: VideoInfo) -> str:
     if not info.url and not info.channel:
         return ""  # your own upload (local file without source info): no credit needed
-    return template.format(episode=info.title, source_channel=info.channel or "", url=info.url or "").strip()
+    return template.format(episode=_no_hashtags(info.title), source_channel=_no_hashtags(info.channel or ""),
+                           url=info.url or "").strip()
 
 
 def final_hashtags(llm_tags: list[str], niche: str, extra: list[str] | None = None) -> list[str]:
-    """3–5 lowercase hashtags, always #shorts + the niche tag (the game's tag for gaming clips, #podcast otherwise)."""
-    return normalize_hashtags(["#shorts", niche, *llm_tags, *(["#podcast"] if extra is None else extra)], 5)
+    """3–5 lowercase hashtags, always #shorts + the niche tag. Podcast: then the LLM's topic tags, #podcast last.
+    Gaming (extra given): the game's known tags + #gaming BEFORE the LLM's — invented tags (#revenuemoon) must
+    never push out the ones gamers search for."""
+    if extra is None:
+        return normalize_hashtags(["#shorts", niche, *llm_tags, "#podcast"], 5)
+    return normalize_hashtags(["#shorts", niche, *extra, *llm_tags], 5)
 
 
 def generate(clip: ClipCandidate, info: VideoInfo, words: list[Word], settings: dict[str, Any],

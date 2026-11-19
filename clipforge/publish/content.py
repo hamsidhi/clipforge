@@ -93,7 +93,7 @@ def profile(c: Content, settings: dict[str, Any]) -> dict[str, Any]:
             "description_template": _custom(settings, "description_template") or f"Follow for daily {what}. 🎮🔔",
             "credit_template": _custom(settings, "credit_template") or "🎮 Source: {episode} — {source_channel} {url}",
             "niche_tag": _custom(settings, "niche_tag") or (c.game_tags[0] if c.game_tags else "#gaming"),
-            "extra_hashtags": [*c.game_tags[1:3], "#gaming"],
+            "extra_hashtags": [*c.game_tags[1:2], "#gaming"],  # + 1 tag from the LLM about the moment
             "base_tags": [*( [c.game.lower(), f"{c.game.lower()} gameplay"] if c.game else []),
                           "gaming", "gameplay", "hindi gaming", "shorts"],
             "category_id": "20"}  # YouTube category 20 = Gaming

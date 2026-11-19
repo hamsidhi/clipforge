@@ -44,6 +44,10 @@ def test_gaming_clip_metadata_has_no_podcast_wording():
     assert "podcast" not in everything and "🎙" not in m["ig_caption"] + m["description"]
     assert m["content"] == "gaming" and m["category_id"] == "20"
     assert "#citiesskylines2" in m["description"] and "#citiesskylines2" in m["ig_caption"]
+    tags = [t for t in m["ig_caption"].split() if t.startswith("#")]   # the source title's "#2" is not a hashtag
+    assert "Cities Skyline 2 Part 2" in m["ig_caption"] and "#2" not in m["ig_caption"] + m["description"]
+    assert tags[:4] == ["#reels", "#citiesskylines2", "#citiesskylines", "#gaming"]  # known tags before invented ones
+    assert metadata_opt.final_hashtags(["#revenuemoon", "#x"], "#gta6", ["#gtavi", "#gaming"])[:4] ==         ["#shorts", "#gta6", "#gtavi", "#gaming"]
     assert "🎮 Source: Building MOST LUXURY CITY" in m["ig_caption"] and "Cities: Skylines 2" in m["ig_caption"]
 
 
