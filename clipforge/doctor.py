@@ -63,7 +63,10 @@ def _ollama_server_log() -> Path | None:
         p = Path(base) / "Ollama" / "server.log" if base else None
     else:
         p = Path.home() / ".ollama" / "logs" / "server.log"
-    return p if p and p.exists() else None
+    try:
+        return p if p and p.exists() else None
+    except OSError:
+        return None
 
 
 def ollama_gpu(url: str) -> tuple[bool | None, str, str]:
@@ -83,7 +86,10 @@ def ollama_gpu(url: str) -> tuple[bool | None, str, str]:
     log = _ollama_server_log()
     if log is None:
         return None, "no model loaded — can't tell (run a job, then check again)", ""
-    text = log.read_text(encoding="utf-8", errors="replace")
+    try:
+        text = log.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None, "could not read server log", ""
     start = text.rfind('msg="server config"')
     text = text[start:] if start >= 0 else text
     gpus = re.findall(r'msg="inference compute".*?library=(\w+).*?description="([^"]*)"', text)
